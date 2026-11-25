@@ -5,7 +5,7 @@
 #
 # 止めない: 操作の可否を変えず、常に exit 0。失敗・対象外・知らせが無いときは 1 バイトも出さない（_meta.md 条 5 の context を注ぐだけの hook）。
 # GitHub を叩かない・控えも読まない: PR の段は取り直さないと分からず、古い控えの表を「動いた」と見せないため。
-# コーディネーターか（HC_NOTIFY=off・Orca の端末・linked worktree でない・tasks: github-project・notify: orca）の判定は
+# コーディネーターか（HC_NOTIFY=off・Orca の端末・linked worktree でない・tasks が github-project・notify が orca）の判定は
 # `hirai-task is-coordinator` が持つ。担当の会話・Orca の無い人・ほかのリポでは出ない。
 set -uo pipefail
 

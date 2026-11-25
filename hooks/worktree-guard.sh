@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook (matcher: Edit|Write|NotebookEdit|Bash): .claude/mode.yml の `worktree: block` のときだけ、
+# PreToolUse hook (matcher: Edit|Write|NotebookEdit|Bash): worktree が block のとき（.claude/settings.json の env HIRAI_METHOD_WORKTREE=block。4.x の間は .claude/mode.yml の `worktree: block` も読む）だけ、
 # Orca の worktree でない会話からの「リポの中の git に入るファイルの編集」と「git commit」を止める。
 #
 # 止める根拠: rules/_meta.md 条 5 の例外（並行の会話が同じ作業ツリーを触る事故を、編集の時点で止める）。
@@ -7,12 +7,14 @@
 #   Edit / Write / NotebookEdit … 対象ファイルの dir から git rev-parse --show-toplevel
 #   Bash の git commit          … -C <dir>（--work-tree / --git-dir も）があればその dir、無ければ cwd
 #                                 （cwd がリポでなければ CLAUDE_PROJECT_DIR）
-#   決めたリポ（toplevel が HOME か HOME の祖先のものは「リポ」と読まず通す。対象が $HOME/.claude/ の下のときも通す）の mode.yml（項目ごとに 環境変数 HC_WORKTREE > そのリポ > ホーム > off）が block のときだけ止める。
+#   決めたリポ（toplevel が HOME か HOME の祖先のものは「リポ」と読まず通す。対象が $HOME/.claude/ の下のときも通す）の worktree の値が block のときだけ止める。
+#   値は scripts/tasks-path.sh の harness_worktree（シェルの HC_WORKTREE > 環境変数 HIRAI_METHOD_WORKTREE > settings の file > mode.yml > off）。
+#   対象のリポが会話のリポ（CLAUDE_PROJECT_DIR の toplevel）でないときは、会話の環境変数は別のリポのものなので使わず、そのリポの settings の file と mode.yml で決める。
 # 止めないもの: 読み取り・リポの外（~/.claude の記憶の置き場など）・git に入らない場所（.gitignore 済み・
 #   .tmp/・.claude/state/。外側のリポの下にあるときは外側の .tmp/・.claude/state/ の下だけ）・git switch / git checkout・git commit --dry-run / --help。
 #   `worktree: off`（既定）と `warn` では何もしない。
-# 早い exit: 環境変数 HC_WORKTREE・ホームの mode.yml・対象の dir とその祖先の mode.yml のどこにも block が無ければ、git も走査（awk）も
-#   呼ばずに抜ける（git の toplevel は対象の dir かその祖先なので、git に聞かずに分かる。core.worktree でよそを指すリポと、submodule の git dir〔.git/modules/<名>〕の中からの操作は、その先の mode.yml を見ない）。
+# 早い exit: 環境変数 HC_WORKTREE・HIRAI_METHOD_WORKTREE・ホームと対象の dir とその祖先の settings.json・settings.local.json・mode.yml のどこにも block の字が無ければ、
+#   python3 も git も走査（awk）も呼ばずに抜ける（字は bash の read だけで探す）（git の toplevel は対象の dir かその祖先なので、git に聞かずに分かる。core.worktree でよそを指すリポと、submodule の git dir〔.git/modules/<名>〕の中からの操作は、その先の mode.yml を見ない）。
 #   git -C・--git-dir・--work-tree のあるコマンドだけは、対象を知るために走査してから、同じ見方で git の前に抜ける。
 # Orca の worktree の判定: 環境変数 ORCA_WORKTREE_ID があり、決めたリポの --git-dir と --git-common-dir が違い
 #   （= リンクされた worktree）、ORCA_WORKTREE_ID が path を含むなら、その path の --git-common-dir が決めたリポと同じで、
@@ -76,15 +78,26 @@ yml_val() {
     | sed -e 's/[[:space:]]*#.*$//' -e "s/^[\"']//" -e "s/[\"'][[:space:]]*\$//" -e 's/[[:space:]]*$//'
 }
 
-# repo_mode <top> -> worktree の値。環境変数 > そのリポの mode.yml > ホームの mode.yml > off（空）
+# repo_mode <top> -> worktree の値（block・warn・off）。scripts/tasks-path.sh の harness_worktree に任せる:
+# HC_WORKTREE > HIRAI_METHOD_WORKTREE > settings の file > mode.yml > off。<top> が会話のリポ（CLAUDE_PROJECT_DIR の toplevel）でないときは
+# 環境変数 HIRAI_METHOD_WORKTREE が別のリポのものなので使わず、そのリポの settings の file と mode.yml で決める（harness_worktree の 2 つ目の引数 files）。
+# 道具（tasks-path.sh）が無いときだけ従来の mode.yml 読み（そのリポ > ホーム）に落ちる。
 repo_mode() {
+  local lib conv files=""
+  lib="$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && builtin pwd -P)/scripts/tasks-path.sh"
+  if [ -f "$lib" ] && . "$lib" 2>/dev/null && command -v harness_worktree >/dev/null 2>&1; then
+    conv="$(harness_top "${CLAUDE_PROJECT_DIR:-$cwd}")"
+    [ "$(phys "$conv")" = "$(phys "$1")" ] || files="files"
+    harness_worktree "$1" "$files"
+    return 0
+  fi
   local v="${HC_WORKTREE:-}"
   [ -n "$v" ] || v="$(yml_val "$1/.claude/mode.yml" worktree)"
   [ -n "$v" ] || v="$(yml_val "${HOME:-/nonexistent}/.claude/mode.yml" worktree)"
   printf '%s' "$v"
 }
 
-# may_block <mode.yml> -> rc 0 なら、worktree の値が block でありうる（外部コマンドを起こさない。値を決めるのは yml_val）
+# may_block <mode.yml> -> rc 0 なら、worktree の値が block でありうる（外部コマンドを起こさない。値を決めるのは tasks-path.sh）
 may_block() {
   local l
   [ -f "$1" ] && [ -r "$1" ] || return 1
@@ -94,14 +107,41 @@ may_block() {
   return 1
 }
 
-# could_block <dir> ... -> rc 1 なら、環境変数・ホーム・<dir>（物理 path）とその祖先の mode.yml のどこにも block が無い
+# may_block_json <settings.json> -> rc 0 なら、env.HIRAI_METHOD_WORKTREE が block でありうる（file 全体に両方の字があるか。多めに拾ってよい。外部コマンドを起こさない）
+may_block_json() {
+  local c=""
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  IFS= read -r -d '' c < "$1" || true
+  case "$c" in *HIRAI_METHOD_WORKTREE*block*) return 0 ;; esac
+  return 1
+}
+
+# may_block_dir <dir> -> <dir>/.claude の mode.yml・settings.json・settings.local.json のどれかに block の字があれば rc 0
+may_block_dir() {
+  may_block "$1/.claude/mode.yml" || may_block_json "$1/.claude/settings.json" || may_block_json "$1/.claude/settings.local.json"
+}
+
+# linked_main_blocks <dir> -> <dir> が linked worktree の root ( .git が「gitdir: <本体>/.git/worktrees/<名前>」の file) なら、本体の checkout の settings.local.json に block の字があるか
+# (値を決める harness_worktree は本体の settings.local.json を最初に読む。外部コマンドを起こさず read だけで引く)
+linked_main_blocks() {
+  local l main
+  [ -f "$1/.git" ] && [ -r "$1/.git" ] || return 1
+  IFS= read -r l < "$1/.git" || [ -n "$l" ] || return 1
+  case "$l" in "gitdir: "*/.git/worktrees/*) ;; *) return 1 ;; esac
+  main="${l#gitdir: }"; main="${main%/.git/worktrees/*}"
+  may_block_json "$main/.claude/settings.local.json"
+}
+
+# could_block <dir> ... -> rc 1 なら、環境変数・ホーム・<dir>（物理 path）とその祖先の mode.yml・settings.json・settings.local.json のどこにも block が無い
 could_block() {
   local d
   [ "${HC_WORKTREE:-}" = block ] && return 0
-  may_block "${HOME:-/nonexistent}/.claude/mode.yml" && return 0
+  [ "${HIRAI_METHOD_WORKTREE:-}" = block ] && return 0
+  may_block_dir "${HOME:-/nonexistent}" && return 0
   for d in "$@"; do
     while :; do
-      may_block "$d/.claude/mode.yml" && return 0
+      may_block_dir "$d" && return 0
+      linked_main_blocks "$d" && return 0
       case "$d" in */*) d="${d%/*}" ;; *) break ;; esac
     done
   done
@@ -138,7 +178,7 @@ emit_deny() {
 }
 
 deny() {
-  emit_deny "$1 このリポは .claude/mode.yml で worktree: block です。Orca の worktree で作業してください: orca worktree create --name <名前> --base-branch <基の branch> （作った worktree の会話で同じ操作をする）。別のリポへの commit は git -C <dir> commit で（cd では追えません）"
+  emit_deny "$1 このリポは worktree: block です（.claude/settings.json の env HIRAI_METHOD_WORKTREE）。Orca の worktree で作業してください: orca worktree create --name <名前> --base-branch <基の branch> （作った worktree の会話で同じ操作をする）。別のリポへの commit は git -C <dir> commit で（cd では追えません）"
   exit 0
 }
 

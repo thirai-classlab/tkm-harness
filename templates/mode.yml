@@ -14,11 +14,10 @@
 # 一時的に : 環境変数 HC_MODE=loop (このファイルより優先される)
 # 置き場所 : 導入先リポジトリの .claude/mode.yml (/init が置く)
 # 読む人   : プラグインの hooks/session-start.sh と scripts/statusline.sh
-# 設定の 3 項目 (tasks / worktree / notify) は、下の auto_sync のあとに置いている。会話の開始時に、
-# 版と効いている 3 項目が 1 行で出る。
+# 設定の 3 項目 (tasks / worktree / notify) は、このファイルでなく .claude/settings.json の env に書く (下の案内)。
+# 会話の開始時に、版と効いている 3 項目が 1 行で出る。
 # 読む順 : 項目ごとに「環境変数 → プロジェクトのこのファイル → ホームの ~/.claude/mode.yml → 既定」。
 #          値は " や ' で囲んでもよく、行末に # のコメントを書いてもよい。
-# tasks / worktree / notify はプロジェクトのこのファイルにだけ書く (ホームに書くと他のリポにも効く)。
 mode: normal
 
 # auto_sync（更新後の入れ替え） — 値は on か off の 2 つだけ。**既定は off。**
@@ -38,39 +37,12 @@ mode: normal
 
 auto_sync: off
 
-# tasks（やること管理の形） — 値は ledger か github-project の 2 つだけ。**既定は ledger。**
+# 機能の切り替え（tasks / worktree / notify） — このファイルには書かない
 #
-#   ledger         : docs/tasks/list.md の台帳で回す (1.x と同じ。GitHub を一切叩かない)
-#   github-project : GitHub Project で回す。足すプラグイン hirai-project-method が要る
-#                    (/plugin install hirai-project-method@hirai-lite)。無いと入れ方を示して止まる
-#
-# **自動では見分けない。** Project の有無・remote・gh の結果では決まらず、この 1 行だけが決める。
-# 切り替え : /hirai-lite:config の項目 8
-# 一時的に : 環境変数 HC_TASKS=ledger (このファイルより優先される)
-
-tasks: ledger
-
-# worktree（Orca の worktree の別セッション） — 値は off / warn / block の 3 つ。**既定は off。**
-#
-#   off   : 何もしない
-#   warn  : Orca の worktree でない会話の開始時に警告を 1 行出す
-#   block : Orca の worktree でない会話からの、リポの中の git に入るファイルの Edit・Write・NotebookEdit と
-#           git commit を止める（読み取り・リポの外・git に入らない場所・branch の切り替え・MCP の書き込みの道具は止めない）
-#           (読み取り・リポの外 (~/.claude の記憶の置き場など)・git に入らない場所・git switch は止めない)
-#
-# 切り替え : /hirai-lite:config の項目 8
-# 一時的に : 環境変数 HC_WORKTREE=warn (このファイルより優先される)
-
-worktree: off
-
-# notify（Orca のコーディネーターへの知らせ） — 値は off / orca の 2 つ。**既定は off。**
-#
-#   orca : 担当の会話が、決めてもらいたいこと・終わったこと・止まったことを hirai-notify で知らせる
-#
-# 切り替え : /hirai-lite:config の項目 8
-# 一時的に : 環境変数 HC_NOTIFY=orca (このファイルより優先される)
-
-notify: off
+#   この 3 つは .claude/settings.json の env で決める (自分だけなら .claude/settings.local.json):
+#     HIRAI_METHOD_TASKS=ledger|github-project   HIRAI_METHOD_WORKTREE=off|warn|block   HIRAI_METHOD_NOTIFY=off|orca
+#   切り替え : /hirai-lite:config の項目 8   一時的に : 環境変数 HC_TASKS・HC_WORKTREE・HC_NOTIFY
+#   (4.x の間だけ、このファイルの tasks:・worktree:・notify: も読む。/hirai-lite:update が env へ移す)
 
 # nightly_ci（前夜の CI の結果を today に出す。足すプラグイン hirai-project-method のときだけ効く） — 値は workflow のファイル名。**既定は空。**
 #

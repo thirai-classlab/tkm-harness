@@ -4,6 +4,14 @@
 
 更新のしかたは [README の「更新する」](README.md#更新する既定では自動で新しくなりません)。**既定では自動更新しない**（v1.13.0 から opt-in で自動にできる）。
 
+## Unreleased
+- **機能の切り替え（tasks・worktree・notify）を各リポの `.claude/settings.json` の `env`（`HIRAI_METHOD_TASKS`・`HIRAI_METHOD_WORKTREE`・`HIRAI_METHOD_NOTIFY`）で読む**（heyapro-app #2042・設計メモ HM-R2）: プラグインがプロジェクトの settings から読めるのは `env` だけ（https://code.claude.com/docs/en/settings-reference.md#env）。値は `scripts/tasks-path.sh` の `harness_setting`（`harness_tasks_form`・`harness_worktree`・`harness_notify`）の 1 本で、シェルの `HC_*`（一時の上書き）→ 環境変数 `HIRAI_METHOD_*` → Claude Code の外だけ settings の file（本体の checkout の settings.local.json → toplevel の settings.local.json → settings.json → `~/.claude/settings.json`）→ `mode.yml`（4.x の間だけ読む移行用）→ 既定。開始時・hirai-notify・notify-attention・worktree-guard・orca-context・画面下が全部これを通る
+- **実測**（Claude Code 2.1.312。使い捨ての dir の settings.json に `env` と SessionStart・PreToolUse の hook を書き `claude -p` で打った）: settings の `env` は hook に届き、同じ名前ならシェルの値より settings の値が勝つ（だから一時の上書きは別の名前 `HC_*`）。`CLAUDECODE=1` も hook に届くので、Claude Code の中では settings の file を読まない（環境変数が写している）
+- **見張り（`worktree-guard.sh`）**: `HIRAI_METHOD_WORKTREE` と、ホーム・対象の dir とその祖先の `settings.json`・`settings.local.json`・`mode.yml` のどこにも `block` の字が無ければ、python3 も git も呼ばずに抜ける。対象が会話のリポでない別のリポのときは、会話の環境変数でなく、そのリポの settings の file と mode.yml で決める
+- **mode.yml からの移行**: 開始時に、`mode.yml` にだけ値がある項目があれば 1 行（`/hirai-lite:config` の項目 8 で `env` へ移せます）を出す。`/hirai-lite:config` の項目 8 は `harness_settings_set` で `env` の 1 つのキーだけを書き（ほかのキーは触らず、indent 2・ensure_ascii False。読めない JSON は上書きしない）、同じ項目の `mode.yml` の行を消す（自分だけなら `settings.local.json`）。`/hirai-lite:update` の手順 2b は `harness_settings_migrate` で 3 項目を `env` へ移し、`harness_tasks_migrate`（2.x の控え）も `env` に書く。雛形 `templates/mode.yml` から 3 項目を外し、案内の 3 行に替えた
+- **検査**: `tests/smoke.sh` の case 2 に `r6_hm_checks`（優先 5 段・`CLAUDECODE=1`・本体の checkout の settings.local.json・python3 無し・見張りの block と別のリポ・早い exit・移行の 1 行・書く側）と壊した複製 25 通りを足した。case 1 の手順 2b・case 10 の `/init` の雛形の確かめは settings.json の env に合わせて直した。smoke は開始時に `CLAUDECODE`・`HC_*`・`HIRAI_METHOD_*` を消す
+- 足すプラグイン `hirai-task`（`is-coordinator` ほか）の `mode.yml` 読みは、別の担当（#2042 の別 lane）が直す。それまでは `HIRAI_METHOD_TASKS`・`HIRAI_METHOD_NOTIFY` だけを書いたリポでは `hirai-task` 側の判定に届かない
+
 ## v3.3.0
 PR の単位を feature にそろえた（heyapro-app の issue #2021・ADR-0815。テックリードが 2026-11-25 に「feutureの単位にして下さい。」と決めた）。版は v3.2.0（#2020 の決まり 2 つ・PR #19）の次として付けた。
 
