@@ -80,6 +80,13 @@ merged_into:
 - TKM-R8.3 Given 担当の行 When 「いまやっていること」を作る Then 最新の heartbeat の phase・最新の status か question の件名・作業ツリーの最後の commit・PR と CI の状態を 1 行に組む
 - TKM-R8.4 Given Orca が無い When 担当の列を作る Then 開いている PR の head の branch 名の番号 → issue の assignee の順で引く
 
+### 要件 TKM-R9: 進みの表を、決まった時機にコーディネーターの会話へ入れる（テックリード 2026-11-26「modはやめましょうか。適切なタイミングでコンテキストに注入しましょう。」「会話の始まり・/clear・圧縮のあと / after-merge / 振り出しのあと にしましょう」）
+- TKM-R9.1 Given コーディネーターの会話 When 会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact） Then `hirai-task load --cached` の表を丸ごと `additionalContext` で入れる。GitHub は叩かない。控えの古さを 1 行添え、控えが無ければ 1 行で断る。担当の会話・GitHub Project で回さないリポでは何も入れない
+- TKM-R9.2 Given `TKM_HARNESS_LOAD_ON_START=off`（settings.json の env） When 会話を開く Then 入れない（既定は入れる。プラグインの設定項目 `userConfig` は project の settings.json に置けないので env で持つ）
+- TKM-R9.3 after-merge と assign・start・done の出力の最後の表（`print_load_after`）は今のまま。担当の知らせ・ユーザーの発言のたびには入れない（PostToolUse の `coordinator-load.sh` は今のまま）
+- TKM-R9.4 委譲の手順の文書に「`orca orchestration worker-start` のすぐあとに `hirai-task assign <issue> <担当> [順]` を打つ」「worker-start の作業ツリーに `orca worktree set --display-name <短い題> --issue <番号>` を付ける」「担当は状況が変わったら `orca worktree set --worktree current --comment <いまやっていること>` を打つ」を足す
+- TKM-R9.5 コーディネーターの判定（`hirai-task is-coordinator`）は、付け忘れても表が出る形にする（案はテックリードに問い中）
+
 ## 3. 公式で確かめたこと・実測
 
 | 問い | 答え | 出典 |
