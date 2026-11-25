@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# hirai-project-method の GitHub Project 用の関数。source して使う（土台の scripts/tasks-path.sh から分けた）。
-# 土台（hirai-lite）の関数（harness_tasks_file など）には依存しない。ここは gh と git remote と
+# tkm-harness の GitHub Project 用の関数（タスク管理の機能）。source して使う（scripts/tasks-path.sh から分けた）。
+# 台帳側の関数（harness_tasks_file など）には依存しない。ここは gh と git remote と
 # 控えのファイルだけを見る。
 #
 # file-top に set -e / set -o pipefail を書かない。source 元の shell flags を汚染し、
@@ -29,13 +29,11 @@
 # 渡らない: https://code.claude.com/docs/en/plugins-reference の
 # "Where each variable resolves") を使わず、$HOME/.claude/plugins/data/<id>/ の形を
 # 定数で持つ。<id> は Claude Code が entry 名とカタログ名から作るディレクトリ名
-# (<entry 名>-<カタログ名>。実測: 偽の HOME に hirai-lite@hirai-lite と
-# hirai-lite-v2@hirai-lite を入れると data/ に hirai-lite-hirai-lite と
-# hirai-lite-v2-hirai-lite ができる)。このプラグインの entry 名 (hirai-project-method) と
-# カタログ名 (hirai-lite) が変わったら、この 1 行を合わせる
-# (plugins/hirai-project-method/tests/smoke.sh が marketplace.json の entry 名と突き合わせる。
-# ズレていても壊れ方は「控えが前回のまま」で fail-open)。
-HARNESS_GHP_ID="hirai-project-method-hirai-lite"
+# (<entry 名>-<カタログ名>。実測: 偽の HOME に tkm-harness@tkm-harness を入れると
+# data/ に tkm-harness-tkm-harness ができる)。entry 名とカタログ名 (どちらも tkm-harness) が
+# 変わったら、この 1 行を合わせる (tests/smoke-tasks.sh が marketplace.json の名前と突き合わせる。
+# ズレていても壊れ方は「控えが前回のまま」で fail-open)。fork が別の名前で配るときもここを合わせる。
+HARNESS_GHP_ID="tkm-harness-tkm-harness"
 
 # 見分け (このリポが GHP の形かどうか自体) の取り直しの間隔。変わることが稀なので
 # 間隔を空ける (既定 24h。update-check.sh の間隔と同じ考え方)。

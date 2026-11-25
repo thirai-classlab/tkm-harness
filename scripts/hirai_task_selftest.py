@@ -49,27 +49,13 @@ from importlib import machinery, util
 
 
 def _base_plugin_root() -> str:
-    """土台（hirai-lite）のルート。approval-template.md と templates/draft.md を読むために探す。
-    HIRAI_LITE_ROOT > このリポの配置（plugins/hirai-project-method の 2 つ上）> installed_plugins.json の
-    entry `hirai-lite`。見つからなければ AssertionError（検査を飛ばさず落とす）。"""
+    """プラグインのルート（tkm-harness は 1 つのプラグイン）。approval-template.md と templates/draft.md を読むために使う。
+    このファイルの 2 つ上（scripts/ の親）。見つからなければ AssertionError（検査を飛ばさず落とす）。"""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     marker = os.path.join('docs', 'rules-reference', 'approval-template.md')
-    candidates = [os.environ.get('HIRAI_LITE_ROOT', '').strip(), os.path.dirname(os.path.dirname(here))]
-    try:
-        with open(os.path.expanduser('~/.claude/plugins/installed_plugins.json'), encoding='utf-8') as f:
-            entries = json.load(f).get('plugins', {}).get('hirai-lite@hirai-lite', [])
-        # 版が最大の行を先にする（古い 1.x の行が先に並んでいても、その approval-template.md を読まない）。
-        # 「-」から後ろ（commit の接尾。3.0.2-8713c5b11005 など）は落としてから比べる。
-        entries = sorted(entries, key=lambda e: [int(n) if n.isdigit() else 0
-                                                 for n in re.split(r'[.]', str(e.get('version', '0')).split('-', 1)[0])],
-                         reverse=True)
-        candidates += [e.get('installPath', '') for e in entries]
-    except (OSError, ValueError, AttributeError):
-        pass
-    for c in candidates:
-        if c and os.path.isfile(os.path.join(c, marker)):
-            return c
-    raise AssertionError(f'土台（hirai-lite）が見つからない: HIRAI_LITE_ROOT を指す（候補: {candidates}）')
+    if os.path.isfile(os.path.join(here, marker)):
+        return here
+    raise AssertionError(f'プラグインのルートに {marker} が無い: {here}')
 
 
 def _load_tool():

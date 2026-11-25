@@ -544,7 +544,7 @@ harness_tasks_migrate() {
   printf 'tasks: %s を %s の env に書きました (%s)\n' "$val" "$path" "$why"
 }
 
-# harness_pm_install_dir [root] -> 足すプラグイン hirai-project-method の、このリポの行のうち版が最大の installPath を stdout。
+# harness_pm_install_dir [root] -> プラグイン tkm-harness の、このリポの行のうち版が最大の installPath を stdout。
 # 無ければ空 + rc 1 (python3 か installed_plugins.json が無いときも rc 1)。
 # このリポの enabledPlugins (settings.local.json [本体の checkout のものも見る] → settings.json → ~/.claude/settings.json の順) で false なら「無い」とみなす。
 # 「このリポの行」= scope が user・managed の行、または projectPath がこのリポと同じ git のリポの行。
@@ -593,19 +593,25 @@ def mine(x):
     return root == ppr or root.startswith(ppr + "/")
 rows = [] if disabled() else [x for k, v in d.get("plugins", {}).items() if k.split("@", 1)[0] == sys.argv[2] for x in v if x.get("installPath") and mine(x)]
 rows.sort(key=lambda x: [int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version", "0")).split("-", 1)[0])])
-print(rows[-1]["installPath"] if rows else "")' "$f" hirai-project-method "$root" "$common" 2>/dev/null)"
+print(rows[-1]["installPath"] if rows else "")' "$f" tkm-harness "$root" "$common" 2>/dev/null)"
   [ -n "$p" ] || return 1
   printf '%s' "$p"
 }
 
-# harness_pm_task_bin [root] -> 足すプラグイン hirai-project-method の hirai-task の絶対 path を stdout。無ければ空 + rc 1。
+# harness_pm_task_bin [root] -> hirai-task の絶対 path を stdout。無ければ空 + rc 1。
 # hook と画面下では、プラグインの bin/ は PATH に入らない (Bash ツールだけに入る)。PATH に頼らず探す:
-#   1. harness_pm_install_dir (installed_plugins.json のこのリポの行の最大版) の bin/hirai-task
-#   2. python3 が無いとき・installed_plugins.json が無いときだけ ~/.claude/plugins/cache/hirai-lite/hirai-project-method/ の最大版
-#      (installed に行があるのに該当が無い = 外した・別のリポの install、のときは cache へ落ちない。入れ方を示して止まる側へ倒す)
-#   3. PATH の hirai-task
+#   1. ${CLAUDE_PLUGIN_ROOT}/bin/hirai-task (hook・command から呼ばれたとき。同じプラグインの中)
+#   2. harness_pm_install_dir (installed_plugins.json の tkm-harness の行のうちこのリポの最大版) の bin/hirai-task
+#   3. python3 が無いとき・installed_plugins.json が無いときだけ ~/.claude/plugins/cache/*/tkm-harness/ の最大版
+#      (配布元の段は決め打ちしない。fork が別の配布元の名前で入れても当たる。
+#       installed に行があるのに該当が無い = 外した・別のリポの install、のときは cache へ落ちない)
+#   4. PATH の hirai-task
 harness_pm_task_bin() {
   local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" f="${HOME:-}/.claude/plugins/installed_plugins.json" p="" c
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${CLAUDE_PLUGIN_ROOT}/bin/hirai-task" ]; then
+    printf '%s' "${CLAUDE_PLUGIN_ROOT}/bin/hirai-task"
+    return 0
+  fi
   if [ -f "$f" ] && command -v python3 >/dev/null 2>&1; then
     p="$(harness_pm_install_dir "$root" 2>/dev/null || true)"
     if [ -n "$p" ] && [ -x "$p/bin/hirai-task" ]; then
@@ -613,7 +619,7 @@ harness_pm_task_bin() {
       return 0
     fi
   else
-    c="$(ls -d "${HOME:-}"/.claude/plugins/cache/hirai-lite/hirai-project-method/*/ 2>/dev/null | sort -V | tail -1)"
+    c="$(ls -d "${HOME:-}"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"
     c="${c%/}"
     if [ -n "$c" ] && [ -x "$c/bin/hirai-task" ]; then
       printf '%s' "$c/bin/hirai-task"
