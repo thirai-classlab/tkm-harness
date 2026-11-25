@@ -29,6 +29,9 @@ hirai-task — リポに紐づいた GitHub Project のタスクを読み書き�
   出す行の本文を取り（50 件ごとに GraphQL 1 回）、目印が無い行と、目印はあるが reads= が無い行の
   末尾に ` [旧い形]` を付ける（読む束を出せない issue。#829）。
   pending は承認待ちの feature、blocked は判断待ち・依存待ち・保留の task を出す。
+  着手可の feature で、開いた blocked by が無く、子に開いた「コードの task」（`[操作]`・`[User]` の無い task）が
+  無いものも `[feature]` の行で出す（作業が本文のチェックリストにある feature。未完の行数つき。HM-R4.2）。
+  board の「着手できる」もこの feature を数え、ready と同じ数にする。
 
   Project の在り処は Repository.projectsV2 から引く。0 件なら「無し」、
   2 件以上なら候補を出して exit 2、「種別」を持つものを選ぶ。紐づけが 1 つなら
@@ -87,15 +90,25 @@ hirai-task — リポに紐づいた GitHub Project のタスクを読み書き�
   いつ足した子かは区別しない）。案内のための読み取りが落ちても、issue はもうできているので
   new は exit 0 で終え、「着手できるかを確かめられなかった: <理由>」を 1 行出す。
 
+  new --from-table <提案>: 印（`[操作]`・`[User]`）の無い task の行は issue にせず、親の feature の本文に `## やること` の
+  チェックリスト（`- [ ] <行の id>: <題名>`）として置き、feature の目印に rows=（行の id）・reads=・reqs=（行の束と要件の和）を
+  書く（HM-R4.3。既にある feature なら本文の末尾へ足す。親が素の `#番号` の行は、その issue が feature のときだけ。
+  チェックリストの行を指す blocked by は付けられないので警告する）。印のある task は今までどおり issue。
+  coverage は目印の rows= の id を起票済みと数える（HM-R4.4）。
+
   approve は廃止: 「approve は廃止。feature をボードで着手可に」と出して
   exit 2。feature の承認待ち→着手可は人だけが動かす（着手可の feature の子の承認待ちは
   align が動かすか、start が進行中へ進める）。
 
-  set・start・review・done・reopen の守り: 種別=wave・feature は動かさない
-  （align・close-parents か、ボードの役目）。set は Status と種別だけを受け付ける。
+  set・start・review・done・reopen の守り: 種別=wave は動かさない（align・close-parents か、ボードの役目）。
+  種別=feature は着手可から先だけ動かす（HM-R4.1）: start は着手可の feature を進行中へ（承認待ち・Status 空は断る。
+  feature の承認待ち→着手可は人がボードで行う。読む束は feature の目印の reads=、止める検査は task と同じ）、
+  review・done と set は進行中・レビュー中・完了だけ（set の着手可・承認待ちは断る）。
+  set は Status と種別だけを受け付ける。
   task を着手可・進行中にしてよいかの判定は 1 つ（task_not_startable_reason）。条件は全部:
-  種別が task（空を含む）で、目印が無い／親の feature があり、種別が feature で、着手可／自分と親の feature に未完了の
-  blocked by が無い（先の wave は見ない。親が着手可の feature なら wave の門を越えてよい。ADR-0760）。
+  種別が task（空を含む）で、目印が無い／親の feature があり、種別が feature で、着手可・進行中・レビュー中のどれか
+  （進行中・レビュー中は feature を start したあとの子の `[操作]` を start --approved で進めるため。完了は含めない）／
+  自分と親の feature に未完了の blocked by が無い（先の wave は見ない。親が着手可の feature なら wave の門を越えてよい。ADR-0760）。
   align が「着手可へ」と出す子だけを通し、「依存待ち」と出す子は断る。いつ子になったかは
   問わない。断るときは理由（親の番号と今の Status・blocked by の番号など）を出して exit 2。
   - set: Status を着手可へ書くとき、承認待ち・依存待ち・判断待ち・保留のどこからでも、この
@@ -192,7 +205,9 @@ memos / today / after-merge）:
 
   after-merge <PR番号>: その PR の closingIssuesReferences にある番号について、
     close-parents を親→祖父→…と閉じられる分だけ辿ってから（1 回の today で複数段
-    連鎖して閉じる）、unblocked を呼ぶ。
+    連鎖して閉じる）、unblocked を呼ぶ。Closes で閉じた feature（進行中・レビュー中）は Status を 完了 にする（HM-R4.5）。
+    close-parents・align は、子の issue が 0 本の feature（作業が本文のチェックリストにある）を閉じず・動かさない
+    （PR の `Closes #<feature>` で閉じる）。閉じて完了した子 0 本の feature は、wave の「出た」の判定で 1 件に数える。
 
   set・start は、相手の種別が空なら stderr に警告 1 行（止めない。種別自身の set は警告しない）。
 
@@ -3356,6 +3371,9 @@ def add_checklist_rows(number: int, adds: list[dict]) -> list[str]:
     new_body, added = append_checklist_to_body(body, adds)
     if added:
         rest('PATCH', f'repos/{REPO}/issues/{number}', {'body': new_body})
+        if parse_task_mark(body) is None:
+            print(f'警告: #{number} の本文に rmp-task の目印が無く、rows=・reads=・reqs= を書けなかった。'
+                  'coverage はこの行を漏れと出し続け、start は読む束を出さない（目印を足すか、feature を起こし直す）')
     return added
 
 
@@ -3382,6 +3400,12 @@ def existing_table_marks(slug: str) -> dict[str, int]:
     project_number = discover_project_number()
     numbers = [i['number'] for i in fetch_all_items(project_number) if i.get('type') == 'Issue']
     return table_mark_ids(fetch_bodies(numbers), slug)
+
+
+def existing_issue_kind(number: int) -> str:
+    """既にある issue #number の種別（Projects の項目。載っていない・空なら空文字）。読むだけ。"""
+    item = fetch_write_item(discover_project_number(), number)
+    return (item.get('fields') or {}).get(KIND_FIELD, '') if item.get('found') else ''
 
 
 def cmd_new_from_table(argv: list[str]) -> int:
@@ -3415,6 +3439,8 @@ def cmd_new_from_table(argv: list[str]) -> int:
     kind_of = {x.get('id', ''): x.get('kind', '') for x in rows}
     parent_text = {x.get('id', ''): x.get('親', '') for x in rows}
 
+    existing_kinds: dict[str, str] = {}
+
     def is_checklist(r: dict) -> bool:
         """印（[操作]・[User]）の無い task で、親が feature の行は issue にせず、親の feature の本文のチェックリストに置く（HM-R4.3）。"""
         if r['kind'] != TASK_KIND or r['marks']:
@@ -3423,6 +3449,11 @@ def cmd_new_from_table(argv: list[str]) -> int:
         if text.startswith('wave'):
             return False
         ref = re.sub(r'^feature\s+', '', text)
+        if ref.startswith('#') and ref[1:].isdigit() and ref == text:
+            # 素の `#番号`（`feature #番号` と書いていない行）は表に種別が無い。feature の本文へ足すのは、その issue が feature のときだけ（wave・task へは書かない）
+            if ref not in existing_kinds:
+                existing_kinds[ref] = existing_issue_kind(int(ref[1:]))
+            return existing_kinds[ref] == FEATURE_KIND
         return kind_of.get(ref, FEATURE_KIND) == FEATURE_KIND
 
     check_rows = [r for r in fileable if is_checklist(r)]
@@ -3434,12 +3465,21 @@ def cmd_new_from_table(argv: list[str]) -> int:
     def bundle_of(r: dict) -> list[str]:
         return build_reads(r['reqs'], header.get('domain', ''), slug=slug, proposal_lines=lines)
 
+    check_ids = {r['id'] for r in check_rows}
+
+    def dropped_blocker_notes(r: dict) -> list[str]:
+        """issue の行の blocked by のうち、チェックリストの行を指すもの（issue ではないので付けられない）の警告。"""
+        return [f'{b} はチェックリストの行（feature {parent_text.get(b, "").strip() or "—"} の本文）で issue ではないので、blocked by を付けない'
+                f'（順番は feature の PR の merge で守る）' for b in r['blockers'] if b in check_ids]
+
     print(f'draft: {path}（slug: {slug}・{stage}の段: 承認 {detail}）')
     print(f'起票する {len(issue_rows)} 件:')
     for r in issue_rows:
         blockers = ','.join(r['blockers']) or '—'
         print(f'  {r["id"]} / {r["kind"]} / 親={r["parent"]} / blocked by={blockers} / 目印={"".join(r["marks"]) or "—"} / 読む束={len(bundle_of(r))} 件 / {r["title"]}')
         for note in _unresolved_notes(r['reqs'], header.get('domain', ''), slug, lines):
+            print(f'    警告: {note}')
+        for note in dropped_blocker_notes(r):
             print(f'    警告: {note}')
     print(f'親の feature の本文のチェックリストに足す {len(check_rows)} 行（issue にしない）:')
     for r in check_rows:
@@ -3461,13 +3501,14 @@ def cmd_new_from_table(argv: list[str]) -> int:
     def number_of(ref: str) -> int:
         return int(ref[1:]) if ref.startswith('#') else created[ref]
 
-    check_ids = {r['id'] for r in check_rows}
     for r in fileable:
         if r['id'] in check_ids:
             # 親の feature の番号が、この行を指す blocked by の行き先になる（この回に起こす feature は本文に入れてある）
             created[r['id']] = number_of(r['parent'])
             continue
         for note in _unresolved_notes(r['reqs'], header.get('domain', ''), slug, lines):
+            print(f'警告: {r["id"]}: {note}')
+        for note in dropped_blocker_notes(r):
             print(f'警告: {r["id"]}: {note}')
         card = None
         if r['kind'] == FEATURE_KIND:
@@ -4307,14 +4348,19 @@ def wave_has_exited(
     # 数えるのは種別が task（空を含む）の子孫だけ。feature・wave・設計メモの行は数えない
     # （#521: feature は子が全部閉じたときにしか閉じないので、保留の task しか持たない
     # feature が承認待ち・着手可のまま残り、wave が永久に「出た」にならなかった）。
-    descendants = [
-        d for d in _descendants(wave_number, children_of, items_by_number)
-        if (d.get('kind') or '') not in EXCLUDE_KINDS
+    all_descendants = _descendants(wave_number, children_of, items_by_number)
+    descendants = [d for d in all_descendants if (d.get('kind') or '') not in EXCLUDE_KINDS]
+    # 子の issue が 0 本（作業が本文のチェックリストにある）feature は、閉じて完了したなら 1 件として数える（HM-R4.5）。
+    # 開いたままの子なし feature は今までどおり数えない（task がまだ無い feature で wave を止めない）。
+    finished_features = [
+        d for d in all_descendants
+        if d.get('kind') == FEATURE_KIND and not children_of.get(d['number'])
+        and (d.get('state') == 'CLOSED' or d.get('status') == DONE_STATUS)
     ]
     non_done = [
         d for d in descendants if (d.get('status') or '') not in (DONE_STATUS, HOLD_STATUS)
     ]
-    children_condition_met = len(descendants) > 0 and len(non_done) == 0
+    children_condition_met = len(descendants) + len(finished_features) > 0 and len(non_done) == 0
     has_command_line = bool(_EXIT_LINE_RE.search(bodies.get(wave_number, '') or ''))
     return children_condition_met, has_command_line
 
@@ -5632,7 +5678,8 @@ def board_view(snap: dict, how: str) -> dict:
         'blockers': {n: x.get('blocked_by_open_numbers') or [] for n, x in extras.items()},
         'open_prs': {n: x.get('open_pr_numbers') or [] for n, x in extras.items()},
         'wave_blockers': {n: _blocking_wave_numbers(n, items_by_number, extras) for n in waves},
-        'not_ready': not_ready, 'ready': [i['number'] for i in ready_rows(issues, extras)],
+        'not_ready': not_ready,
+        'ready': [i['number'] for i in ready_rows(issues, extras)] + [i['number'] for i in ready_feature_rows(issues, extras)],
         'wave_exit': wave_exit, 'cards': cards, 'stalls': stalls,
         'stall_short': {n: STALL_SHORT[reason] for n, reason in stalls.items()},
     }

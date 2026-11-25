@@ -994,6 +994,21 @@ def _board_checks(t, tmp_dir: str) -> None:
         t('board: 1 回目は gh を叩き、10 分以内の 2 回目と --from は叩かず、--refresh・Project の違い・11 分前は取り直す',
           _first_fetch_then_cache)
 
+        def _board_ready_counts_features() -> None:
+            def it(number, kind, status, parent=None):
+                return {'number': number, 'type': 'Issue', 'kind': kind, 'status': status, 'state': 'OPEN',
+                        'title': f'row {number}', 'parent_number': parent, 'repo': gh_task.REPO}
+            items = [it(10, 'feature', gh_task.READY_STATUS), it(20, 'feature', gh_task.READY_STATUS),
+                     it(21, 'task', gh_task.READY_STATUS, 20)]
+            snap = {'items': items, 'repo': gh_task.REPO, 'extras': {}, 'bodies': {}, 'project': 1,
+                    'fetched_at': 'x', 'fetched_epoch': 0}
+            view = gh_task.board_view(snap, 'test')
+            expected = [i['number'] for i in gh_task.ready_rows(items, {})] + [i['number'] for i in gh_task.ready_feature_rows(items, {})]
+            assert view['ready'] == expected == [21, 10], f'board の ready が ready と違う: {view["ready"]}（期待 {expected}）'
+
+        t('board: 「着手できる」の数に、ready が出す feature（子 0 本・チェックリストだけの着手可）も入れ、ready と同じ数にする（HM-R4.2）',
+          _board_ready_counts_features)
+
         def _summary_counts() -> None:
             fresh()
             rc, out = _run_main(['board', '--text'])
@@ -2773,11 +2788,12 @@ def _feature_checks(t, tmp_dir: str) -> None:
             f.write(text)
         return path
 
-    def _run_table(path: str, *, existing=None, wave_open=None):
+    def _run_table(path: str, *, existing=None, wave_open=None, kinds=None):
         calls: list[dict] = []
         added: list = []
         saved = (gh_task.new_issue, gh_task.existing_table_marks, gh_task.add_checklist_rows,
-                 gh_task.table_unresolved_waves, gh_task.build_reads)
+                 gh_task.table_unresolved_waves, gh_task.build_reads, gh_task.existing_issue_kind)
+        gh_task.existing_issue_kind = lambda number: (kinds or {}).get(number, 'feature')
         reads = {'R1': ['docs/a.md', 'docs/b.md'], 'R2': ['docs/b.md', 'docs/c.md'], '—': []}
         gh_task.new_issue = lambda opts: calls.append(opts) or 800 + len(calls)
         gh_task.existing_table_marks = lambda slug: dict(existing or {})
@@ -2790,7 +2806,7 @@ def _feature_checks(t, tmp_dir: str) -> None:
                 rc = gh_task.cmd_new(['--from-table', path])
         finally:
             (gh_task.new_issue, gh_task.existing_table_marks, gh_task.add_checklist_rows,
-             gh_task.table_unresolved_waves, gh_task.build_reads) = saved
+             gh_task.table_unresolved_waves, gh_task.build_reads, gh_task.existing_issue_kind) = saved
         return rc, buf.getvalue(), calls, added
 
     def _table_checklist_in_new_feature() -> None:
@@ -2840,6 +2856,43 @@ def _feature_checks(t, tmp_dir: str) -> None:
         assert [a['id'] for _n, adds in added for a in adds] == ['CHK-02'], added
 
     t('HM-R4.3 new --from-table: 親が既にある feature なら、その feature の本文へ足す。rows= にある行は足さない', _table_rows_for_existing_feature)
+
+    def _table_plain_number_parent_checks_kind() -> None:
+        path = _draft('chk-wave.md', '| CHK-01 | task | FE | 入力欄を作る | #700 | — | R1 | テストが通る |\n')
+        # #700 が wave なら、本文へは書かず、今までどおり issue にする
+        rc, out, calls, added = _run_table(path, kinds={700: 'wave'})
+        assert rc == 0 and added == [] and [c['title'] for c in calls] == ['入力欄を作る'] and calls[0]['parent'] == 700, (out, calls, added)
+        # feature なら本文へ足す
+        rc, out, calls, added = _run_table(path, kinds={700: 'feature'})
+        assert rc == 0 and calls == [] and [n for n, _a in added] == [700], (out, calls, added)
+
+    t('HM-R4.3 new --from-table: 親が素の #番号 の行は、その issue の種別が feature のときだけ本文のチェックリストへ足す（wave なら issue のまま）',
+      _table_plain_number_parent_checks_kind)
+
+    def _table_warns_dropped_blocker_on_checklist_row() -> None:
+        path = _draft('chk-block.md', (
+            '| CHK-F1 | feature | — | 画面を作る | wave #700 | — | — | — |\n'
+            '| CHK-01 | task | FE | 入力欄を作る | CHK-F1 | — | R1 | テストが通る |\n'
+            '| CHK-03 | task | FE | [操作] 配布する | CHK-F1 | CHK-01 | — | exit 0 |\n'))
+        rc, out, calls, _ = _run_table(path)
+        assert rc == 0 and calls[1]['blocked_by'] == [], (out, calls)
+        assert 'CHK-03: CHK-01 はチェックリストの行' in out and 'blocked by を付けない' in out, f'落としたことを知らせていない: {out}'
+        rc, out, _calls, _ = (lambda r: (r[0], r[1], r[2], r[3]))(_run_table_dry(path))
+        assert rc == 0 and 'CHK-01 はチェックリストの行' in out, f'--dry-run でも知らせる: {out}'
+
+    def _run_table_dry(path: str):
+        saved = gh_task.build_reads
+        gh_task.build_reads = lambda reqs, domain, root=None, slug='', proposal_lines=None: []
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                rc = gh_task.cmd_new(['--from-table', path, '--dry-run'])
+        finally:
+            gh_task.build_reads = saved
+        return rc, buf.getvalue(), [], []
+
+    t('HM-R4.3 new --from-table: [操作] の行の止める依存がチェックリストの行なら、付けないことを警告する（--dry-run も）',
+      _table_warns_dropped_blocker_on_checklist_row)
 
     def _append_to_existing_feature_body() -> None:
         body = ('<!-- card:approval -->\n**決めること**: x\n<!-- /card -->\n\n## 完了条件\nOK\n\n## やること\n'
@@ -5794,7 +5847,8 @@ def main() -> int:
             with open(_table_draft('tbl-bundle.md'), encoding='utf-8') as f:
                 ok = f.read().replace('domain: —', 'domain: chat').replace('TBL-R1', 'CHAT-R1')
             rc, out = _with_root(root, lambda: _from_table(_draft_path('tbl-bundle4.md', ok), '--dry-run'))
-            assert rc == 0 and '警告' not in out, out
+            # [操作] の行がチェックリストの行を止める依存に持つ警告は別（HM-R4.3）。要件の警告だけ見る
+            assert rc == 0 and '要件の節が見つからない' not in out and '提案の要件が見出しで見つからない' not in out, out
 
         t('new --from-table: reqs の ID が README の要件に無いとき「要件の節が見つからない」と警告する', _warns_when_requirement_is_only_in_the_proposal)
 
@@ -8482,6 +8536,22 @@ def main() -> int:
             assert met2 is True and has_line2 is True, '出る条件のコマンドの行があるのに読めない'
 
         t('wave_has_exited は子の条件とコマンドの行の両方を見る', _wave_has_exited_needs_both_conditions)
+
+        def _wave_has_exited_counts_finished_checklist_feature() -> None:
+            line = {300: '- 出る条件のコマンド: exit 0（2026-09-28・abc1234）\n'}
+            base = {'type': 'Issue', 'title': 'F', 'parent_number': 300}
+            wave = {'number': 300, 'type': 'Issue', 'kind': gh_task.WAVE_KIND, 'status': '', 'state': 'OPEN', 'title': 'W', 'parent_number': None}
+            cases = (
+                ('閉じた子なし feature だけ（Status 完了）', {'number': 301, 'kind': 'feature', 'status': gh_task.DONE_STATUS, 'state': 'CLOSED'}, True),
+                ('閉じた子なし feature だけ（Status が古いまま）', {'number': 301, 'kind': 'feature', 'status': gh_task.REVIEW_STATUS, 'state': 'CLOSED'}, True),
+                ('開いた子なし feature だけ（task がまだ無い）', {'number': 301, 'kind': 'feature', 'status': gh_task.READY_STATUS, 'state': 'OPEN'}, False),
+            )
+            for label, feature, expected in cases:
+                by_number, children_of = gh_task._board_index([wave, {**base, **feature}])
+                met, has_line = gh_task.wave_has_exited(300, by_number, children_of, line)
+                assert met is expected and has_line is True, (label, met, has_line)
+
+        t('HM-R4.5 wave_has_exited: チェックリストだけ（子 0 本）の feature が閉じていれば出た。開いたままなら数えない', _wave_has_exited_counts_finished_checklist_feature)
 
         def _wave_has_exited_treats_empty_wave_as_not_met() -> None:
             # 子孫が 0 件（できたばかりの空の wave）を、子の条件を
