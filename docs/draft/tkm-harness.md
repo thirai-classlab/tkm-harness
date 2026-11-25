@@ -51,7 +51,7 @@ merged_into:
 - TKM-R2.2 同じく `TKM_HARNESS_WORKTREE`（off / warn / block）・`TKM_HARNESS_NOTIFY`（off / orca）
 - TKM-R2.3 効く順は「シェルの `HC_TASKS`・`HC_WORKTREE`・`HC_NOTIFY`（一時の上書き）> 環境変数の `TKM_HARNESS_*`（Claude Code が settings.local.json > settings.json を重ねて渡す）> 端末・CI で打ったときの `.claude/settings.local.json`・`.claude/settings.json` の file > `.claude/mode.yml` の `tasks:`・`worktree:`・`notify:`（4.x の間だけ読む移行用）> 既定」
 - TKM-R2.4 Given mode.yml にだけ 3 項目がある When 会話を開く Then 開始時に「settings.json の env へ移せます（/tkm-harness:config）」と 1 行出る。`/tkm-harness:config` は settings.json の env に書く
-- TKM-R2.5 進め方（`mode`）・`auto_sync`・表の設定（`load_*`・`nightly_ci`）は mode.yml に残す（切り替えるたびに共有の settings.json を書き換えないため）
+- TKM-R2.5 進め方（`mode`）・`auto_sync`・`nightly_ci` は mode.yml に残す（切り替えるたびに共有の settings.json を書き換えないため）。表の設定（期限・本線）は settings.json の env の `TKM_HARNESS_LOAD_DEADLINE`・`TKM_HARNESS_LOAD_DEADLINE_LABEL`・`TKM_HARNESS_LOAD_MAINLINE`・`TKM_HARNESS_LOAD_MAINLINE_LABEL` が先、無ければ mode.yml の `load_*`
 
 ### 要件 TKM-R3: hirai-task は同じプラグインの `bin/` にあり、探し方は 1 本
 - TKM-R3.1 Given tkm-harness が入ったリポ When hook・statusline・command が hirai-task を探す Then `${CLAUDE_PLUGIN_ROOT}/bin/hirai-task`、無ければ `installed_plugins.json` の `tkm-harness@<配布元>` のこのリポの行の最大版の `bin/hirai-task` を使う
@@ -73,6 +73,12 @@ merged_into:
 
 ### 要件 TKM-R7: 責務分離を README と heyapro-app の docs/harness に書く
 - TKM-R7.1 3 つの層: tkm-harness の土台（決まりの予算・進め方・確認・画面下・知らせ）／ タスク管理の機能（hirai-task・board・project-setup）／ 各リポのハーネス（そのリポの決まり・検査・hook・skill・settings）
+
+### 要件 TKM-R8: 進捗の表を board が出し、担当と「いまやっていること」を Orca から引く（テックリード 2026-11-26 00:45「アサインジェイソンに書いてる内容CLIから取れへんの?」「入れといて下さい。」「これだと何やってるかよくわからんなあ」）
+- TKM-R8.1 Given GitHub Project のリポ When `hirai-task board --progress` Then 全体の 1 行・開いているセクションの 2 列の表・「進行中のタスク」の表（担当｜セクション｜順番｜進捗｜いまやっていること）・担当の居ないもの・これから立てる を文字の表で出す。`--json` で同じ中身を機械の形で出す（mod の欄から使う）
+- TKM-R8.2 Given Orca がある When 担当の列を作る Then `orca orchestration worker-list`・`task-list`・`orca worktree list` を突き合わせ、issue の番号は割り当ての題（spec の 1 行目）からだけ取り、完了を報告して作業ツリーが残る担当（merge 待ち）も出し、着手可なのにどこにも無い task を「これから立てる」に出す。担当の名前は割り当ての短い題
+- TKM-R8.3 Given 担当の行 When 「いまやっていること」を作る Then 最新の heartbeat の phase・最新の status か question の件名・作業ツリーの最後の commit・PR と CI の状態を 1 行に組む
+- TKM-R8.4 Given Orca が無い When 担当の列を作る Then 開いている PR の head の branch 名の番号 → issue の assignee の順で引く
 
 ## 3. 公式で確かめたこと・実測
 
@@ -158,6 +164,6 @@ fork（例 classlab-inc/tkm-harness）へ替えるときは `extraKnownMarketpla
 
 ## 6. 進め方
 
-1. hirai-task の feature の扱い（TKM-R4）と settings.json の env の読み（TKM-R2）を hirai-method-lite の branch で作り、この branch に merge で取り込む
+1. hirai-task の feature の扱い（TKM-R4）・settings.json の env の読み（TKM-R2）・進捗の表（TKM-R8）を hirai-method-lite の branch で作り、この branch に merge で取り込む
 2. 1 つにする直し・名前の付け替え（`hirai-lite`・`hirai-project-method`・`HIRAI_METHOD_*` → `tkm-harness`・`TKM_HARNESS_*`）・fork しやすさ（TKM-R5）・配布の一覧・README・CHANGELOG
 3. #2020（hirai-method-lite の PR #19）が hirai-method-lite に入ったら、merge で取り込む
