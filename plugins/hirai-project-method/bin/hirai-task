@@ -300,6 +300,9 @@ JUDGMENT_STATUS = '判断待ち'
 DEP_STATUS = '依存待ち'
 HOLD_STATUS = '保留'
 IN_PROGRESS_STATUS = '進行中'
+# 子の task（とその [操作]）を進めてよい親の feature の Status。着手可に加え、feature を start したあと（進行中・レビュー中）も
+# 子の [操作] を start --approved で進められる（配布の [操作] が feature の着手のあとに残るため）。完了の親は含めない（未決）。
+FEATURE_WORKING_STATUSES = ('着手可', '進行中', 'レビュー中')
 ALL_STATUSES = (
     PENDING_STATUS, JUDGMENT_STATUS, DEP_STATUS, READY_STATUS,
     IN_PROGRESS_STATUS, REVIEW_STATUS, DONE_STATUS, HOLD_STATUS,
@@ -1270,7 +1273,7 @@ def ready_block_reason(
     parent = items_by_number.get(parent_number)
     if parent is None or parent.get('kind') != FEATURE_KIND:
         return NOT_READY_NO_FEATURE
-    if parent.get('status') != READY_STATUS:
+    if parent.get('status') not in FEATURE_WORKING_STATUSES:
         return NOT_READY_FEATURE_NOT_READY
     if (extras.get(i['number']) or {}).get('blocked_by_open', 0) > 0:
         return NOT_READY_OWN_BLOCKER
@@ -1655,7 +1658,7 @@ def task_not_startable_reason(project_number: int, item: dict, *, ignore_mark: b
     if parent_kind != FEATURE_KIND:
         return f'親 #{parent_number} の種別が feature ではない（今「{parent_kind or "空"}」）'
     parent_status = parent['fields'].get('Status', '')
-    if parent_status != READY_STATUS:
+    if parent_status not in FEATURE_WORKING_STATUSES:
         return f'親 #{parent_number} の feature が着手可ではない（今「{parent_status or "空"}」）'
     if item['blocked_by_open']:
         blockers = ', '.join(f'#{n}' for n in item['blocked_by_open'])

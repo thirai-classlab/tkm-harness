@@ -2592,6 +2592,26 @@ def _card_checks(t, tmp_dir: str) -> None:
     t('start --approved: [操作] の目印の止めは通すが、親の feature が着手可でなければ断る（門は迂回させない）',
       _start_approved_checks_the_gate)
 
+    def _start_approved_under_working_feature() -> None:
+        for parent_status, code in ((gh_task.IN_PROGRESS_STATUS, 0), (gh_task.REVIEW_STATUS, 0), (gh_task.DONE_STATUS, 2)):
+            record: list = []
+            gh_task.run_gh = make_write_gh({
+                880: dict(title=f'{gh_task.OPERATION_MARK} 配布する', status=gh_task.PENDING_STATUS, kind='task',
+                          parent_number=881, body='本文'),
+                881: dict(title='feature', status=parent_status, kind='feature'),
+            }, record=record, rest_handler=lambda m, p, b: {})
+            try:
+                with redirect_stdout(io.StringIO()):
+                    rc = gh_task.cmd_start(880, '2026-11-26 チャット')
+            except gh_task.GhError as exc:
+                rc = exc.code
+            assert rc == code, f'親の feature が{parent_status}: exit {rc}（期待 {code}）'
+            if code:
+                assert record == [], f'断ったのに書いた: {record}'
+
+    t('start --approved: feature が進行中・レビュー中でも、その子の [操作] を進められる（完了の親は断る。扱いは要判断）',
+      _start_approved_under_working_feature)
+
 
 def _expect_exit(fn, expected_code: int) -> None:
     try:
