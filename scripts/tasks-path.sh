@@ -256,7 +256,7 @@ harness_auto_sync() {
 #      実測 2.1.312: 同じ名前ならシェルの値より settings の値が勝つ。だから 1 は別の名前 HC_* にしてある)
 #   3. Claude Code の外 (端末・CI) のための file 読み: 本体の checkout の settings.local.json → toplevel の settings.local.json
 #      → toplevel の settings.json → ~/.claude/settings.json の env.HIRAI_METHOD_<項目> (python3 が無ければ飛ばす)。
-#      Claude Code の中 (CLAUDECODE=1。hook にも届くことを実測した) は 2 が settings を写しているので飛ばす
+#      Claude Code の中でも 2 が空なら読む (開いたあとに書いた値と、移す前に開いた会話で既定に戻らないため)
 #   4. .claude/mode.yml の tasks:・worktree:・notify: (移行用。4.x の間だけ読む)
 #   5. 既定 (tasks=ledger・worktree=off・notify=off)。未知の値は既定に倒す
 
@@ -322,14 +322,14 @@ for p in sys.stdin.read().split("\n"):
 }
 
 # harness_setting <tasks|worktree|notify> [root] [files] -> 上の優先 1〜4 で決めた値をそのまま stdout (無ければ空。既定と未知の値の扱いは呼ぶ側)。常に rc 0。
-# 3 つ目の引数 files は「この root は会話のリポでない」の印 (worktree-guard が別のリポの対象を決めるとき): 2 を使わず、いつでも 3 を読む。
+# 3 つ目の引数 files は「この root は会話のリポでない」の印 (worktree-guard が別のリポの対象を決めるとき): 2 を使わず 3 を読む。
 harness_setting() {
   local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" up hc env v
   case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; *) return 0 ;; esac
   hc="HC_$up"; env="HIRAI_METHOD_$up"
   v="${!hc:-}"; v="${v%$'\n'}"
   if [ -z "$v" ] && [ "${3:-}" != "files" ]; then v="${!env:-}"; v="${v%$'\n'}"; fi
-  if [ -z "$v" ] && { [ "${3:-}" = "files" ] || [ "${CLAUDECODE:-}" != "1" ]; }; then
+  if [ -z "$v" ]; then   # Claude Code の中でも環境変数が空なら file を読む (会話を開いたあとに書いた値・開く前の env が古い会話に効かせる)
     v="$(_harness_file_setting "$item" "$root")"
   fi
   [ -n "$v" ] || v="$(harness_yml_value "$root" "$item")"
@@ -390,12 +390,32 @@ harness_yml_unset() (
   mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
 )
 
+# _harness_yml_after_set <項目> <値> <root> -> settings へ書いたあとの mode.yml の行の扱い。
+# worktree は行を消す。tasks・notify は消さず値を settings と同じにそろえる (hirai-task の is_coordinator は今も mode.yml だけを読むため。読み先がそろうまで)。
+_harness_yml_after_set() {
+  local item="$1" val="$2" p tmp
+  _harness_yml_candidates "$3" "$item"
+  for p in "$_HY_PKG" "$_HY_TOP"; do
+    [ -n "$p" ] || continue
+    case "$item" in
+      tasks|notify)
+        [ -f "$p" ] && grep -Eq "^[[:space:]]*${item}:" "$p" 2>/dev/null || continue
+        tmp="$p.tmp.$$"
+        awk -v k="$item" -v v="$val" '$0 ~ "^[[:space:]]*" k ":" { print k ": " v; next } { print }' "$p" > "$tmp" 2>/dev/null \
+          && mv -f "$tmp" "$p" 2>/dev/null || rm -f "$tmp" 2>/dev/null ;;
+      *) harness_yml_unset "$p" "$item" || true ;;
+    esac
+  done
+  return 0
+}
+
 # harness_settings_set <tasks|worktree|notify> <値> [root] [local] -> プロジェクト (toplevel) の .claude/settings.json の env.HIRAI_METHOD_<項目> に書く
 # (4 つ目の引数 local なら settings.local.json。自分だけ変えたいとき)。ほかのキーは触らない (python3 -I で読み、indent 2・ensure_ascii False で書き戻す)。
-# 書けたら (local でないとき)、同じ項目の行がプロジェクトの mode.yml (パッケージと toplevel) にあれば消す。JSON が読めない file は上書きしない (rc 1)。
+# 書けたら (local でないとき)、同じ項目の行がプロジェクトの mode.yml (パッケージと toplevel) にあれば、worktree は消し、tasks・notify は値をそろえる
+# (hirai-task が今も mode.yml だけを読むため消さない)。JSON が読めない file は上書きしない (rc 1)。
 # 書いた path を stdout に 1 行。値は項目ごとの許す値だけ (rc 2)。
 harness_settings_set() {
-  local item="${1:-}" val="${2:-}" root top up f pkg
+  local item="${1:-}" val="${2:-}" root top up f
   root="${3:-${CLAUDE_PROJECT_DIR:-$PWD}}"
   case "$item" in
     tasks) up=TASKS; case "$val" in ledger|github-project) ;; *) return 2 ;; esac ;;
@@ -430,35 +450,43 @@ with open(tmp, "w", encoding="utf-8") as fh:
     fh.write("\n")
 os.replace(tmp, p)' "$f" "HIRAI_METHOD_$up" "$val" 2>/dev/null || return 1
   if [ "${4:-}" != "local" ]; then   # settings.local.json は自分だけの上書きなので、チームの mode.yml の行は残す
-    _harness_yml_candidates "$top" "$item"
-    pkg="$_HY_PKG"
-    [ -z "$pkg" ] || harness_yml_unset "$pkg" "$item" || true
-    [ -z "$_HY_TOP" ] || harness_yml_unset "$_HY_TOP" "$item" || true
+    _harness_yml_after_set "$item" "$val" "$root"
   fi
   printf '%s' "$f"
 }
 
 # harness_settings_migrate [root] -> プロジェクトの mode.yml (パッケージと toplevel) の tasks:・worktree:・notify: を、settings.json の env へ移す
-# (/hirai-lite:update)。すでに settings の file (3 の file 読み) に値が在る項目は mode.yml の行だけ消す。許さない値の項目は動かさず 1 行で言う。
+# (/hirai-lite:update)。すでに settings の file (3 の file 読み) に値が在る項目は mode.yml 側だけ直す (worktree は行を消し、tasks・notify は値をそろえる。
+# hirai-task が今も mode.yml を読むため tasks・notify の行は残す)。パッケージの tasks: は移さない (toplevel の env が先に効くため)。許さない値の項目は動かさず 1 行で言う。
 # ホームの mode.yml は動かさない (ほかのリポにも効くため)。出力は項目ごとに 1 行。何も無ければ無出力。rc 0 (書けなかった項目があれば rc 1)。
 harness_settings_migrate() {
   local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" top item v cur path rc=0
   top="$(harness_top "$root")"
   for item in tasks worktree notify; do
-    _harness_yml_candidates "$top" "$item"
+    _harness_yml_candidates "$root" "$item"
     v=""
     [ -z "$_HY_PKG" ] || v="$(harness_yml_file_value "$_HY_PKG" "$item")"
+    if [ "$item" = tasks ] && [ -n "$v" ] && [ "$_HY_PKG" != "$top/.claude/mode.yml" ]; then   # パッケージの tasks: は toplevel の env に上げると先に効いて変わるため移さない
+      printf 'tasks: パッケージの mode.yml (%s) の %s は移しません (toplevel の env へ上げると、パッケージの値より先に効くため。mode.yml のまま)\n' "$_HY_PKG" "$v"
+      continue
+    fi
     [ -n "$v" ] || { [ -z "$_HY_TOP" ] || v="$(harness_yml_file_value "$_HY_TOP" "$item")"; }
     [ -n "$v" ] || continue
     cur="$(_harness_file_setting "$item" "$top" nohome)"
     if [ -n "$cur" ]; then
-      [ -z "$_HY_PKG" ] || harness_yml_unset "$_HY_PKG" "$item" || true
-      [ -z "$_HY_TOP" ] || harness_yml_unset "$_HY_TOP" "$item" || true
-      printf '%s: settings の env に %s が在るため、mode.yml の行だけ消しました\n' "$item" "$cur"
+      [ "$item" != worktree ] && [ "$v" = "$cur" ] && continue   # tasks・notify は行を残すので、そろっていれば 2 度目は何も言わない
+      _harness_yml_after_set "$item" "$cur" "$root"
+      case "$item" in
+        worktree) printf '%s: settings の env に %s が在るため、mode.yml の行だけ消しました\n' "$item" "$cur" ;;
+        *) printf '%s: settings の env に %s が在るため、mode.yml の値をそろえました (hirai-task が mode.yml を読むので行は残します)\n' "$item" "$cur" ;;
+      esac
       continue
     fi
     if path="$(harness_settings_set "$item" "$v" "$top")"; then
-      printf '%s: %s を %s の env へ移しました (mode.yml の行は消しました)\n' "$item" "$v" "$path"
+      case "$item" in
+        worktree) printf '%s: %s を %s の env へ移しました (mode.yml の行は消しました)\n' "$item" "$v" "$path" ;;
+        *) printf '%s: %s を %s の env へ移しました (mode.yml の行は hirai-task のために残しました)\n' "$item" "$v" "$path" ;;
+      esac
     else
       printf '%s: %s を移せませんでした (値が許す形でない・settings.json が JSON として読めない・python3 が無い。mode.yml のまま残しています)\n' "$item" "$v"
       rc=1

@@ -997,17 +997,17 @@ chk hm-env "github-project" "$(fn "$P" HIRAI_METHOD_TASKS=github-project -- harn
 J HIRAI_METHOD_TASKS ledger > "$P/.claude/settings.json"
 chk hm-env-over-file "github-project" "$(fn "$P" HIRAI_METHOD_TASKS=github-project -- harness_tasks_form "$P")"
 chk hm-hc "github-project" "$(fn "$P" HC_TASKS=github-project HIRAI_METHOD_TASKS=ledger -- harness_tasks_form "$P")"
-# Claude Code の中 (CLAUDECODE=1) は file を読まない (環境変数が settings を写している)。環境変数が無ければ mode.yml へ
+# Claude Code の中 (CLAUDECODE=1) でも環境変数が空なら file を読む (移す前に開いた会話が既定に戻らない)。環境変数があればそれが先
 J HIRAI_METHOD_TASKS github-project > "$P/.claude/settings.json"
-chk hm-claudecode "ledger" "$(fn "$P" CLAUDECODE=1 -- harness_tasks_form "$P")"
+chk hm-claudecode "github-project/ledger" "$(fn "$P" CLAUDECODE=1 -- harness_tasks_form "$P")/$(fn "$P" CLAUDECODE=1 HIRAI_METHOD_TASKS=ledger -- harness_tasks_form "$P")"
 chk hm-claudecode-off "github-project" "$(fn "$P" -- harness_tasks_form "$P")"
 # 未知の値は既定に倒す
 printf '{"env":{"HIRAI_METHOD_TASKS":"zzz","HIRAI_METHOD_WORKTREE":"zzz","HIRAI_METHOD_NOTIFY":"zzz"}}\n' > "$P/.claude/settings.json"; rm -f "$P/.claude/mode.yml"
 chk hm-unknown "ledger/off/off" "$(fn "$P" -- harness_tasks_form "$P")/$(fn "$P" -- harness_worktree "$P")/$(fn "$P" -- harness_notify "$P")"
 # python3 が無いとき (file 読みを飛ばす): 落ちず、mode.yml の値を使う
 for c in git sed head awk grep tr cat dirname basename uname mkdir; do ln -sf "$(command -v $c)" "$T/nopy/$c"; done
-J HIRAI_METHOD_TASKS github-project > "$P/.claude/settings.json"; printf 'tasks: ledger\n' > "$P/.claude/mode.yml"
-chk hm-nopython "ledger" "$(run_in "$P" PATH="$T/nopy" /bin/bash -c '. "$0/scripts/tasks-path.sh"; harness_tasks_form "$PWD"' "$S")"
+J HIRAI_METHOD_TASKS ledger > "$P/.claude/settings.json"; printf 'tasks: github-project\n' > "$P/.claude/mode.yml"
+chk hm-nopython "github-project" "$(run_in "$P" PATH="$T/nopy" /bin/bash -c '. "$0/scripts/tasks-path.sh"; harness_tasks_form "$PWD"' "$S")"
 # 本体の checkout の settings.local.json が worktree の自分のものより先
 rm_cfg; git -C "$P" -c user.name=a -c user.email=a@b worktree add -q "$T/W" -b w 2>/dev/null; mkdir -p "$T/W/.claude"
 J HIRAI_METHOD_TASKS github-project > "$P/.claude/settings.local.json"; J HIRAI_METHOD_TASKS ledger > "$T/W/.claude/settings.local.json"
@@ -1042,6 +1042,12 @@ g hm-guard-other-repo-file DENY "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=
 rm -f "$T/Q/.claude/settings.json"; printf 'worktree: block\n' > "$T/Q/.claude/mode.yml"
 g hm-guard-other-repo-yml DENY "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 HIRAI_METHOD_WORKTREE=off
 rm -f "$T/Q/.claude/mode.yml"
+# 本体の checkout の settings.local.json だけにある block は、本体の外の linked worktree を別のリポの会話から編集するときも効く
+rm_cfg; git -C "$P" -c user.name=a -c user.email=a@b worktree add -q "$T/LW" -b lw 2>/dev/null; echo x > "$T/LW/f.txt"
+printf '{"env":{"HIRAI_METHOD_WORKTREE":"block"}}\n' > "$P/.claude/settings.local.json"
+g hm-guard-linked-main DENY "$T/LW/f.txt" CLAUDE_PROJECT_DIR="$T/Q" CLAUDECODE=1
+rm -f "$P/.claude/settings.local.json"
+g hm-guard-linked-main-none ALLOW "$T/LW/f.txt" CLAUDE_PROJECT_DIR="$T/Q" CLAUDECODE=1
 # どこにも block が無いとき python3・git を起こさない (偽の python3・git を PATH の先頭に置き、呼ばれた数を見る)
 for c in python3 git; do printf '#!/bin/bash\necho %s >> "$SPYLOG"\nexec %s "$@"\n' "$c" "$(command -v $c)" > "$T/spy/$c"; chmod +x "$T/spy/$c"; done
 printf '{"env":{"HIRAI_METHOD_WORKTREE":"warn","HIRAI_METHOD_TASKS":"ledger"}}\n' > "$P/.claude/settings.json"; printf 'mode: normal\n' > "$P/.claude/mode.yml"
@@ -1081,16 +1087,37 @@ mo="$(fn "$M" -- harness_settings_migrate "$M")"
 chk hm-migrate-env "github-project/block/1" "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("HIRAI_METHOD_TASKS"),e.get("HIRAI_METHOD_WORKTREE"),e.get("OTHER"),sep="/")' "$M/.claude/settings.json")"
 chk hm-set-keep "Bash(rm -rf:*)/日本語" "$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["permissions"]["deny"][0],d["note"],sep="/")' "$M/.claude/settings.json")"
 grep -q '日本語' "$M/.claude/settings.json" && echo "ok   hm-set-utf8" || { echo "FAIL hm-set-utf8 ensure_ascii が効いて日本語が \\u に変わった"; fail=1; }
-chk hm-unset "mode: loop|notify: weird|auto_sync: off" "$(paste -sd'|' "$M/.claude/mode.yml")"
-case "$mo" in *'notify: weird を移せませんでした'*) echo "ok   hm-migrate-skip" ;; *) echo "FAIL hm-migrate-skip 許さない値を言わない: $mo"; fail=1 ;; esac
+chk hm-unset "mode: loop|tasks: github-project|notify: weird|auto_sync: off" "$(paste -sd'|' "$M/.claude/mode.yml")"
 chk hm-yml-only "notify" "$(fn "$M" -- harness_setting_from_yml_only "$M")"
+# tasks・notify の行は hirai-task が読むので消さない (worktree だけ消える)。2 度目は tasks について何も言わない
+chk hm-migrate-keep-tasks "1/0" "$(grep -c '^tasks:' "$M/.claude/mode.yml")/$(grep -c '^worktree:' "$M/.claude/mode.yml")"
+chk hm-migrate-idempotent "0" "$(fn "$M" -- harness_settings_migrate "$M" | grep -c '^tasks:')"
+# env に値が在るとき (2 度目以降・ホームの settings は数えない): 行の値をそろえる / ホームの値では行を消さない
+printf 'tasks: ledger\nworktree: warn\n' > "$M/.claude/mode.yml"
+fn "$M" -- harness_settings_migrate "$M" >/dev/null
+chk hm-migrate-sync "tasks: github-project/0" "$(grep '^tasks:' "$M/.claude/mode.yml")/$(grep -c '^worktree:' "$M/.claude/mode.yml")"
+printf 'worktree: warn\n' > "$M/.claude/mode.yml"; J HIRAI_METHOD_WORKTREE block > "$T/home/.claude/settings.json"; rm -f "$M/.claude/settings.json"
+fn "$M" -- harness_settings_migrate "$M" >/dev/null
+chk hm-migrate-nohome "warn" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["HIRAI_METHOD_WORKTREE"])' "$M/.claude/settings.json" 2>/dev/null)"
+rm -f "$T/home/.claude/settings.json"
+# パッケージ (自分の .claude を持つサブディレクトリ) の tasks: は toplevel の env へ上げない
+K="$T/K"; git init -q "$K"; mkdir -p "$K/.claude" "$K/apps/api/.claude"
+printf 'tasks: ledger\n' > "$K/.claude/mode.yml"; printf 'tasks: github-project\n' > "$K/apps/api/.claude/mode.yml"
+fn "$K/apps/api" -- harness_settings_migrate "$K/apps/api" >/dev/null
+chk hm-migrate-package "github-project/ledger" "$(fn "$K/apps/api" -- harness_tasks_form "$K/apps/api")/$(fn "$K" -- harness_tasks_form "$K")"
+# 設定を書いたあとも tasks: は mode.yml と env が同じ値になる
+chk hm-set-sync "ledger" "$(fn "$K/apps/api" -- harness_settings_set tasks ledger "$K/apps/api" >/dev/null 2>&1; fn "$K/apps/api" -- harness_yml_file_value "$K/apps/api/.claude/mode.yml" tasks)"
+# orca-context は settings の env だけの worktree: warn を言う
+printf '{"env":{"HIRAI_METHOD_WORKTREE":"warn"}}\n' > "$M/.claude/settings.json"; rm -f "$M/.claude/mode.yml"
+chk hm-orca-context "1" "$(run_in "$M" CLAUDE_PROJECT_DIR="$M" bash "$S/scripts/orca-context.sh" 2>&1 | grep -c 'warn')"
+case "$mo" in *'notify: weird を移せませんでした'*) echo "ok   hm-migrate-skip" ;; *) echo "FAIL hm-migrate-skip 許さない値を言わない: $mo"; fail=1 ;; esac
 # 読めない JSON は上書きしない・local は settings.local.json に書き mode.yml の行は残す
 printf '{ broken\n' > "$T/M/.claude/settings.local.json"; cp "$M/.claude/settings.local.json" "$T/broken.orig"
 fn "$M" -- harness_settings_set notify orca "$M" local >/dev/null 2>&1; rc=$?
 { [ "$rc" -eq 1 ] && cmp -s "$M/.claude/settings.local.json" "$T/broken.orig"; } && echo "ok   hm-set-broken" || { echo "FAIL hm-set-broken 読めない JSON を上書きした rc=$rc"; fail=1; }
 rm -f "$M/.claude/settings.local.json"; printf 'notify: off\n' > "$M/.claude/mode.yml"
 fn "$M" -- harness_settings_set notify orca "$M" local >/dev/null 2>&1
-chk hm-set-local "orca/1" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["HIRAI_METHOD_NOTIFY"])' "$M/.claude/settings.local.json")/$(grep -c '^notify:' "$M/.claude/mode.yml")"
+chk hm-set-local "orca/notify: off" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["HIRAI_METHOD_NOTIFY"])' "$M/.claude/settings.local.json")/$(grep '^notify:' "$M/.claude/mode.yml")"
 chk hm-set-bad "2" "$(fn "$M" -- harness_settings_set worktree zzz "$M" >/dev/null 2>&1; echo $?)"
 
 # --- 雛形 ---
@@ -1234,7 +1261,12 @@ X
       cat <<'X'
 hm-env|scripts/tasks-path.sh|s/if \[ -z "\$v" \] \&\& \[ "\${3:-}" != "files" \]; then/if false; then/
 hm-file|scripts/tasks-path.sh|s/^    v="\$(_harness_file_setting "\$item" "\$root")"$/    v=""/
-hm-claudecode|scripts/tasks-path.sh|s/\[ "\${CLAUDECODE:-}" != "1" \]/true/
+hm-claudecode|scripts/tasks-path.sh|s/^  if \[ -z "\$v" \]; then   # Claude Code の中でも.*$/  if [ -z "$v" ] \&\& [ "${CLAUDECODE:-}" != "1" ]; then/
+hm-nopython|scripts/tasks-path.sh|s/^  command -v python3 >\/dev\/null 2>\&1 || return 0$/  command -v python3 >\/dev\/null 2>\&1 || { printf zzz; return 0; }/
+hm-migrate-keep-tasks|scripts/tasks-path.sh|s/^      tasks|notify)$/      zzz)/
+hm-migrate-package|scripts/tasks-path.sh|s/if \[ "\$item" = tasks \] \&\& \[ -n "\$v" \] \&\& .*; then/if false; then/
+hm-guard-linked-main|hooks/worktree-guard.sh|s/^      linked_main_blocks "\$d" \&\& return 0$/      :/
+hm-orca-context|scripts/orca-context.sh|s/^if \[ -f "\$here\/tasks-path.sh" \]/if false \&\& [ -f "$here\/tasks-path.sh" ]/
 hm-main-local|scripts/tasks-path.sh|s/^  \[ "\${common##\*\/}" = ".git" \] \&\& main=.*$/  main=""/
 hm-file-home|scripts/tasks-path.sh|s/^  \[ "\${2:-}" = "nohome" \] || \[ -z "\${HOME:-}" \] || printf .*$/  :/
 hm-hc|scripts/tasks-path.sh|s/^  v="\${!hc:-}".*$/  v=""/
@@ -1694,7 +1726,7 @@ EOF6
     mout="$(cd "$mrepo" && env HOME="$mhome" CLAUDE_PLUGIN_ROOT="$ROOT" /bin/bash -c "$mblk" 2>&1)"
     [ "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("HIRAI_METHOD_TASKS"),e.get("HIRAI_METHOD_WORKTREE"),e.get("HIRAI_METHOD_NOTIFY"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = "github-project block orca" ] \
       || mbad="$mbad [2b] mode.yml の 3 項目を settings.json の env へ移さない: $mout"
-    [ "$(cat "$mrepo/.claude/mode.yml")" = "mode: loop" ] || mbad="$mbad [2b] 移したあとの mode.yml が mode: だけでない: $(paste -sd'|' "$mrepo/.claude/mode.yml")"
+    [ "$(paste -sd'|' "$mrepo/.claude/mode.yml")" = "mode: loop|tasks: github-project|notify: orca" ] || mbad="$mbad [2b] 移したあとの mode.yml が mode: だけでない: $(paste -sd'|' "$mrepo/.claude/mode.yml")"
     printf '%s' "$mout" | grep -qF 'tasks: github-project / worktree: block / notify: orca' || mbad="$mbad [2b] 移したあとの 1 行 (tasks・worktree・notify の実測値) が出ない: $mout"
     # 別のリポの控えだけのとき (このリポの slug の控えが無い) は書かない
     rm -f "$mrepo/.claude/mode.yml" "$mrepo/.claude/settings.json" "$mhome/.claude/plugins/data/hirai-lite-v2-hirai-lite/tasks-acme-widgets.json"

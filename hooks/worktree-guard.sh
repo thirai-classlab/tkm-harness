@@ -121,6 +121,17 @@ may_block_dir() {
   may_block "$1/.claude/mode.yml" || may_block_json "$1/.claude/settings.json" || may_block_json "$1/.claude/settings.local.json"
 }
 
+# linked_main_blocks <dir> -> <dir> が linked worktree の root ( .git が「gitdir: <本体>/.git/worktrees/<名前>」の file) なら、本体の checkout の settings.local.json に block の字があるか
+# (値を決める harness_worktree は本体の settings.local.json を最初に読む。外部コマンドを起こさず read だけで引く)
+linked_main_blocks() {
+  local l main
+  [ -f "$1/.git" ] && [ -r "$1/.git" ] || return 1
+  IFS= read -r l < "$1/.git" || [ -n "$l" ] || return 1
+  case "$l" in "gitdir: "*/.git/worktrees/*) ;; *) return 1 ;; esac
+  main="${l#gitdir: }"; main="${main%/.git/worktrees/*}"
+  may_block_json "$main/.claude/settings.local.json"
+}
+
 # could_block <dir> ... -> rc 1 なら、環境変数・ホーム・<dir>（物理 path）とその祖先の mode.yml・settings.json・settings.local.json のどこにも block が無い
 could_block() {
   local d
@@ -130,6 +141,7 @@ could_block() {
   for d in "$@"; do
     while :; do
       may_block_dir "$d" && return 0
+      linked_main_blocks "$d" && return 0
       case "$d" in */*) d="${d%/*}" ;; *) break ;; esac
     done
   done
