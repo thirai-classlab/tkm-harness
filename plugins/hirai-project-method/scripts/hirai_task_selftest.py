@@ -2630,7 +2630,7 @@ def _feature_checks(t, tmp_dir: str) -> None:
 
     def _start_feature_ready() -> None:
         record: list = []
-        body = '本文\n<!-- rmp-task\nreads: docs/a.md,docs/b.md\n-->'
+        body = '本文\n<!-- rmp-task: id=F1 reads=docs/a.md,docs/b.md -->'
         gh_task.run_gh = make_write_gh(
             {701: dict(title='feature 行', status=gh_task.READY_STATUS, kind='feature', body=body)}, record=record,
         )
@@ -2638,7 +2638,7 @@ def _feature_checks(t, tmp_dir: str) -> None:
         with redirect_stdout(out):
             rc = gh_task.cmd_start(701, None)
         assert rc == 0 and record == [('F_Status', 'O_Status_進行中')], (rc, record)
-        assert 'docs/a.md' in out.getvalue() and 'docs/b.md' in out.getvalue(), f'feature の読む束が出ない: {out.getvalue()!r}'
+        assert '読む束（2 件' in out.getvalue() and '1. docs/a.md' in out.getvalue(), f'feature の読む束が出ない: {out.getvalue()!r}'
 
     t('HM-R4.1 start: 着手可の feature は進行中に進み、目印の reads= を読む束として出す', _start_feature_ready)
 
