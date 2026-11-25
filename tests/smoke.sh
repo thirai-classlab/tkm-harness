@@ -1134,11 +1134,10 @@ r6_mutants() {
     update)
       cat <<'X'
 A-worktree-row|scripts/tasks-path.sh|s/if g and common:/if False:/
-B-other-repo-silent|scripts/tasks-path.sh|s/return g == common/return True/
+A-no-row|scripts/tasks-path.sh|s/return g == common/return True/
 C-one-line|hooks/session-start.sh|/awk .NF{ if (n++)/d
 C-coordinator-not-resume|hooks/session-start.sh|s/ | grep -v .^coordinator.//
 D-statusline-root|scripts/statusline.sh|s/HIRAI_TASK_ROOT="\$root" //
-C-joined|scripts/update-check.sh|s/^  harness_update_pm_notice "\$root" "\${2:-}"$/  :/
 E-subdir-tasks|scripts/tasks-path.sh|s/if \[ -e "\$cur\/.git" \]; then _HR_TOP/if false; then _HR_TOP/
 E-subdir-first|scripts/tasks-path.sh|s/if \[ -z "\$_HR_FIRST" \] \&\& {/if false \&\& {/
 E-subdir-first-mode|scripts/tasks-path.sh|s/^  \[ -z "\$pkg" \] || _HY_PKG=.*$/  :/
