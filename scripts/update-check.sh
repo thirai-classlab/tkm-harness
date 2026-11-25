@@ -198,7 +198,7 @@ harness_update_notice() (
   local root="${1:-${CLAUDE_PLUGIN_ROOT:-$PWD}}" cur new
   if cur="$(harness_local_version "$root")" && new="$(harness_cached_version "$root")" \
      && harness_semver_gt "$new" "$cur"; then
-    printf '[harness] 更新あり v%s → v%s (/hirai-lite:update で適用)\n' "$cur" "$new"
+    printf '[harness] 更新あり v%s → v%s (/tkm-harness:update で適用)\n' "$cur" "$new"
   fi
   return 0
 )

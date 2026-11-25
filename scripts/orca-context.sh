@@ -84,7 +84,7 @@ yml_get() {
   printf '%s' "$v"
 }
 
-# 値は scripts/tasks-path.sh の harness_worktree・harness_notify（HC_* > HIRAI_METHOD_* > settings の file > mode.yml > off）。
+# 値は scripts/tasks-path.sh の harness_worktree・harness_notify（HC_* > TKM_HARNESS_* > settings の file > mode.yml > off）。
 # 道具が無いとき（古い複製）だけ従来の mode.yml 読みに落ちる。
 here="$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && builtin pwd -P)"
 if [ -f "$here/tasks-path.sh" ] && . "$here/tasks-path.sh" 2>/dev/null && command -v harness_worktree >/dev/null 2>&1; then

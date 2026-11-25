@@ -7,7 +7,7 @@ argument-hint: "[progress [json] | text [wave|feature|task <n>] | html | refresh
 
 GitHub Project のやること（wave → feature → task）を `hirai-task board` で読み、**どこで何件止まっているか**を出す。正本は GitHub の issue と Project。着手できるかの最終判断は `hirai-task ready` が正で、ここは全体を見るための表示。
 
-`command -v hirai-task` が無ければ「hirai-task が見つからない（PATH に入っていない）」と報告して終了する。
+`command -v hirai-task` が無ければ「hirai-task が見つからない（プラグインが壊れている）」と報告して終了する。
 
 ## 引数で分ける
 
@@ -30,12 +30,12 @@ GitHub Project のやること（wave → feature → task）を `hirai-task boa
 | exit code | 意味 | すること |
 |---|---|---|
 | 0 | 出せた | 上の表のとおり出す |
-| 1 | 取得に失敗した（gh の失敗・認証・レート制限・打ち切り）、またはリポに Project が紐づいていない（標準エラーが `Project: 無し`） | `Project: 無し` なら、利用者が `/hirai-project-method:project-setup` を打てば立ち上げられることを 1 行で伝える。それ以外は標準エラーの末尾 5 行を出し、`refresh` で取り直せることを 1 行添える。どちらも「0 件」とは言わない |
+| 1 | 取得に失敗した（gh の失敗・認証・レート制限・打ち切り）、またはリポに Project が紐づいていない（標準エラーが `Project: 無し`） | `Project: 無し` なら、利用者が `/tkm-harness:project-setup` を打てば立ち上げられることを 1 行で伝える。それ以外は標準エラーの末尾 5 行を出し、`refresh` で取り直せることを 1 行添える。どちらも「0 件」とは言わない |
 | 2 | 呼び方の誤り、または紐づいた Project が 2 件以上で決まらない | 標準エラーをそのまま出す |
 
 ## スマートフォンから聞かれたとき
 
-Claude アプリ（Remote Control）からは、文で届くことが多い。「どこで止まっている?」「何件待ち?」なら引数なしと同じにし、「進捗を見せて」「進捗は?」なら skill `github-project` の「進みと割り振りの表」（`hirai-task load`）を使う。`--summary` は 1 行 40 字前後・表は 2〜3 列に収めてあるので、そのまま出す。HTML のパスはスマートフォンでは開けないので、最後の 1 行は `詳しい版は PC で /hirai-project-method:board html` に替える（手元の端末から聞かれたか分からないときは、パスの行のままでよい）。
+Claude アプリ（Remote Control）からは、文で届くことが多い。「どこで止まっている?」「何件待ち?」なら引数なしと同じにし、「進捗を見せて」「進捗は?」なら skill `github-project` の「進みと割り振りの表」（`hirai-task load`）を使う。`--summary` は 1 行 40 字前後・表は 2〜3 列に収めてあるので、そのまま出す。HTML のパスはスマートフォンでは開けないので、最後の 1 行は `詳しい版は PC で /tkm-harness:board html` に替える（手元の端末から聞かれたか分からないときは、パスの行のままでよい）。
 
 ## 判定できる終了条件
 

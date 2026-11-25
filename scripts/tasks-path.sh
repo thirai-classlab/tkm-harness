@@ -2,7 +2,7 @@
 # 台帳 / 設計 draft / 事故記録 / 進め方 / ルールの パス解決を 1 箇所に集める共通ライブラリ。source して使う。
 #
 # **プロジェクトの書類は常に docs/ に置く** (v1.9.0)。.claude/ 側を見続けるのは、v1.7.0 までに
-# 導入した環境が /hirai-lite:update で docs/ へ移行するまでの間、および移行しない選択をした環境で
+# 導入した環境が /tkm-harness:update で docs/ へ移行するまでの間、および移行しない選択をした環境で
 # 台帳を見失わないため。解決順そのものは v1.8.0 から 1 バイトも変えていない。
 #
 # 共通の解決順: env 上書き > 既存パス (docs 側 → .claude 側) > docs/ の有無で決める
@@ -247,15 +247,15 @@ harness_auto_sync() {
 }
 
 # --- 機能の切り替え (tasks・worktree・notify) ---------------------------------
-# 3 項目は各リポの .claude/settings.json の env (HIRAI_METHOD_TASKS・HIRAI_METHOD_WORKTREE・HIRAI_METHOD_NOTIFY) で宣言する。
+# 3 項目は各リポの .claude/settings.json の env (TKM_HARNESS_TASKS・TKM_HARNESS_WORKTREE・TKM_HARNESS_NOTIFY) で宣言する。
 # プラグインがプロジェクトの settings.json から読めるのは env だけ (https://code.claude.com/docs/en/settings-reference.md#env)。
 # tasks は Project の有無・remote・gh の成否からは見分けない (見分けに失敗して尋ねて止まる道を無くすため。GraphQL を打つのは github-project のときだけ)。
 # 優先は上から:
 #   1. シェルの HC_TASKS・HC_WORKTREE・HC_NOTIFY (一時の上書き。コーディネーターは HC_NOTIFY=off claude で開く)
-#   2. 環境変数 HIRAI_METHOD_<項目> (Claude Code の中では settings.local.json > settings.json の env が重なって届く。
+#   2. 環境変数 TKM_HARNESS_<項目> (Claude Code の中では settings.local.json > settings.json の env が重なって届く。
 #      実測 2.1.312: 同じ名前ならシェルの値より settings の値が勝つ。だから 1 は別の名前 HC_* にしてある)
 #   3. Claude Code の外 (端末・CI) のための file 読み: 本体の checkout の settings.local.json → toplevel の settings.local.json
-#      → toplevel の settings.json → ~/.claude/settings.json の env.HIRAI_METHOD_<項目> (python3 が無ければ飛ばす)。
+#      → toplevel の settings.json → ~/.claude/settings.json の env.TKM_HARNESS_<項目> (python3 が無ければ飛ばす)。
 #      Claude Code の中でも 2 が空なら読む (開いたあとに書いた値と、移す前に開いた会話で既定に戻らないため)
 #   4. .claude/mode.yml の tasks:・worktree:・notify: (移行用。4.x の間だけ読む)
 #   5. 既定 (tasks=ledger・worktree=off・notify=off)。未知の値は既定に倒す
@@ -297,7 +297,7 @@ _harness_setting_files() {
   [ "${2:-}" = "nohome" ] || [ -z "${HOME:-}" ] || printf '%s\n' "$HOME/.claude/settings.json"
 }
 
-# _harness_file_setting <項目> <root> [nohome] -> 3 の値 (settings の file の env.HIRAI_METHOD_<項目>。最初に在った file の値)。無ければ空。
+# _harness_file_setting <項目> <root> [nohome] -> 3 の値 (settings の file の env.TKM_HARNESS_<項目>。最初に在った file の値)。無ければ空。
 # python3 が無ければ空。値は文字列だけ読む。
 _harness_file_setting() {
   local up files="" f
@@ -318,7 +318,7 @@ for p in sys.stdin.read().split("\n"):
         continue
     if isinstance(v, str) and v.strip():
         print(v.strip(), end="")
-        break' "HIRAI_METHOD_$up" 2>/dev/null
+        break' "TKM_HARNESS_$up" 2>/dev/null
 }
 
 # harness_setting <tasks|worktree|notify> [root] [files] -> 上の優先 1〜4 で決めた値をそのまま stdout (無ければ空。既定と未知の値の扱いは呼ぶ側)。常に rc 0。
@@ -326,7 +326,7 @@ for p in sys.stdin.read().split("\n"):
 harness_setting() {
   local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" up hc env v
   case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; *) return 0 ;; esac
-  hc="HC_$up"; env="HIRAI_METHOD_$up"
+  hc="HC_$up"; env="TKM_HARNESS_$up"
   v="${!hc:-}"; v="${v%$'\n'}"
   if [ -z "$v" ] && [ "${3:-}" != "files" ]; then v="${!env:-}"; v="${v%$'\n'}"; fi
   if [ -z "$v" ]; then   # Claude Code の中でも環境変数が空なら file を読む (会話を開いたあとに書いた値・開く前の env が古い会話に効かせる)
@@ -343,7 +343,7 @@ harness_setting_from_yml_only() {
   local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" item up hc env out=""
   for item in tasks worktree notify; do
     case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; esac
-    hc="HC_$up"; env="HIRAI_METHOD_$up"
+    hc="HC_$up"; env="TKM_HARNESS_$up"
     [ -z "${!hc:-}" ] && [ -z "${!env:-}" ] || continue
     [ -z "$(_harness_file_setting "$item" "$root")" ] || continue
     [ -z "$(harness_yml_value "$root" "$item")" ] || out="${out:+$out }$item"
@@ -409,7 +409,7 @@ _harness_yml_after_set() {
   return 0
 }
 
-# harness_settings_set <tasks|worktree|notify> <値> [root] [local] -> プロジェクト (toplevel) の .claude/settings.json の env.HIRAI_METHOD_<項目> に書く
+# harness_settings_set <tasks|worktree|notify> <値> [root] [local] -> プロジェクト (toplevel) の .claude/settings.json の env.TKM_HARNESS_<項目> に書く
 # (4 つ目の引数 local なら settings.local.json。自分だけ変えたいとき)。ほかのキーは触らない (python3 -I で読み、indent 2・ensure_ascii False で書き戻す)。
 # 書けたら (local でないとき)、同じ項目の行がプロジェクトの mode.yml (パッケージと toplevel) にあれば、worktree は消し、tasks・notify は値をそろえる
 # (hirai-task が今も mode.yml だけを読むため消さない)。JSON が読めない file は上書きしない (rc 1)。
@@ -448,7 +448,7 @@ tmp = p + ".tmp." + str(os.getpid())
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(d, fh, indent=2, ensure_ascii=False)
     fh.write("\n")
-os.replace(tmp, p)' "$f" "HIRAI_METHOD_$up" "$val" 2>/dev/null || return 1
+os.replace(tmp, p)' "$f" "TKM_HARNESS_$up" "$val" 2>/dev/null || return 1
   if [ "${4:-}" != "local" ]; then   # settings.local.json は自分だけの上書きなので、チームの mode.yml の行は残す
     _harness_yml_after_set "$item" "$val" "$root"
   fi
@@ -456,7 +456,7 @@ os.replace(tmp, p)' "$f" "HIRAI_METHOD_$up" "$val" 2>/dev/null || return 1
 }
 
 # harness_settings_migrate [root] -> プロジェクトの mode.yml (パッケージと toplevel) の tasks:・worktree:・notify: を、settings.json の env へ移す
-# (/hirai-lite:update)。すでに settings の file (3 の file 読み) に値が在る項目は mode.yml 側だけ直す (worktree は行を消し、tasks・notify は値をそろえる。
+# (/tkm-harness:update)。すでに settings の file (3 の file 読み) に値が在る項目は mode.yml 側だけ直す (worktree は行を消し、tasks・notify は値をそろえる。
 # hirai-task が今も mode.yml を読むため tasks・notify の行は残す)。パッケージの tasks: は移さない (toplevel の env が先に効くため)。許さない値の項目は動かさず 1 行で言う。
 # ホームの mode.yml は動かさない (ほかのリポにも効くため)。出力は項目ごとに 1 行。何も無ければ無出力。rc 0 (書けなかった項目があれば rc 1)。
 harness_settings_migrate() {
@@ -506,8 +506,8 @@ harness_tasks_slug() {
   return 0
 }
 
-# harness_tasks_migrate [root] -> プロジェクトの settings.json の env に HIRAI_METHOD_TASKS (と mode.yml の tasks:) が無いときだけ、1 度だけ書き込む
-# (/hirai-lite:update の手順 2b)。プロジェクト側にだけ書く (ホームには書かない。ホームの値は他のリポにも効くため)。
+# harness_tasks_migrate [root] -> プロジェクトの settings.json の env に TKM_HARNESS_TASKS (と mode.yml の tasks:) が無いときだけ、1 度だけ書き込む
+# (/tkm-harness:update の手順 2b)。プロジェクト側にだけ書く (ホームには書かない。ホームの値は他のリポにも効くため)。
 # 2.x (hirai-lite-v2) の痕跡は、このリポの slug の控え (~/.claude/plugins/data/hirai-lite-v2-hirai-lite/
 # tasks-<slug>.json) だけで見る (機械全体で見ない。別のリポの控えで書かない)。
 #   控えの form が ghp                 -> github-project を書く
@@ -528,7 +528,7 @@ harness_tasks_migrate() {
   cache=""
   [ -z "$slug" ] || cache="$HOME/.claude/plugins/data/hirai-lite-v2-hirai-lite/tasks-${slug}.json"
   if [ -z "$cache" ] || [ ! -f "$cache" ]; then
-    printf 'tasks: 書きませんでした (2.x の Project の控えが無い。tasks が無ければ ledger で動く。GitHub Project にするなら /hirai-lite:config の項目 8)\n'
+    printf 'tasks: 書きませんでした (2.x の Project の控えが無い。tasks が無ければ ledger で動く。GitHub Project にするなら /tkm-harness:config の項目 8)\n'
     return 0
   fi
   if grep -Eq '"form"[[:space:]]*:[[:space:]]*"ghp"' "$cache" 2>/dev/null; then

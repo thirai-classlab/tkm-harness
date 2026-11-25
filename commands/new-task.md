@@ -11,7 +11,7 @@ description: 承認済 draft から docs/tasks/task-<id>-<slug>.md を作り、d
 タスク管理の形は、リポの `.claude/mode.yml` の `tasks:`（`ledger` か `github-project`。項目が無ければ `ledger`）が決める。Project の有無・remote・gh の結果からは見分けない（GitHub を叩かず、尋ねて止まらない）。`ledger` が台帳の形（このファイル本来の手順）、`github-project` が GitHub Project の形。
 
 ```bash
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 [ -f "$P/scripts/tasks-path.sh" ] || { echo "プラグイン本体が見つからない"; exit 2; }
 . "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"; echo
 HT="$(harness_pm_task_bin 2>/dev/null || true)"; echo "hirai-task: ${HT:-なし}"
@@ -19,11 +19,11 @@ HT="$(harness_pm_task_bin 2>/dev/null || true)"; echo "hirai-task: ${HT:-なし}
 
 exit code が 2 (プラグイン本体が見つからない) なら、その場で報告して停止する (台帳の手順にもフォールバックしない)。1 行目の出力が `github-project` なら、下の「## GitHub Project の形の場合」だけを行い、以降の台帳の手順は行わない (台帳は作らず、書かない)。`ledger` なら、この節は無視して下の「## 台帳の解決」から続ける。
 
-**`hirai-task` は PATH に頼らず絶対 path で呼ぶ。** 上の 2 行目の `hirai-task: <絶対 path>` を `$HT` として、以降の `hirai-task <サブコマンド>` は `"$HT" <サブコマンド>` と読み替える（足すプラグインの `bin/` が PATH に入るのは Bash ツールだけで、hook と画面下には入らない。同じ関数でそろえてある）。`なし` なら、`github-project` の形では「hirai-task が見つからない。足すプラグインを入れる: `/plugin install hirai-project-method@hirai-lite`」と 1 行で報告して終了する。
+**`hirai-task` は PATH に頼らず絶対 path で呼ぶ。** 上の 2 行目の `hirai-task: <絶対 path>` を `$HT` として、以降の `hirai-task <サブコマンド>` は `"$HT" <サブコマンド>` と読み替える（プラグインの `bin/` が PATH に入るのは Bash ツールだけで、hook と画面下には入らない。同じ関数でそろえてある）。`なし` なら、`github-project` の形では「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と 1 行で報告して終了する。
 
 ## GitHub Project の形の場合
 
-台帳は読まない・作らない・書かない。`$HT` が `なし` なら「hirai-task が見つからない。足すプラグインを入れる: `/plugin install hirai-project-method@hirai-lite`」と 1 行で報告して終了する（台帳の手順にもフォールバックしない）。題名が無ければ聞き返して停止する。
+台帳は読まない・作らない・書かない。`$HT` が `なし` なら「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と 1 行で報告して終了する（台帳の手順にもフォールバックしない）。題名が無ければ聞き返して停止する。
 
 `hirai-task new` は issue を作るだけで、親の決め方や依存の張り方は決めない。決めてから `new` を呼ぶ。判定はここで、書き込みは `hirai-task` で行う。
 
@@ -74,7 +74,7 @@ task と feature は親が必須。親は feature（task の場合）か wave（
 台帳パスは `$HARNESS_TASKS_FILE` > `docs/tasks/list.md` > (旧レイアウト) `.claude/tasks/list.md` の順に解決する。**新しく作るときは常に `harness_root` の下の `docs/tasks/list.md`**（`apps/api` など自分の `.claude/` を持たないサブディレクトリで打っても、toplevel の下に 1 本だけ作る。出力の「作る場所」）。
 
 ```bash
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 [ -f "$P/scripts/tasks-path.sh" ] || { echo "プラグイン本体が見つからない"; exit 2; }
 . "$P/scripts/tasks-path.sh"; LIST="$(harness_tasks_file "$PWD")"; echo "台帳 ${LIST:-なし} (無いとき作る場所: $(harness_root "$PWD")/docs/tasks/list.md)"
 ```
@@ -91,7 +91,7 @@ printf '# タスク台帳\n\nstatus は 未着手 / 進行中 / 完了 の 3 種
 
 ## 事前チェック (どれか 1 つでも失敗したら作成しない)
 
-1. `grep -E '^approved_at: (20|PR #)' docs/draft/<slug>.md` が exit 0。失敗 → 「draft が未承認。/hirai-lite:new-draft <slug> で承認を得る」と報告して終了。
+1. `grep -E '^approved_at: (20|PR #)' docs/draft/<slug>.md` が exit 0。失敗 → 「draft が未承認。/tkm-harness:new-draft <slug> で承認を得る」と報告して終了。
 2. `ls docs/tasks/task-<id>-*.md` が exit 1 (同 id が未使用)。exit 0 なら「id <id> は既に使われている」と既存ファイル名を出して終了。
 3. `grep -c '^| <id> ' docs/tasks/list.md` が 0。1 以上なら既存行を表示して終了。
 
@@ -142,4 +142,4 @@ hot fix で draft を省く場合のみ `--no-draft` を付ける。その場合
 - `grep -c '^| <id> ' docs/tasks/list.md` が 1。
 - `grep -E '適切に|必要に応じて|可能な限り|十分に|慎重に' docs/tasks/task-<id>-<slug>.md` が 0 件。
 
-3 つ成立したら `task-<id> 追加。着手は /hirai-lite:start-task <id>` と 1 行で報告する。
+3 つ成立したら `task-<id> 追加。着手は /tkm-harness:start-task <id>` と 1 行で報告する。

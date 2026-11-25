@@ -4,7 +4,7 @@ description: セッション状態を .claude/state/latest.md に保存 (/state 
 
 # /state save | /state resume [loop]
 
-第 1 引数で分岐する。`save` なら「保存」節、`resume` なら「再開」節を実行する。引数が空、または `save` / `resume` のどちらでもない場合は `使い方: /hirai-lite:state save | /hirai-lite:state resume [loop]` と 1 行返して停止する。
+第 1 引数で分岐する。`save` なら「保存」節、`resume` なら「再開」節を実行する。引数が空、または `save` / `resume` のどちらでもない場合は `使い方: /tkm-harness:state save | /tkm-harness:state resume [loop]` と 1 行返して停止する。
 
 ---
 
@@ -48,7 +48,7 @@ context 使用率 50% 到達時と、作業を中断する時に実行する。
 
 ## 次回に効くものを置く
 
-state ファイルは**次のセッションの最初の 1 手**を渡すもので、会話が終われば役目を終える。ここでやるのは別の仕事 — このセッションで確定して**次回以降も効くもの**を、次回も読み込まれる場所へ移す。層の選び方に迷ったら `/hirai-lite:context-engineering` を読む（どこに置くと・いつ読まれるかの公式の根拠が入っている）。
+state ファイルは**次のセッションの最初の 1 手**を渡すもので、会話が終われば役目を終える。ここでやるのは別の仕事 — このセッションで確定して**次回以降も効くもの**を、次回も読み込まれる場所へ移す。層の選び方に迷ったら `/tkm-harness:context-engineering` を読む（どこに置くと・いつ読まれるかの公式の根拠が入っている）。
 
 7. 次の 3 種を列挙する。**意思決定**（採った案と、採らなかった案とその理由）/ **教訓**（失敗、詰まった点、うまくいった手順）/ **取り決め**（会話の中で決まったルール的なもの）。実際に決まった / 実際に詰まったものだけを書き、推測を混ぜない。
 8. **0 件なら「次回に効くものはありません」と 1 行返してこの節を終える。** 無理に記録を作らない（既定は入れない）。ここで作った 1 件が来年も毎セッション載り続ける。
@@ -56,7 +56,7 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
 10. **自動で書いてよいもの**（承認不要。**追記のみ**で、既存行の書き換え・削除はしない）。
     - 事故 1 回目 / 背景・経緯 / 詳細 → 事故記録（`tasks-path.sh` の `harness_incidents_file "$PWD"` が返すパス。通常は `docs/rules-reference/incidents.md`）か `docs/rules-reference/` の該当ファイル
     - 意思決定の記録 → `docs/` の該当ファイル（技術判断なら `docs/architecture.md`）
-11. **ルールの追加（T0 / T1 / `settings.json`）は自分で書かない。** 本文に承認カード（**決めること・推奨 / 目的 / 位置 / 承認すると / しないと / 注意 / 詳しく**）をこの語で示し（型と記入例、選ぶ UI が使えないときの平文の出し方は `docs/rules-reference/approval-template.md`）、そのうえで `AskUserQuestion`（`承認する` / `承認しない` / `修正して提案し直す`）を出す。カードは本文に書き、選択肢の説明文に詰め込まない。**承認されたものだけ** `/hirai-lite:add-rule "<ルール案 1 行>"` に渡す（分類 → 重複検査 → 層決定 → 記述最適化 → 予算 → 配置とロード検証の 6 工程）。承認が得られなければ 1 バイトも書かない（`_meta.md` 条 8）。ここで自前の追記手順を作らない。実際に出す文面の例:
+11. **ルールの追加（T0 / T1 / `settings.json`）は自分で書かない。** 本文に承認カード（**決めること・推奨 / 目的 / 位置 / 承認すると / しないと / 注意 / 詳しく**）をこの語で示し（型と記入例、選ぶ UI が使えないときの平文の出し方は `docs/rules-reference/approval-template.md`）、そのうえで `AskUserQuestion`（`承認する` / `承認しない` / `修正して提案し直す`）を出す。カードは本文に書き、選択肢の説明文に詰め込まない。**承認されたものだけ** `/tkm-harness:add-rule "<ルール案 1 行>"` に渡す（分類 → 重複検査 → 層決定 → 記述最適化 → 予算 → 配置とロード検証の 6 工程）。承認が得られなければ 1 バイトも書かない（`_meta.md` 条 8）。ここで自前の追記手順を作らない。実際に出す文面の例:
 
     ```
     決めること: 数を数えるコマンドの落とし穴を、決まりに1行足すか。推奨: 承認する
@@ -80,7 +80,7 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
 - `ls "$S/latest.md"` が exit 0。
 - `head -1 "$S/latest.md"` が `# session state` で始まる。
 - `wc -l "$S/latest.md"` が 120 以下。
-- 「次回に効くもの」を仕分け済み。0 件ならその旨を 1 行出した。1 件以上なら T2 / `docs/` は追記済み、ルール案は承認を取ったものだけ `/hirai-lite:add-rule` に渡した。
+- 「次回に効くもの」を仕分け済み。0 件ならその旨を 1 行出した。1 件以上なら T2 / `docs/` は追記済み、ルール案は承認を取ったものだけ `/tkm-harness:add-rule` に渡した。
 
 4 つ成立したら、次の「利用者へ出す案内」を応答本文に出す。
 
@@ -99,7 +99,7 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
    会話の履歴だけが消えます。プロジェクトの決まりごと (CLAUDE.md と .claude/rules/) は
    新しい会話のはじめに読み込み直されるので、消えません。
    ウィンドウを閉じて開き直しても結果は同じです。どちらでも構いません。
-2. /hirai-lite:state resume と入力します
+2. /tkm-harness:state resume と入力します
    いま保存した内容を読み込んで、続きから再開します
 ```
 
@@ -113,11 +113,11 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
 
 ## 手順
 
-1. `$S/latest.md`（`$S` は保存と同じ `S="$(harness_state_dir "$PWD")"`）を Read する。ファイルが無ければ「保存された state が無い。/hirai-lite:state save で作る」と報告して終了する。
+1. `$S/latest.md`（`$S` は保存と同じ `S="$(harness_state_dir "$PWD")"`）を Read する。ファイルが無ければ「保存された state が無い。/tkm-harness:state save で作る」と報告して終了する。
 2. `git rev-parse --abbrev-ref HEAD` を実行し、state に書かれた branch と突き合わせる。不一致なら state の branch 名を提示し「切替えますか?」と聞く。承認されたら `git switch <state の branch>` を実行する。承認が無ければ現 branch のまま 3 へ進む。
 3. `git log --oneline -1` を実行し、HEAD を突き合わせる。state の HEAD と一致しなければ、`git log --oneline <state の hash>..HEAD` で state 保存後に積まれた commit を列挙し、チャットに提示する。
 
-4. 形は `.claude/mode.yml` の `tasks:` が決める（`. "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"` が `ledger` か `github-project` を返す。`$P` の探し方は `start-task` の「形の見分け」と同じ）。`github-project` のとき、`HT="$(harness_pm_task_bin)"`（足すプラグインの `hirai-task` の絶対 path。PATH に頼らない）を引いて `"$HT" show <n>` で state の issue の Status と開閉を確かめる。進行中でない・閉じているなら「state より GitHub 側が新しい」と報告し、GitHub 側を正とする。`harness_pm_task_bin` が空なら「hirai-task が見つからない。足すプラグインを入れる: `/plugin install hirai-project-method@hirai-lite`」と報告して 5 へ進む。`ledger` のとき、台帳を Read し、state の「進行中タスク」の id が今も `進行中` かを確認する。`完了` になっていれば「state より台帳が新しい」と報告し、台帳側を正とする。
+4. 形は `.claude/mode.yml` の `tasks:` が決める（`. "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"` が `ledger` か `github-project` を返す。`$P` の探し方は `start-task` の「形の見分け」と同じ）。`github-project` のとき、`HT="$(harness_pm_task_bin)"`（`hirai-task` の絶対 path。PATH に頼らない）を引いて `"$HT" show <n>` で state の issue の Status と開閉を確かめる。進行中でない・閉じているなら「state より GitHub 側が新しい」と報告し、GitHub 側を正とする。`harness_pm_task_bin` が空なら「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と報告して 5 へ進む。`ledger` のとき、台帳を Read し、state の「進行中タスク」の id が今も `進行中` かを確認する。`完了` になっていれば「state より台帳が新しい」と報告し、台帳側を正とする。
 5. 4 で読んだ issue の本文（台帳の形では完了条件の列）から、まだ満たしていない完了条件を 1 つ選ぶ。
 6. 再開サマリを次の書式で 1 回だけ出す。
 
@@ -132,15 +132,15 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
 
 ## loop 引数
 
-`/state resume loop` で呼ばれた場合、6 のサマリ出力後に mode（進め方）を `loop`（自動で進む）へ書き換え（書き込み先は決め打ちせず `tasks-path.sh` の `harness_mode_write_file "$PWD"` が返す**すでに在る側**。`/hirai-lite:config` と同じ経路）、形に合わせて連続で着手する。
+`/state resume loop` で呼ばれた場合、6 のサマリ出力後に mode（進め方）を `loop`（自動で進む）へ書き換え（書き込み先は決め打ちせず `tasks-path.sh` の `harness_mode_write_file "$PWD"` が返す**すでに在る側**。`/tkm-harness:config` と同じ経路）、形に合わせて連続で着手する。
 
 - `ledger`: 台帳の `進行中` → `未着手` の順に着手する。着手できるのは対応 draft の `approved_at:` が埋まっているタスクのみ。空のタスクに到達したら、その id を報告して停止する。GitHub は呼ばない
-- `github-project`: `hirai-task ready`（`harness_pm_task_bin` の絶対 path で呼ぶ）の結果を上から順に着手する。`harness_pm_task_bin` が空なら「hirai-task が見つからない。足すプラグインを入れる: `/plugin install hirai-project-method@hirai-lite`」と報告して終了する。一覧が空になったら、その旨を報告して停止する。続けるのを仕組みに任せたいときは、組み込みの `/goal hirai-task ready が空で、着手した task はすべて PR を出した` を打つよう 1 行で案内する（`/goal` は Claude からは呼べない）
+- `github-project`: `hirai-task ready`（`harness_pm_task_bin` の絶対 path で呼ぶ）の結果を上から順に着手する。`harness_pm_task_bin` が空なら「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と報告して終了する。一覧が空になったら、その旨を報告して停止する。続けるのを仕組みに任せたいときは、組み込みの `/goal hirai-task ready が空で、着手した task はすべて PR を出した` を打つよう 1 行で案内する（`/goal` は Claude からは呼べない）
 
 loop 実行を止める条件は 3 つ。
 - user が停止を指示した。
 - 同一のエラー文字列で 3 回連続して失敗した。
-- context 使用率が 50% に達した (この場合は `/hirai-lite:state save` を実行してから停止する)。
+- context 使用率が 50% に達した (この場合は `/tkm-harness:state save` を実行してから停止する)。
 
 ## 判定できる終了条件 (resume)
 

@@ -8,7 +8,7 @@ model: sonnet
 <!--
 出典: everything-claude-code https://github.com/affaan-m/everything-claude-code の agents/tdd-guide.md
 ライセンス: MIT License / Copyright (c) 2026 Affaan Mustafa (全文はリポジトリ直下の NOTICE.md)
-変更点: hirai-lite に無いスキルへの参照 1 行 (skill: tdd-workflow) を削除。
+変更点: tkm-harness に無いスキルへの参照 1 行 (skill: tdd-workflow) を削除。
 -->
 
 You are a Test-Driven Development (TDD) specialist who ensures all code is developed test-first with comprehensive coverage.

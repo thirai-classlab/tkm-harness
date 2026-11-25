@@ -2,7 +2,7 @@
 # Notification(permission_prompt)・PermissionDenied・StopFailure の hook: 権限の確認の画面で止まった・auto mode の分類器が止めた・
 # API エラー（時間切れ等）で手番が終わった、ことを Orca のコーディネーターへ知らせる（担当の会話はユーザーが画面を見に行くまで止まったままになるため）。
 #
-# `.claude/settings.json` の env `HIRAI_METHOD_NOTIFY=orca`（シェルの HC_NOTIFY が優先。4.x の間は mode.yml の notify: も読む）のときだけ bin/hirai-notify waiting を呼ぶ。
+# `.claude/settings.json` の env `TKM_HARNESS_NOTIFY=orca`（シェルの HC_NOTIFY が優先。4.x の間は mode.yml の notify: も読む）のときだけ bin/hirai-notify waiting を呼ぶ。
 # 判断は変えない: 標準出力に何も出さず常に exit 0。送れなかったときは stderr に 1 行だけ。
 # 同じ会話から 1 分に 2 通以上送らない（最後に送った時刻を ${CLAUDE_PLUGIN_DATA} か <root>/.claude/state/ に置く）。
 # StopFailure は件名に error の種類、本文に last_assistant_message の先頭 80 字だけを送る。

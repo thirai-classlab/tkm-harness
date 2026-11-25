@@ -10,7 +10,7 @@
 #                         (例: /goal 台帳に未着手の行が無く、着手した task はすべて PR を出した。
 #                          tasks: github-project のリポは /goal hirai-task ready が空で、着手した task はすべて PR を出した)。
 #
-# 切り替え : /hirai-lite:config （設定の一覧から mode（進め方）を変えるとこのファイルが書き換わる）
+# 切り替え : /tkm-harness:config （設定の一覧から mode（進め方）を変えるとこのファイルが書き換わる）
 # 一時的に : 環境変数 HC_MODE=loop (このファイルより優先される)
 # 置き場所 : 導入先リポジトリの .claude/mode.yml (/init が置く)
 # 読む人   : プラグインの hooks/session-start.sh と scripts/statusline.sh
@@ -22,14 +22,14 @@ mode: normal
 
 # auto_sync（更新後の入れ替え） — 値は on か off の 2 つだけ。**既定は off。**
 #
-#   off : 何もしない。更新は /hirai-lite:update で自分のタイミングで行う (最初はこちら)
+#   off : 何もしない。更新は /tkm-harness:update で自分のタイミングで行う (最初はこちら)
 #   on  : プラグインの版が変わった回のセッション冒頭だけ、/init が導入先へ複製した
 #         3 本 (statusline.sh / tasks-path.sh / context-usage.sh) を配布版に揃え、
 #         何件入れ替えたかを 1 行報告する。中身が違うものは .bak に控えてから入れ替える。
 #         決まりごと (rules) ・安全設定 (settings.json) ・CLAUDE.md ・やること管理の設定は
 #         **自動では一切書き換えない。** 版が同じ回は何もしない。
 #
-# 切り替え : /hirai-lite:config の項目 7
+# 切り替え : /tkm-harness:config の項目 7
 # 一時的に : 環境変数 HC_AUTO_SYNC=off (このファイルより優先される)
 #
 # プラグイン本体そのものの自動更新は **Claude Code 本体の機能**でここでは扱わない
@@ -40,11 +40,11 @@ auto_sync: off
 # 機能の切り替え（tasks / worktree / notify） — このファイルには書かない
 #
 #   この 3 つは .claude/settings.json の env で決める (自分だけなら .claude/settings.local.json):
-#     HIRAI_METHOD_TASKS=ledger|github-project   HIRAI_METHOD_WORKTREE=off|warn|block   HIRAI_METHOD_NOTIFY=off|orca
-#   切り替え : /hirai-lite:config の項目 8   一時的に : 環境変数 HC_TASKS・HC_WORKTREE・HC_NOTIFY
-#   (4.x の間だけ、このファイルの tasks:・worktree:・notify: も読む。/hirai-lite:update が env へ移す)
+#     TKM_HARNESS_TASKS=ledger|github-project   TKM_HARNESS_WORKTREE=off|warn|block   TKM_HARNESS_NOTIFY=off|orca
+#   切り替え : /tkm-harness:config の項目 8   一時的に : 環境変数 HC_TASKS・HC_WORKTREE・HC_NOTIFY
+#   (4.x の間だけ、このファイルの tasks:・worktree:・notify: も読む。/tkm-harness:update が env へ移す)
 
-# nightly_ci（前夜の CI の結果を today に出す。足すプラグイン hirai-project-method のときだけ効く） — 値は workflow のファイル名。**既定は空。**
+# nightly_ci（前夜の CI の結果を today に出す。タスク管理の機能 のときだけ効く） — 値は workflow のファイル名。**既定は空。**
 #
 #   ci.yml : `hirai-task today` の先頭に、その workflow の直近の schedule の run の結果を 1 行出す。空なら何も出さず gh も呼ばない
 #

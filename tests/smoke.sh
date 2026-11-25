@@ -13,11 +13,20 @@ HOOKS="$ROOT/hooks"
 FAILED=0
 # 機能の切り替えは環境変数でも決まる (HM-R2)。Claude Code の中から回しても、外の端末・CI と同じ結果になるよう、開始時に全部消す
 # (CLAUDECODE=1 だと settings の file を読まない。必要な検査は env で付け直す)
-unset CLAUDECODE HC_TASKS HC_WORKTREE HC_NOTIFY HIRAI_METHOD_TASKS HIRAI_METHOD_WORKTREE HIRAI_METHOD_NOTIFY
+unset CLAUDE_PLUGIN_ROOT CLAUDECODE HC_TASKS HC_WORKTREE HC_NOTIFY TKM_HARNESS_TASKS TKM_HARNESS_WORKTREE TKM_HARNESS_NOTIFY
 R6_SKIP_FILE="$(mktemp)"   # HARNESS_SMOKE_QUICK=1 で飛ばした壊した複製の本数（r6_suite は $( ) の中で動くのでファイルに足す）
 
 # mkt -> 実体の path (pwd -P) にした使い捨ての dir。macOS の /var → /private/var の違いで、実体を返す script の出力と期待値が食い違わない
 mkt() { local d; d="$(mktemp -d)" && CDPATH= builtin cd -- "$d" >/dev/null 2>&1 && builtin pwd -P; }
+# bare_plugin_root <dir> -> bin/hirai-task だけを欠いたプラグインの写し (hooks・scripts・templates・commands・bin のほか)。
+#   hook・画面下は CLAUDE_PLUGIN_ROOT の bin/hirai-task を先に採るので、偽の hirai-task を installed_plugins.json か PATH に置く確かめは
+#   この写しを CLAUDE_PLUGIN_ROOT に渡す (壊れた導入 = bin/hirai-task が無い、の確かめにも使う)
+bare_plugin_root() {
+  mkdir -p "$1/bin"
+  cp -R "$ROOT/hooks" "$ROOT/scripts" "$ROOT/templates" "$ROOT/commands" "$1/"
+  cp -R "$ROOT/bin/." "$1/bin/"; rm -f "$1/bin/hirai-task"
+  cp "$ROOT/VERSION" "$1/VERSION"
+}
 
 # fake_orca <path> -> 実物の Orca (1.4.229) の断り方のうち、hirai-notify が当たる所を写した偽の orca を置く。受けた send だけを $FAKE_LOG に、worker-show の問い合わせは $FAKE_LOG.show に書く。
 #   差出人の端末に動いている Dispatch があるときは FAKE_DISPATCH=<id>（実物は差出人の pane から引く）
@@ -109,7 +118,7 @@ has_paths_key() {
 }
 
 # 画面下部は 2 行構成。1 行目 = いまの状態 / 2 行目 = 次にできる操作 (設定リンクは常時表示)。
-SL_LINK='設定を確認・変更 → /hirai-lite:config'
+SL_LINK='設定を確認・変更 → /tkm-harness:config'
 
 # update_flag_path <tmpdir> <project_root> -> 更新ありのフラグのパスを stdout。
 # scripts/update-check.sh の harness_update_flag_file と同じ式 (cksum の鍵) を、
@@ -159,8 +168,7 @@ r6_must_fail() {
 
 # r6_update_checks [<rel> <sed>] -> 足すプラグインの行の絞り・更新の知らせ・開始時と画面下 (u 巡目)
 #   A 本体の checkout・別の worktree・別のリポから harness_pm_task_bin が自分のリポの行だけを採る
-#   B 更新の知らせが各リポの行の版で出て、行の無いリポには出ない
-#   C 土台と足すプラグインの更新が重なっても 1 行 (／ 区切り)・coordinator があっても前回の続きは latest.md
+#   C 更新の知らせは 1 行・coordinator があっても前回の続きは latest.md
 #   D cwd が CLAUDE_PROJECT_DIR と違っても、画面下が会話のリポで hirai-task line を引く
 r6_update_checks() {
   local s h td M W1 W2 O X o c tb
@@ -179,7 +187,7 @@ r6_update_checks() {
     chmod +x "$s/${r%%:*}/bin/hirai-task"
   done
   # W1 (worktree) で入れた project の行 (pm 1.0.0) と、別のリポ O の行 (pm 1.0.1)
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"project","projectPath":"%s","version":"1.0.0","installPath":"%s/pm100"},{"scope":"project","projectPath":"%s","version":"1.0.1","installPath":"%s/pm101"}]}}\n' \
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"project","projectPath":"%s","version":"1.0.0","installPath":"%s/pm100"},{"scope":"project","projectPath":"%s","version":"1.0.1","installPath":"%s/pm101"}]}}\n' \
     "$W1" "$s" "$O" "$s" > "$h/.claude/plugins/installed_plugins.json"
   local want="$s/pm100/bin/hirai-task"
   for r in "$M" "$W1" "$W2"; do
@@ -190,28 +198,20 @@ r6_update_checks() {
   [ "$o" = "$s/pm101/bin/hirai-task" ] || echo "FAIL A-other-repo 別のリポの行を採らない: [$o]"
   o="$(HOME="$h" PATH=/usr/bin:/bin /bin/bash -c ". \"$s/scripts/tasks-path.sh\"; harness_pm_task_bin \"$X\"" 2>/dev/null)"
   [ -z "$o" ] || echo "FAIL A-no-row 行の無いリポが他のリポの行を採った: [$o]"
-  # 更新の知らせ。土台 0.1.0 → 0.2.0・足すプラグイン → 1.0.2
+  # 更新の知らせ。0.1.0 → 0.2.0 (1 つのプラグインなので知らせは 1 本。足すプラグイン向けの知らせは無い)
   c="$(TMPDIR="$td" bash -c ". \"$s/scripts/update-check.sh\"; harness_update_cache_dir \"$s\"")"
   mkdir -p "$c"; printf '0.2.0' > "$c/latest"; printf '1.0.2' > "$c/latest-pm"; date +%s > "$c/stamp"
-  for r in "$M:v1.0.0" "$W2:v1.0.0" "$O:v1.0.1" "$X:"; do
-    o="$(HOME="$h" TMPDIR="$td" HARNESS_UPDATE_CHECK=on bash -c ". \"$s/scripts/update-check.sh\"; harness_update_pm_notice \"$s\" \"${r%%:*}\"" 2>/dev/null)"
-    if [ -n "${r##*:}" ]; then
-      case "$o" in *"${r##*:} → v1.0.2"*) : ;; *) echo "FAIL B-pm-notice ${r%%:*} の行の版 ${r##*:} → v1.0.2 で知らせが出ない: [$o]" ;; esac
-    else
-      [ -z "$o" ] || echo "FAIL B-other-repo-silent 行の無いリポに知らせが出た: [$o]"
-    fi
-  done
-  # 開始時 (土台と足すプラグインの更新が両方ある・coordinator が latest.md より新しい)
+  # 開始時 (更新がある・coordinator が latest.md より新しい。古い latest-pm が残っていても別の知らせは出ない)
   mkdir -p "$M/.claude/state"; printf 'x\n' > "$M/.claude/state/latest.md"; sleep 1; printf 'run:C\n' > "$M/.claude/state/coordinator"
   o="$(cd "$M" && env -i HOME="$h" PATH=/usr/bin:/bin TMPDIR="$td" CLAUDE_PLUGIN_ROOT="$s" CLAUDE_PROJECT_DIR="$M" HARNESS_UPDATE_CHECK=on \
         HARNESS_UPDATE_URL="http://127.0.0.1:9/VERSION" bash "$s/hooks/session-start.sh" 2>&1 </dev/null)"
   [ "$(printf '%s\n' "$o" | grep -c '更新あり' || true)" = 1 ] || echo "FAIL C-one-line 更新の知らせが 1 行でない: $o"
-  printf '%s' "$o" | grep -qF ' ／ 足すプラグイン hirai-project-method の更新あり' || echo "FAIL C-joined 土台の行に ／ で足すプラグインがつながらない: $o"
+  printf '%s' "$o" | grep -qF '足すプラグイン' && echo "FAIL C-no-pm-notice 足すプラグインの知らせが出た (1 つのプラグインになった): $o"
   [ "$(printf '%s\n' "$o" | grep -c . || true)" -le 5 ] || echo "FAIL C-five-lines 5 行を超えた: $o"
   printf '%s' "$o" | grep -qF '前回の続き: .claude/state/latest.md' || echo "FAIL C-coordinator-not-resume coordinator が前回の続きに出た: $o"
   # 画面下 (cwd=/tmp・CLAUDE_PROJECT_DIR=本体)
   printf 'tasks: github-project\n' > "$M/.claude/mode.yml"
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"user","version":"1.0.0","installPath":"%s/pm100"}]}}\n' "$s" > "$h/.claude/plugins/installed_plugins.json"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"user","version":"1.0.0","installPath":"%s/pm100"}]}}\n' "$s" > "$h/.claude/plugins/installed_plugins.json"
   o="$(cd /tmp && printf '{"context_window":{"used_percentage":12}}' | env -i HOME="$h" PATH=/usr/bin:/bin TMPDIR="$td" NO_COLOR=1 \
         CLAUDE_PROJECT_DIR="$M" HARNESS_UPDATE_CHECK=off bash "$s/scripts/statusline.sh" 2>&1)"
   printf '%s' "$o" | grep -qF "ROOT=$M" || echo "FAIL D-statusline-root cwd が違う画面下が会話のリポ (CLAUDE_PROJECT_DIR) で引かない: $o"
@@ -293,10 +293,10 @@ r6_update_checks() {
     done
   done
   # F 版の接尾 (-<commit>) を落としてから比べる: 3.0.2-8713c5b11005 は 3.0.1 より新しい・3.0.0-52ce73979469 は 3.0.1 より古い
-  printf '{"plugins":{"hirai-lite@hirai-lite":[{"version":"3.0.1","installPath":"/a"},{"version":"3.0.2-8713c5b11005","installPath":"/b"},{"version":"3.0.0-52ce73979469","installPath":"/c"}]}}\n' > "$h/.claude/plugins/installed_plugins.json"
-  o="$(HOME="$h" bash -c ". \"$s/scripts/update-check.sh\"; harness_plugin_root_from_installed hirai-lite" 2>/dev/null)"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"version":"3.0.1","installPath":"/a"},{"version":"3.0.2-8713c5b11005","installPath":"/b"},{"version":"3.0.0-52ce73979469","installPath":"/c"}]}}\n' > "$h/.claude/plugins/installed_plugins.json"
+  o="$(HOME="$h" bash -c ". \"$s/scripts/update-check.sh\"; harness_plugin_root_from_installed tkm-harness" 2>/dev/null)"
   [ "$o" = /b ] || echo "FAIL F-suffix-update-check 版の接尾を落とさず並べ替えた (期待 /b): [$o]"
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"user","version":"1.0.0","installPath":"%s/pm100"},{"scope":"user","version":"1.0.1","installPath":"/pmx"},{"scope":"user","version":"1.0.2-8713c5b11005","installPath":"%s/pm101"}]}}\n' "$s" "$s" > "$h/.claude/plugins/installed_plugins.json"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"user","version":"1.0.0","installPath":"%s/pm100"},{"scope":"user","version":"1.0.1","installPath":"/pmx"},{"scope":"user","version":"1.0.2-8713c5b11005","installPath":"%s/pm101"}]}}\n' "$s" "$s" > "$h/.claude/plugins/installed_plugins.json"
   o="$(HOME="$h" bash -c ". \"$s/scripts/tasks-path.sh\"; harness_pm_install_dir \"$M\"" 2>/dev/null)"
   [ "$o" = "$s/pm101" ] || echo "FAIL F-suffix-tasks-path 足すプラグインの行の並べ替えが接尾を落とさない (期待 $s/pm101): [$o]"
   # G auto_sync: 同じ版の本体を使う 2 リポのどちらも入れ替わる (控えの鍵に project_root を足してある)
@@ -309,19 +309,19 @@ r6_update_checks() {
     cmp -s "$s/scripts/statusline.sh" "$r/.claude/statusline.sh" || echo "FAIL G-auto-sync-two-repos 同じ版の 2 つ目のリポ ($r) が入れ替わらない"
   done
   # H enabledPlugins が false なら「無い」とみなす (local → project → user の順で最初の値が決める)
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"user","version":"1.0.0","installPath":"%s/pm100"}]}}\n' "$s" > "$h/.claude/plugins/installed_plugins.json"
-  printf '{"enabledPlugins":{"hirai-project-method@hirai-lite":false}}\n' > "$M/.claude/settings.local.json"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"user","version":"1.0.0","installPath":"%s/pm100"}]}}\n' "$s" > "$h/.claude/plugins/installed_plugins.json"
+  printf '{"enabledPlugins":{"tkm-harness@tkm-harness":false}}\n' > "$M/.claude/settings.local.json"
   o="$(HOME="$h" bash -c ". \"$s/scripts/tasks-path.sh\"; harness_pm_install_dir \"$M\"" 2>/dev/null)"
   [ -z "$o" ] || echo "FAIL H-disabled-local settings.local.json で false の足すプラグインを「ある」とみなした: [$o]"
-  printf '{"enabledPlugins":{"hirai-project-method@hirai-lite":true}}\n' > "$M/.claude/settings.local.json"
-  printf '{"enabledPlugins":{"hirai-project-method@hirai-lite":false}}\n' > "$M/.claude/settings.json"
+  printf '{"enabledPlugins":{"tkm-harness@tkm-harness":true}}\n' > "$M/.claude/settings.local.json"
+  printf '{"enabledPlugins":{"tkm-harness@tkm-harness":false}}\n' > "$M/.claude/settings.json"
   o="$(HOME="$h" bash -c ". \"$s/scripts/tasks-path.sh\"; harness_pm_install_dir \"$M\"" 2>/dev/null)"
   [ "$o" = "$s/pm100" ] || echo "FAIL H-enabled-local-wins local の true が project の false に勝たない: [$o]"
   rm -f "$M/.claude/settings.local.json"
   o="$(HOME="$h" bash -c ". \"$s/scripts/tasks-path.sh\"; harness_pm_install_dir \"$M\"" 2>/dev/null)"
   [ -z "$o" ] || echo "FAIL H-disabled-project settings.json で false の足すプラグインを「ある」とみなした: [$o]"
   # worktree (W1) からも、本体の checkout の settings.local.json の false が効く (Claude Code は本体のを使う)
-  rm -f "$M/.claude/settings.json"; printf '{"enabledPlugins":{"hirai-project-method@hirai-lite":false}}\n' > "$M/.claude/settings.local.json"
+  rm -f "$M/.claude/settings.json"; printf '{"enabledPlugins":{"tkm-harness@tkm-harness":false}}\n' > "$M/.claude/settings.local.json"
   o="$(HOME="$h" bash -c ". \"$s/scripts/tasks-path.sh\"; harness_pm_install_dir \"$W1\"" 2>/dev/null)"
   [ -z "$o" ] || echo "FAIL H-disabled-main-local worktree から見て本体の settings.local.json の false を無視した: [$o]"
   rm -f "$M/.claude/settings.local.json"
@@ -949,7 +949,7 @@ WPY
 }
 
 # r6_hm_checks [<rel> <sed>] -> 機能の切り替え (tasks・worktree・notify) を settings.json の env で読む (HM-R2)
-#   優先 5 段 (HC_* > HIRAI_METHOD_* > settings の file > mode.yml > 既定)・CLAUDECODE=1 では file を読まない・本体の checkout の settings.local.json・
+#   優先 5 段 (HC_* > TKM_HARNESS_* > settings の file > mode.yml > 既定)・CLAUDECODE=1 では file を読まない・本体の checkout の settings.local.json・
 #   worktree-guard (settings の env だけで block・別のリポの対象はそのリポの settings で決まる・どこにも block が無ければ python3・git を起こさない)・
 #   開始時の移行の 1 行・harness_settings_set / migrate が他のキーを壊さない・雛形から 3 項目が消えている。
 #   検査の名前は壊した複製の名前と同じ (r6_must_fail が「FAIL <名前>」を探す)
@@ -962,7 +962,7 @@ rm -rf "$W0/t"; mkdir "$W0/t"; T="$W0/t"
 mkdir -p "$T/home/.claude" "$T/spy" "$T/nopy"
 fail=0
 REALPY="$(command -v python3)"; REALGIT="$(command -v git)"
-# 値は終端の改行まで含めて比べる必要が無いので $( ) で受ける。env -i で CLAUDECODE・HC_*・HIRAI_METHOD_* を消す
+# 値は終端の改行まで含めて比べる必要が無いので $( ) で受ける。env -i で CLAUDECODE・HC_*・TKM_HARNESS_* を消す
 run_in() { local d="$1"; shift; ( cd "$d" && env -i PATH="$PATH" HOME="$T/home" "$@" ); }
 fn() { # fn <dir> <env...> -- <関数と引数> -> 関数の出力
   local d="$1"; shift; local e=(); while [ "$1" != "--" ]; do e+=("$1"); shift; done; shift
@@ -981,36 +981,36 @@ rm_cfg
 chk hm-default "ledger/off/off" "$(fn "$P" -- harness_tasks_form "$P")/$(fn "$P" -- harness_worktree "$P")/$(fn "$P" -- harness_notify "$P")"
 printf 'tasks: github-project\nworktree: block\nnotify: orca\n' > "$P/.claude/mode.yml"
 chk hm-yml "github-project/block/orca" "$(fn "$P" -- harness_tasks_form "$P")/$(fn "$P" -- harness_worktree "$P")/$(fn "$P" -- harness_notify "$P")"
-printf '{"env":{"HIRAI_METHOD_TASKS":"ledger","HIRAI_METHOD_WORKTREE":"warn","HIRAI_METHOD_NOTIFY":"off"}}\n' > "$P/.claude/settings.json"
+printf '{"env":{"TKM_HARNESS_TASKS":"ledger","TKM_HARNESS_WORKTREE":"warn","TKM_HARNESS_NOTIFY":"off"}}\n' > "$P/.claude/settings.json"
 chk hm-file "ledger/warn/off" "$(fn "$P" -- harness_tasks_form "$P")/$(fn "$P" -- harness_worktree "$P")/$(fn "$P" -- harness_notify "$P")"
-J HIRAI_METHOD_TASKS github-project > "$P/.claude/settings.local.json"
+J TKM_HARNESS_TASKS github-project > "$P/.claude/settings.local.json"
 chk hm-file-local "github-project" "$(fn "$P" -- harness_tasks_form "$P")"
 rm -f "$P/.claude/settings.local.json" "$P/.claude/mode.yml"
-J HIRAI_METHOD_TASKS github-project > "$T/home/.claude/settings.json"
+J TKM_HARNESS_TASKS github-project > "$T/home/.claude/settings.json"
 chk hm-file-home-last "ledger" "$(fn "$P" -- harness_tasks_form "$P")"
 rm -f "$P/.claude/settings.json"
 chk hm-file-home "github-project" "$(fn "$P" -- harness_tasks_form "$P")"
 rm_cfg
-# 2: 環境変数 HIRAI_METHOD_* は mode.yml・file より先。1: HC_* はそれより先
+# 2: 環境変数 TKM_HARNESS_* は mode.yml・file より先。1: HC_* はそれより先
 printf 'tasks: ledger\n' > "$P/.claude/mode.yml"
-chk hm-env "github-project" "$(fn "$P" HIRAI_METHOD_TASKS=github-project -- harness_tasks_form "$P")"
-J HIRAI_METHOD_TASKS ledger > "$P/.claude/settings.json"
-chk hm-env-over-file "github-project" "$(fn "$P" HIRAI_METHOD_TASKS=github-project -- harness_tasks_form "$P")"
-chk hm-hc "github-project" "$(fn "$P" HC_TASKS=github-project HIRAI_METHOD_TASKS=ledger -- harness_tasks_form "$P")"
+chk hm-env "github-project" "$(fn "$P" TKM_HARNESS_TASKS=github-project -- harness_tasks_form "$P")"
+J TKM_HARNESS_TASKS ledger > "$P/.claude/settings.json"
+chk hm-env-over-file "github-project" "$(fn "$P" TKM_HARNESS_TASKS=github-project -- harness_tasks_form "$P")"
+chk hm-hc "github-project" "$(fn "$P" HC_TASKS=github-project TKM_HARNESS_TASKS=ledger -- harness_tasks_form "$P")"
 # Claude Code の中 (CLAUDECODE=1) でも環境変数が空なら file を読む (移す前に開いた会話が既定に戻らない)。環境変数があればそれが先
-J HIRAI_METHOD_TASKS github-project > "$P/.claude/settings.json"
-chk hm-claudecode "github-project/ledger" "$(fn "$P" CLAUDECODE=1 -- harness_tasks_form "$P")/$(fn "$P" CLAUDECODE=1 HIRAI_METHOD_TASKS=ledger -- harness_tasks_form "$P")"
+J TKM_HARNESS_TASKS github-project > "$P/.claude/settings.json"
+chk hm-claudecode "github-project/ledger" "$(fn "$P" CLAUDECODE=1 -- harness_tasks_form "$P")/$(fn "$P" CLAUDECODE=1 TKM_HARNESS_TASKS=ledger -- harness_tasks_form "$P")"
 chk hm-claudecode-off "github-project" "$(fn "$P" -- harness_tasks_form "$P")"
 # 未知の値は既定に倒す
-printf '{"env":{"HIRAI_METHOD_TASKS":"zzz","HIRAI_METHOD_WORKTREE":"zzz","HIRAI_METHOD_NOTIFY":"zzz"}}\n' > "$P/.claude/settings.json"; rm -f "$P/.claude/mode.yml"
+printf '{"env":{"TKM_HARNESS_TASKS":"zzz","TKM_HARNESS_WORKTREE":"zzz","TKM_HARNESS_NOTIFY":"zzz"}}\n' > "$P/.claude/settings.json"; rm -f "$P/.claude/mode.yml"
 chk hm-unknown "ledger/off/off" "$(fn "$P" -- harness_tasks_form "$P")/$(fn "$P" -- harness_worktree "$P")/$(fn "$P" -- harness_notify "$P")"
 # python3 が無いとき (file 読みを飛ばす): 落ちず、mode.yml の値を使う
 for c in git sed head awk grep tr cat dirname basename uname mkdir; do ln -sf "$(command -v $c)" "$T/nopy/$c"; done
-J HIRAI_METHOD_TASKS ledger > "$P/.claude/settings.json"; printf 'tasks: github-project\n' > "$P/.claude/mode.yml"
+J TKM_HARNESS_TASKS ledger > "$P/.claude/settings.json"; printf 'tasks: github-project\n' > "$P/.claude/mode.yml"
 chk hm-nopython "github-project" "$(run_in "$P" PATH="$T/nopy" /bin/bash -c '. "$0/scripts/tasks-path.sh"; harness_tasks_form "$PWD"' "$S")"
 # 本体の checkout の settings.local.json が worktree の自分のものより先
 rm_cfg; git -C "$P" -c user.name=a -c user.email=a@b worktree add -q "$T/W" -b w 2>/dev/null; mkdir -p "$T/W/.claude"
-J HIRAI_METHOD_TASKS github-project > "$P/.claude/settings.local.json"; J HIRAI_METHOD_TASKS ledger > "$T/W/.claude/settings.local.json"
+J TKM_HARNESS_TASKS github-project > "$P/.claude/settings.local.json"; J TKM_HARNESS_TASKS ledger > "$T/W/.claude/settings.local.json"
 chk hm-main-local "github-project" "$(fn "$T/W" -- harness_tasks_form "$T/W")"
 rm -f "$P/.claude/settings.local.json" "$T/W/.claude/settings.local.json"
 
@@ -1024,33 +1024,33 @@ g() { # g <名前> <DENY|ALLOW> <file> <env...>
   [ -n "$out" ] && got=DENY || got=ALLOW
   chk "$name" "$want" "$got"
 }
-printf '{\n  "env": {\n    "HIRAI_METHOD_WORKTREE": "block"\n  }\n}\n' > "$P/.claude/settings.json"
+printf '{\n  "env": {\n    "TKM_HARNESS_WORKTREE": "block"\n  }\n}\n' > "$P/.claude/settings.json"
 g hm-guard-json DENY "$P/f.txt" CLAUDE_PROJECT_DIR="$P"
-rm -f "$P/.claude/settings.json"; printf '{"env":{"HIRAI_METHOD_WORKTREE":"block"}}\n' > "$P/.claude/settings.local.json"
+rm -f "$P/.claude/settings.json"; printf '{"env":{"TKM_HARNESS_WORKTREE":"block"}}\n' > "$P/.claude/settings.local.json"
 g hm-guard-json-local DENY "$P/f.txt" CLAUDE_PROJECT_DIR="$P"
 rm -f "$P/.claude/settings.local.json"
-g hm-guard-envgate DENY "$P/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 HIRAI_METHOD_WORKTREE=block
-J HIRAI_METHOD_WORKTREE block > "$P/.claude/settings.json"
-g hm-guard-claudecode-env ALLOW "$P/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 HIRAI_METHOD_WORKTREE=off
+g hm-guard-envgate DENY "$P/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 TKM_HARNESS_WORKTREE=block
+J TKM_HARNESS_WORKTREE block > "$P/.claude/settings.json"
+g hm-guard-claudecode-env ALLOW "$P/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 TKM_HARNESS_WORKTREE=off
 g hm-guard-hc ALLOW "$P/f.txt" CLAUDE_PROJECT_DIR="$P" HC_WORKTREE=off
 rm -f "$P/.claude/settings.json"
 g hm-guard-hc-block DENY "$P/f.txt" CLAUDE_PROJECT_DIR="$P" HC_WORKTREE=block
 # 別のリポの対象は、会話の環境変数でなく、そのリポの settings の file と mode.yml で決める
-g hm-guard-other-repo ALLOW "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 HIRAI_METHOD_WORKTREE=block
-J HIRAI_METHOD_WORKTREE block > "$T/Q/.claude/settings.json"
-g hm-guard-other-repo-file DENY "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 HIRAI_METHOD_WORKTREE=off
+g hm-guard-other-repo ALLOW "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 TKM_HARNESS_WORKTREE=block
+J TKM_HARNESS_WORKTREE block > "$T/Q/.claude/settings.json"
+g hm-guard-other-repo-file DENY "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 TKM_HARNESS_WORKTREE=off
 rm -f "$T/Q/.claude/settings.json"; printf 'worktree: block\n' > "$T/Q/.claude/mode.yml"
-g hm-guard-other-repo-yml DENY "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 HIRAI_METHOD_WORKTREE=off
+g hm-guard-other-repo-yml DENY "$T/Q/f.txt" CLAUDE_PROJECT_DIR="$P" CLAUDECODE=1 TKM_HARNESS_WORKTREE=off
 rm -f "$T/Q/.claude/mode.yml"
 # 本体の checkout の settings.local.json だけにある block は、本体の外の linked worktree を別のリポの会話から編集するときも効く
 rm_cfg; git -C "$P" -c user.name=a -c user.email=a@b worktree add -q "$T/LW" -b lw 2>/dev/null; echo x > "$T/LW/f.txt"
-printf '{"env":{"HIRAI_METHOD_WORKTREE":"block"}}\n' > "$P/.claude/settings.local.json"
+printf '{"env":{"TKM_HARNESS_WORKTREE":"block"}}\n' > "$P/.claude/settings.local.json"
 g hm-guard-linked-main DENY "$T/LW/f.txt" CLAUDE_PROJECT_DIR="$T/Q" CLAUDECODE=1
 rm -f "$P/.claude/settings.local.json"
 g hm-guard-linked-main-none ALLOW "$T/LW/f.txt" CLAUDE_PROJECT_DIR="$T/Q" CLAUDECODE=1
 # どこにも block が無いとき python3・git を起こさない (偽の python3・git を PATH の先頭に置き、呼ばれた数を見る)
 for c in python3 git; do printf '#!/bin/bash\necho %s >> "$SPYLOG"\nexec %s "$@"\n' "$c" "$(command -v $c)" > "$T/spy/$c"; chmod +x "$T/spy/$c"; done
-printf '{"env":{"HIRAI_METHOD_WORKTREE":"warn","HIRAI_METHOD_TASKS":"ledger"}}\n' > "$P/.claude/settings.json"; printf 'mode: normal\n' > "$P/.claude/mode.yml"
+printf '{"env":{"TKM_HARNESS_WORKTREE":"warn","TKM_HARNESS_TASKS":"ledger"}}\n' > "$P/.claude/settings.json"; printf 'mode: normal\n' > "$P/.claude/mode.yml"
 : > "$T/spylog"
 ed "$P/f.txt" | env -i PATH="$T/spy:$PATH" SPYLOG="$T/spylog" HOME="$T/home" CLAUDE_PROJECT_DIR="$P" bash "$S/hooks/worktree-guard.sh" >/dev/null 2>&1
 printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"git commit -m x"}}' "$P" | env -i PATH="$T/spy:$PATH" SPYLOG="$T/spylog" HOME="$T/home" CLAUDE_PROJECT_DIR="$P" bash "$S/hooks/worktree-guard.sh" >/dev/null 2>&1
@@ -1058,10 +1058,10 @@ chk hm-guard-fast "0" "$(grep -c . "$T/spylog")"
 rm_cfg
 
 # hirai-notify: settings の env が orca なら orca を探しに行く (PATH に無いので exit 1)、off なら黙って exit 0
-J HIRAI_METHOD_NOTIFY orca > "$P/.claude/settings.json"
+J TKM_HARNESS_NOTIFY orca > "$P/.claude/settings.json"
 ( cd "$P" && env -i PATH=/usr/bin:/bin HOME="$T/home" bash "$S/bin/hirai-notify" done /tmp/x.md 要約 >/dev/null 2>&1 ); rc=$?
 chk hm-notify-bin "1" "$rc"
-J HIRAI_METHOD_NOTIFY off > "$P/.claude/settings.json"
+J TKM_HARNESS_NOTIFY off > "$P/.claude/settings.json"
 ( cd "$P" && env -i PATH=/usr/bin:/bin HOME="$T/home" bash "$S/bin/hirai-notify" done /tmp/x.md 要約 >/dev/null 2>&1 ); rc=$?
 chk hm-notify-bin-off "0" "$rc"
 rm_cfg
@@ -1070,12 +1070,12 @@ rm_cfg
 ss() { env -i PATH="$PATH" HOME="$T/home" CLAUDE_PLUGIN_ROOT="$S" CLAUDE_PROJECT_DIR="$P" "$@" bash "$S/hooks/session-start.sh" 2>&1 </dev/null; }
 printf 'worktree: warn\n' > "$P/.claude/mode.yml"
 o="$(ss)"
-case "$o" in *'settings.json の env（HIRAI_METHOD_TASKS'*'/hirai-lite:config の項目 8'*) echo "ok   hm-notice" ;; *) echo "FAIL hm-notice mode.yml にだけ在るのに移行の 1 行が出ない: $o"; fail=1 ;; esac
+case "$o" in *'settings.json の env（TKM_HARNESS_TASKS'*'/tkm-harness:config の項目 8'*) echo "ok   hm-notice" ;; *) echo "FAIL hm-notice mode.yml にだけ在るのに移行の 1 行が出ない: $o"; fail=1 ;; esac
 case "$(printf '%s\n' "$o" | head -1)" in *'worktree: warn'*) echo "ok   hm-line-yml" ;; *) echo "FAIL hm-line-yml 1 行目が mode.yml の値を出さない: $o"; fail=1 ;; esac
 [ "$(printf '%s\n' "$o" | grep -c .)" -le 5 ] && echo "ok   hm-notice-lines" || { echo "FAIL hm-notice-lines 5 行を超えた: $o"; fail=1; }
-J HIRAI_METHOD_WORKTREE block > "$P/.claude/settings.json"
+J TKM_HARNESS_WORKTREE block > "$P/.claude/settings.json"
 o="$(ss)"
-case "$o" in *'HIRAI_METHOD_TASKS'*) echo "FAIL hm-notice-gone settings に在るのに移行の 1 行が出る: $o"; fail=1 ;; *) echo "ok   hm-notice-gone" ;; esac
+case "$o" in *'TKM_HARNESS_TASKS'*) echo "FAIL hm-notice-gone settings に在るのに移行の 1 行が出る: $o"; fail=1 ;; *) echo "ok   hm-notice-gone" ;; esac
 case "$(printf '%s\n' "$o" | head -1)" in *'worktree: block'*) echo "ok   hm-line-file" ;; *) echo "FAIL hm-line-file 1 行目が settings の env の値を出さない: $o"; fail=1 ;; esac
 rm_cfg
 
@@ -1084,7 +1084,7 @@ M="$T/M"; git init -q "$M"; mkdir -p "$M/.claude"
 printf '{\n  "permissions": {"deny": ["Bash(rm -rf:*)"]},\n  "note": "日本語",\n  "env": {"OTHER": "1"}\n}\n' > "$M/.claude/settings.json"
 printf 'mode: loop\ntasks: github-project\nworktree: block   # c\nnotify: weird\nauto_sync: off\n' > "$M/.claude/mode.yml"
 mo="$(fn "$M" -- harness_settings_migrate "$M")"
-chk hm-migrate-env "github-project/block/1" "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("HIRAI_METHOD_TASKS"),e.get("HIRAI_METHOD_WORKTREE"),e.get("OTHER"),sep="/")' "$M/.claude/settings.json")"
+chk hm-migrate-env "github-project/block/1" "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("TKM_HARNESS_TASKS"),e.get("TKM_HARNESS_WORKTREE"),e.get("OTHER"),sep="/")' "$M/.claude/settings.json")"
 chk hm-set-keep "Bash(rm -rf:*)/日本語" "$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["permissions"]["deny"][0],d["note"],sep="/")' "$M/.claude/settings.json")"
 grep -q '日本語' "$M/.claude/settings.json" && echo "ok   hm-set-utf8" || { echo "FAIL hm-set-utf8 ensure_ascii が効いて日本語が \\u に変わった"; fail=1; }
 chk hm-unset "mode: loop|tasks: github-project|notify: weird|auto_sync: off" "$(paste -sd'|' "$M/.claude/mode.yml")"
@@ -1096,9 +1096,9 @@ chk hm-migrate-idempotent "0" "$(fn "$M" -- harness_settings_migrate "$M" | grep
 printf 'tasks: ledger\nworktree: warn\n' > "$M/.claude/mode.yml"
 fn "$M" -- harness_settings_migrate "$M" >/dev/null
 chk hm-migrate-sync "tasks: github-project/0" "$(grep '^tasks:' "$M/.claude/mode.yml")/$(grep -c '^worktree:' "$M/.claude/mode.yml")"
-printf 'worktree: warn\n' > "$M/.claude/mode.yml"; J HIRAI_METHOD_WORKTREE block > "$T/home/.claude/settings.json"; rm -f "$M/.claude/settings.json"
+printf 'worktree: warn\n' > "$M/.claude/mode.yml"; J TKM_HARNESS_WORKTREE block > "$T/home/.claude/settings.json"; rm -f "$M/.claude/settings.json"
 fn "$M" -- harness_settings_migrate "$M" >/dev/null
-chk hm-migrate-nohome "warn" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["HIRAI_METHOD_WORKTREE"])' "$M/.claude/settings.json" 2>/dev/null)"
+chk hm-migrate-nohome "warn" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_WORKTREE"])' "$M/.claude/settings.json" 2>/dev/null)"
 rm -f "$T/home/.claude/settings.json"
 # パッケージ (自分の .claude を持つサブディレクトリ) の tasks: は toplevel の env へ上げない
 K="$T/K"; git init -q "$K"; mkdir -p "$K/.claude" "$K/apps/api/.claude"
@@ -1108,7 +1108,7 @@ chk hm-migrate-package "github-project/ledger" "$(fn "$K/apps/api" -- harness_ta
 # 設定を書いたあとも tasks: は mode.yml と env が同じ値になる
 chk hm-set-sync "ledger" "$(fn "$K/apps/api" -- harness_settings_set tasks ledger "$K/apps/api" >/dev/null 2>&1; fn "$K/apps/api" -- harness_yml_file_value "$K/apps/api/.claude/mode.yml" tasks)"
 # orca-context は settings の env だけの worktree: warn を言う
-printf '{"env":{"HIRAI_METHOD_WORKTREE":"warn"}}\n' > "$M/.claude/settings.json"; rm -f "$M/.claude/mode.yml"
+printf '{"env":{"TKM_HARNESS_WORKTREE":"warn"}}\n' > "$M/.claude/settings.json"; rm -f "$M/.claude/mode.yml"
 chk hm-orca-context "1" "$(run_in "$M" CLAUDE_PROJECT_DIR="$M" bash "$S/scripts/orca-context.sh" 2>&1 | grep -c 'warn')"
 case "$mo" in *'notify: weird を移せませんでした'*) echo "ok   hm-migrate-skip" ;; *) echo "FAIL hm-migrate-skip 許さない値を言わない: $mo"; fail=1 ;; esac
 # 読めない JSON は上書きしない・local は settings.local.json に書き mode.yml の行は残す
@@ -1117,11 +1117,11 @@ fn "$M" -- harness_settings_set notify orca "$M" local >/dev/null 2>&1; rc=$?
 { [ "$rc" -eq 1 ] && cmp -s "$M/.claude/settings.local.json" "$T/broken.orig"; } && echo "ok   hm-set-broken" || { echo "FAIL hm-set-broken 読めない JSON を上書きした rc=$rc"; fail=1; }
 rm -f "$M/.claude/settings.local.json"; printf 'notify: off\n' > "$M/.claude/mode.yml"
 fn "$M" -- harness_settings_set notify orca "$M" local >/dev/null 2>&1
-chk hm-set-local "orca/notify: off" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["HIRAI_METHOD_NOTIFY"])' "$M/.claude/settings.local.json")/$(grep '^notify:' "$M/.claude/mode.yml")"
+chk hm-set-local "orca/notify: off" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_NOTIFY"])' "$M/.claude/settings.local.json")/$(grep '^notify:' "$M/.claude/mode.yml")"
 chk hm-set-bad "2" "$(fn "$M" -- harness_settings_set worktree zzz "$M" >/dev/null 2>&1; echo $?)"
 
 # --- 雛形 ---
-chk hm-template "0/1" "$(grep -cE '^(tasks|worktree|notify):' "$ROOT_T/templates/mode.yml" 2>/dev/null || true)/$(grep -c 'HIRAI_METHOD_' "$ROOT_T/templates/mode.yml")"
+chk hm-template "0/1" "$(grep -cE '^(tasks|worktree|notify):' "$ROOT_T/templates/mode.yml" 2>/dev/null || true)/$(grep -c 'TKM_HARNESS_' "$ROOT_T/templates/mode.yml")"
 exit $fail
 R6HM
   ( cd "$s" && ROOT_T="$s" env -u CLAUDE_PROJECT_DIR -u ORCA_WORKTREE_ID -u CLAUDECODE bash hm-test.sh "$s" 2>&1 | grep '^FAIL' )
@@ -1272,9 +1272,9 @@ hm-file-home|scripts/tasks-path.sh|s/^  \[ "\${2:-}" = "nohome" \] || \[ -z "\${
 hm-hc|scripts/tasks-path.sh|s/^  v="\${!hc:-}".*$/  v=""/
 hm-yml|scripts/tasks-path.sh|s/^  \[ -n "\$v" \] || v="\$(harness_yml_value "\$root" "\$item")"$/  :/
 hm-unknown|scripts/tasks-path.sh|s/^    \*) printf 'off' ;;$/    *) printf 'block' ;;/
-hm-guard-json|hooks/worktree-guard.sh|s/^  case "\$c" in \*HIRAI_METHOD_WORKTREE\*block\*) return 0 ;; esac$/  :/
+hm-guard-json|hooks/worktree-guard.sh|s/^  case "\$c" in \*TKM_HARNESS_WORKTREE\*block\*) return 0 ;; esac$/  :/
 hm-guard-json-local|hooks/worktree-guard.sh|s/ || may_block_json "\$1\/.claude\/settings.local.json"//
-hm-guard-envgate|hooks/worktree-guard.sh|s/^  \[ "\${HIRAI_METHOD_WORKTREE:-}" = block \] \&\& return 0$/  :/
+hm-guard-envgate|hooks/worktree-guard.sh|s/^  \[ "\${TKM_HARNESS_WORKTREE:-}" = block \] \&\& return 0$/  :/
 hm-guard-other-repo|hooks/worktree-guard.sh|s/\[ "\$(phys "\$conv")" = "\$(phys "\$1")" \] || files="files"/:/
 hm-guard-fast|hooks/worktree-guard.sh|s/^  \[ "\${HC_WORKTREE:-}" = block \] \&\& return 0$/  return 0/
 hm-notice|hooks/session-start.sh|s/if command -v harness_setting_from_yml_only >\/dev\/null 2>&1 \&\& \[ -n/if false \&\& [ -n/
@@ -1578,7 +1578,12 @@ EOF
       *)     printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nprintf "PVT_x\\t1\\n"\n' "$gwlog" > "$gwbin/gh" ;;
     esac
     chmod +x "$gwbin/gh"; : > "$gwlog"
-    sc_out="$(PATH="$gwbin:/usr/bin:/bin" HOME="$gwhome" CLAUDE_PLUGIN_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$srepo" \
+    # no-hirai-task は bin/hirai-task の無いプラグインの写し (壊れた導入) で引く。それ以外は実物
+    sc_root="$ROOT"
+    if [ "$sc" = "no-hirai-task" ]; then
+      sc_root="$gw/broken-plugin"; bare_plugin_root "$sc_root"
+    fi
+    sc_out="$(PATH="$gwbin:/usr/bin:/bin" HOME="$gwhome" CLAUDE_PLUGIN_ROOT="$sc_root" CLAUDE_PROJECT_DIR="$srepo" \
               bash "$HOOKS/session-start.sh" 2>&1 </dev/null)"; sc_rc=$?
     sc_sl="$(printf '{"context_window":{"used_percentage":12}}' \
              | PATH="$gwbin:/usr/bin:/bin" HOME="$gwhome" TMPDIR="$gw" NO_COLOR=1 CLAUDE_PROJECT_DIR="$srepo" \
@@ -1588,12 +1593,12 @@ EOF
     [ "${sc_lines:-0}" -ge 1 ] && [ "${sc_lines:-0}" -le 5 ] || bad5="$bad5 [${sc}] session-start が ${sc_lines} 行"
     [ -s "$gwlog" ] && bad5="$bad5 [${sc}] gh が呼ばれた (GraphQL を打たない形のはず): $(head -c 200 "$gwlog")"
     if [ "$sc" = "no-hirai-task" ]; then
-      # tasks: github-project で hirai-task が PATH に無い: 台帳へ落とさず、入れ方を 1 行で示す
-      printf '%s' "$sc_out" | grep -qF '/plugin install hirai-project-method@hirai-lite' \
+      # tasks: github-project で hirai-task が見つからない (プラグインが壊れている): 台帳へ落とさず、入れ直しを 1 行で示す
+      printf '%s' "$sc_out" | grep -qF '/plugin install tkm-harness@tkm-harness' \
         || bad5="$bad5 [${sc}] 入れ方の 1 行が出ない: $sc_out"
       printf '%s' "$sc_out" | grep -qF 'やること一覧はまだありません' \
         && bad5="$bad5 [${sc}] github-project なのに台帳の形へ落ちた"
-      printf '%s' "$sc_sl" | grep -qF 'hirai-project-method が未導入' \
+      printf '%s' "$sc_sl" | grep -qF 'hirai-task が見つからない' \
         || bad5="$bad5 [${sc}] statusline が未導入を示さない: $sc_sl"
     else
       printf '%s' "$sc_out" | grep -qF 'やること一覧はまだありません' \
@@ -1631,7 +1636,8 @@ exit 0
 EOF6
   chmod +x "$ghpbin/hirai-task"; : > "$ghplog"
   gstart="$(date +%s)"
-  gout="$(PATH="$ghpbin:/usr/bin:/bin" HOME="$gwhome" CLAUDE_PLUGIN_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$grepo" \
+  bare_plugin_root "$gw/bare"
+  gout="$(PATH="$ghpbin:/usr/bin:/bin" HOME="$gwhome" CLAUDE_PLUGIN_ROOT="$gw/bare" CLAUDE_PROJECT_DIR="$grepo" \
           bash "$HOOKS/session-start.sh" 2>&1 </dev/null | cat)"
   gelapsed=$(( $(date +%s) - gstart ))
   printf '%s' "$gout" | grep -qF 'Project: あなたの番 6（承認 3・裁定 1・取り込み 2）／進行中 5／待ち解け —' \
@@ -1661,10 +1667,11 @@ EOF6
   chmod +x "$mpm/bin/hirai-task"
   # M-5: 別のリポの project 行 (版が最大・projectPath が違う) は採らない。scope user の行だけ・このリポの project 行だけを見る
   mkdir -p "$mw/other/bin"; printf '#!/usr/bin/env bash\n[ "$1" = line ] && echo "99（別のリポの行）"\nexit 0\n' > "$mw/other/bin/hirai-task"; chmod +x "$mw/other/bin/hirai-task"
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"user","version":"0.9.0","installPath":"%s/n1"},{"scope":"user","version":"1.0.0","installPath":"%s"},{"scope":"project","projectPath":"/elsewhere/other","version":"9.0.0","installPath":"%s/other"},{"scope":"user","version":"0.1.0","installPath":"%s/n2"}]}}\n' \
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"user","version":"0.9.0","installPath":"%s/n1"},{"scope":"user","version":"1.0.0","installPath":"%s"},{"scope":"project","projectPath":"/elsewhere/other","version":"9.0.0","installPath":"%s/other"},{"scope":"user","version":"0.1.0","installPath":"%s/n2"}]}}\n' \
     "$mw" "$mw/pm/1.0.0" "$mw" "$mw" > "$mhome/.claude/plugins/installed_plugins.json"
   printf 'tasks: "github-project"  # c\nnotify: '"'orca'"'\nworktree: "block" # x\n' > "$mrepo/.claude/mode.yml"
-  mout="$(env -i HOME="$mhome" PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$mrepo" /bin/bash "$HOOKS/session-start.sh" 2>&1 </dev/null)"
+  bare_plugin_root "$mw/bare"
+  mout="$(env -i HOME="$mhome" PATH=/usr/bin:/bin CLAUDE_PLUGIN_ROOT="$mw/bare" CLAUDE_PROJECT_DIR="$mrepo" /bin/bash "$HOOKS/session-start.sh" 2>&1 </dev/null)"
   printf '%s' "$mout" | grep -qF 'Project: あなたの番 7' || mbad="$mbad [PATH に hirai-task 無し] 開始時が足すプラグインを見つけない: $mout"
   printf '%s' "$mout" | grep -qF '別のリポの行' && mbad="$mbad [M-5] 別のリポの projectPath の行 (版が最大) を採った: $mout"
   printf '%s' "$mout" | grep -qF 'tasks: github-project' || mbad="$mbad [引用符・行末コメント] tasks: が読めない: $mout"
@@ -1674,15 +1681,15 @@ EOF6
          CLAUDE_PROJECT_DIR="$mrepo" /bin/bash "$ROOT/scripts/statusline.sh" 2>&1)"
   printf '%s' "$msl" | grep -qF 'あなたの番 7' || mbad="$mbad [PATH に hirai-task 無し] 画面下が足すプラグインを見つけない: $msl"
   # M-5: uninstall 後 (installed に行が無く cache だけ残る) は空・rc 1。cache への逃げ道は installed_plugins.json が無いときだけ
-  mkdir -p "$mhome/.claude/plugins/cache/hirai-lite/hirai-project-method/1.0.0/bin"
-  cp "$mpm/bin/hirai-task" "$mhome/.claude/plugins/cache/hirai-lite/hirai-project-method/1.0.0/bin/hirai-task"
-  printf '{"plugins":{"hirai-lite@hirai-lite":[{"scope":"user","version":"3.0.0","installPath":"/x"}]}}\n' > "$mhome/.claude/plugins/installed_plugins.json"
+  mkdir -p "$mhome/.claude/plugins/cache/some-fork/tkm-harness/1.0.0/bin"
+  cp "$mpm/bin/hirai-task" "$mhome/.claude/plugins/cache/some-fork/tkm-harness/1.0.0/bin/hirai-task"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"user","version":"3.0.0","installPath":"/x"}]}}\n' > "$mhome/.claude/plugins/installed_plugins.json"
   mu="$(cd "$mrepo" && HOME="$mhome" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"; echo \"rc=\$?\"")"
   [ "$mu" = "rc=1" ] || mbad="$mbad [M-5] uninstall 後に cache の残りを採った (期待 空・rc=1): ${mu}"
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"project","projectPath":"/elsewhere/other","version":"1.0.0","installPath":"%s"}]}}\n' "$mw/other" > "$mhome/.claude/plugins/installed_plugins.json"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"project","projectPath":"/elsewhere/other","version":"1.0.0","installPath":"%s"}]}}\n' "$mw/other" > "$mhome/.claude/plugins/installed_plugins.json"
   mu="$(cd "$mrepo" && HOME="$mhome" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"; echo \"rc=\$?\"")"
   [ "$mu" = "rc=1" ] || mbad="$mbad [M-5] 別のリポの project 行だけのとき採った: ${mu}"
-  printf '{"plugins":{"hirai-project-method@hirai-lite":[{"scope":"project","projectPath":"%s","version":"1.0.0","installPath":"%s"}]}}\n' "$mrepo" "$mw/pm/1.0.0" > "$mhome/.claude/plugins/installed_plugins.json"
+  printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"project","projectPath":"%s","version":"1.0.0","installPath":"%s"}]}}\n' "$mrepo" "$mw/pm/1.0.0" > "$mhome/.claude/plugins/installed_plugins.json"
   mu="$(cd "$mrepo" && HOME="$mhome" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"")"
   [ "$mu" = "$mw/pm/1.0.0/bin/hirai-task" ] || mbad="$mbad [M-5] このリポの project 行を採らない: ${mu}"
   # ホームとプロジェクトの順: 項目ごとにプロジェクト > ホーム。プロジェクトに無い項目はホームを読む
@@ -1707,7 +1714,7 @@ EOF6
     mkdir -p "$mhome/.claude/plugins/data/hirai-lite-v2-hirai-lite"
     printf '{"form": "ghp"}\n' > "$mhome/.claude/plugins/data/hirai-lite-v2-hirai-lite/tasks-acme-widgets.json"
     mout="$(cd "$mrepo" && env HOME="$mhome" CLAUDE_PLUGIN_ROOT="$ROOT" /bin/bash -c "$mblk" 2>&1)"
-    [ "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"].get("HIRAI_METHOD_TASKS"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = github-project ] \
+    [ "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"].get("TKM_HARNESS_TASKS"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = github-project ] \
       || mbad="$mbad [2b] 末尾 / の remote で 2.x の控えを見つけて settings.json の env に github-project を書かない: $mout"
     [ -e "$mrepo/.claude/mode.yml" ] && mbad="$mbad [2b] settings.json の env に書くのに mode.yml も作った"
     [ -e "$mhome/.claude/mode.yml" ] && mbad="$mbad [2b] ホームの mode.yml を作った"
@@ -1719,12 +1726,12 @@ EOF6
     printf '%s' "$mout" | grep -qF 'tasks: 書きませんでした' || mbad="$mbad [2b] 控えが none で mode.yml 無しのとき「書きませんでした」を出さない: $mout"
     printf 'mode: loop\n' > "$mrepo/.claude/mode.yml"
     mout="$(cd "$mrepo" && env HOME="$mhome" CLAUDE_PLUGIN_ROOT="$ROOT" /bin/bash -c "$mblk" 2>&1)"
-    [ "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"].get("HIRAI_METHOD_TASKS"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = ledger ] || mbad="$mbad [2b] 控えが none で mode.yml が在るのに settings.json の env に ledger を足さない: $mout"
+    [ "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"].get("TKM_HARNESS_TASKS"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = ledger ] || mbad="$mbad [2b] 控えが none で mode.yml が在るのに settings.json の env に ledger を足さない: $mout"
     # HM-R2: mode.yml の 3 項目は settings.json の env へ移り、mode.yml の行は消える (ほかの行は残る)。2 回目は何も起きない
     rm -f "$mrepo/.claude/settings.json" "$mhome/.claude/plugins/data/hirai-lite-v2-hirai-lite/tasks-acme-widgets.json"
     printf 'mode: loop\ntasks: github-project\nworktree: block\nnotify: orca\n' > "$mrepo/.claude/mode.yml"
     mout="$(cd "$mrepo" && env HOME="$mhome" CLAUDE_PLUGIN_ROOT="$ROOT" /bin/bash -c "$mblk" 2>&1)"
-    [ "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("HIRAI_METHOD_TASKS"),e.get("HIRAI_METHOD_WORKTREE"),e.get("HIRAI_METHOD_NOTIFY"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = "github-project block orca" ] \
+    [ "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("TKM_HARNESS_TASKS"),e.get("TKM_HARNESS_WORKTREE"),e.get("TKM_HARNESS_NOTIFY"))' "$mrepo/.claude/settings.json" 2>/dev/null)" = "github-project block orca" ] \
       || mbad="$mbad [2b] mode.yml の 3 項目を settings.json の env へ移さない: $mout"
     [ "$(paste -sd'|' "$mrepo/.claude/mode.yml")" = "mode: loop|tasks: github-project|notify: orca" ] || mbad="$mbad [2b] 移したあとの mode.yml が mode: だけでない: $(paste -sd'|' "$mrepo/.claude/mode.yml")"
     printf '%s' "$mout" | grep -qF 'tasks: github-project / worktree: block / notify: orca' || mbad="$mbad [2b] 移したあとの 1 行 (tasks・worktree・notify の実測値) が出ない: $mout"
@@ -1770,7 +1777,7 @@ EOF6
     if [ -z "$sec" ]; then bad6="$bad6 ${ghpcmd}:GitHub Project の形の節が無い"; continue; fi
     printf '%s' "$sec" | grep -qF 'hirai-task' \
       || bad6="$bad6 ${ghpcmd}:GitHub Project の形の節が hirai-task を呼ばない"
-    printf '%s' "$sec" | grep -qF '/plugin install hirai-project-method@hirai-lite' \
+    printf '%s' "$sec" | grep -qF '/plugin install tkm-harness@tkm-harness' \
       || bad6="$bad6 ${ghpcmd}:hirai-task が無いときの入れ方が無い"
     printf '%s' "$sec" | grep -qE 'list\.md|\$LIST|docs/tasks|harness_tasks_file' \
       && bad6="$bad6 ${ghpcmd}:GitHub Project の形の節が台帳 (list.md 系) を参照する行を持つ"
@@ -1783,8 +1790,9 @@ EOF6
       bad6="$bad6 ${ghpcmd}:harness_tasks_form の呼び出しが harness_tasks_file より後"
     fi
   done
-  if grep -rqE 'harness_ghp_' "$ROOT/commands" "$ROOT/hooks" "$ROOT/scripts" 2>/dev/null; then
-    bad6="$bad6 土台が足すプラグインの関数 (harness_ghp_*) を直接呼んでいる: $(grep -rlE 'harness_ghp_' "$ROOT/commands" "$ROOT/hooks" "$ROOT/scripts" | head -3 | tr '\n' ' ')"
+  # (ghp-path.sh 自身と hirai-task の部品 hirai_*.py は、その関数を持つ・使う側なので数えない)
+  if grep -rqE 'harness_ghp_' --exclude=ghp-path.sh --exclude='hirai_*.py' "$ROOT/commands" "$ROOT/hooks" "$ROOT/scripts" 2>/dev/null; then
+    bad6="$bad6 hook・command・共通ライブラリが GitHub Project の関数 (harness_ghp_*) を直接呼んでいる: $(grep -rlE 'harness_ghp_' --exclude=ghp-path.sh --exclude='hirai_*.py' "$ROOT/commands" "$ROOT/hooks" "$ROOT/scripts" | head -3 | tr '\n' ' ')"
   fi
   if [ -n "$bad6" ]; then fail 1 "new-task・start-task・finish-task は形の見分けを先に行い、github-project の形で hirai-task を呼び、台帳を書かない" "$bad6"; return; fi
 
@@ -2086,7 +2094,7 @@ case_3() {
   first="$(TMPDIR="$td" HC_CONTEXT_RATIO=0.85 bash "$HOOKS/context-budget.sh" <<< '{"session_id":"smoke-over"}' 2>&1)"
   second="$(TMPDIR="$td" HC_CONTEXT_RATIO=0.85 bash "$HOOKS/context-budget.sh" <<< '{"session_id":"smoke-over"}' 2>&1)"
   rm -rf "$td"
-  if ! printf '%s' "$first" | grep -q '/hirai-lite:state save'; then fail 3 "閾値超過で 1 度だけ発火" "1 回目が無出力"; return; fi
+  if ! printf '%s' "$first" | grep -q '/tkm-harness:state save'; then fail 3 "閾値超過で 1 度だけ発火" "1 回目が無出力"; return; fi
   if [ -n "$second" ]; then fail 3 "閾値超過で 1 度だけ発火" "2 回目も出力: $second"; return; fi
 
   # --- 画面下部と自動処理が同じ使用率を出す (v1.9.0 の不具合の再発検査) ---------------
@@ -2331,7 +2339,7 @@ case_5() {
   # 例外の範囲 (編集と git commit まで・読み取り / リポの外 / git に入らない場所 / branch の切り替えは止めない)
   # と失効条件が欠けると、止める hook が条 5 の許す範囲を超える。語を 1 つ変えても落ちるよう全文で比べる。
   local meta5_want meta5_got
-  meta5_want='5. **機械強制は不可逆操作のみ**: `settings.json` の `deny` / `ask` と hook で止めてよいのは「間違えたら戻せない」操作だけ。本条が禁じているのは**止める**仕組みなので、context を注ぐだけの hook（reminder / 表示）は対象外。例外は 1 つ — `.claude/mode.yml` に `worktree: block` を置いたリポでは、Orca の worktree でない会話からの、リポの中の git に入るファイルの編集と `git commit` を止めてよい（並行の会話が同じ作業ツリーを触る事故を、編集の時点で止める）。読み取り・リポの外（`~/.claude` の記憶の置き場など）と git に入らない場所への書き込み・branch の切り替えは止めない。例外の失効: そのリポが `worktree: block` を外したとき'
+  meta5_want='5. **機械強制は不可逆操作のみ**: `settings.json` の `deny` / `ask` と hook で止めてよいのは「間違えたら戻せない」操作だけ。本条が禁じているのは**止める**仕組みなので、context を注ぐだけの hook（reminder / 表示）は対象外。例外は 1 つ — `.claude/settings.json` の `env` で `TKM_HARNESS_WORKTREE=block` にしたリポ（移行の間は `.claude/mode.yml` の `worktree: block` も）では、Orca の worktree でない会話からの、リポの中の git に入るファイルの編集と `git commit` を止めてよい（並行の会話が同じ作業ツリーを触る事故を、編集の時点で止める）。読み取り・リポの外（`~/.claude` の記憶の置き場など）と git に入らない場所への書き込み・branch の切り替えは止めない。例外の失効: そのリポが `TKM_HARNESS_WORKTREE=block` を外したとき'
   meta5_got="$(grep -m1 '^5\. \*\*機械強制は不可逆操作のみ' "$ROOT/rules/_meta.md" 2>/dev/null)"
   [ "$meta5_got" = "$meta5_want" ] || bad5="$bad5 _meta.md 条 5 が承認された全文と違う: ${meta5_got:-無}"
   # T1 (タスク・設計の承認を扱う層) から T2 へのポインタ
@@ -2340,8 +2348,8 @@ case_5() {
   elif ! grep -qF "$APPROVAL_TEMPLATE" "$tk"; then
     bad5="$bad5 tasks.md:承認テンプレートへのポインタが無い"
   fi
-  # GitHub Project の形の立ち上げ手順 (足すプラグイン hirai-project-method の T2): 4 手順・自動化 4 本 (設定値つき)・ビュー 8 枚・画面でしか付けられない 3 つ
-  local ps="$ROOT/plugins/hirai-project-method/docs/rules-reference/project-setup.md" it badps=""
+  # GitHub Project の形の立ち上げ手順 (タスク管理の機能の T2): 4 手順・自動化 4 本 (設定値つき)・ビュー 8 枚・画面でしか付けられない 3 つ
+  local ps="$ROOT/docs/rules-reference/project-setup.md" it badps=""
   if [ ! -f "$ps" ]; then badps="project-setup.md が無い"
   else
     for it in 'is:pr' '階層表示' '並べ替え' 'グループ化' '## 1. 立ち上げの 4 手順' '## 6. ビュー 8 枚'; do
@@ -2367,10 +2375,10 @@ case_5() {
   grep -qF '2 つの形の区別' "$rr/task-ledger.md" || badt2="$badt2 task-ledger.md に 2 つの形の区別が無い"
   if [ -n "$badt2" ]; then fail 5 "T2 は形を区別して書く (台帳の形が既定・GitHub Project は足すプラグイン)" "$badt2"; return; fi
 
-  pass 5 "T0 層の rule は許可リストどおり ${n} 本 <= ${T0_MAX} (${names# }) / core.md に承認の 1 行 (カードの 7 語入り・2 行以内) / _meta.md 条 5 は承認された全文 (例外は worktree: block の 1 つ) / tasks.md から T2 テンプレートへのポインタ / 足すプラグインの project-setup.md に 4 手順・自動化 4 本・ビュー 8 枚・画面でしか付けられない 3 つ / T2 は 2 つの形を区別して書く"
+  pass 5 "T0 層の rule は許可リストどおり ${n} 本 <= ${T0_MAX} (${names# }) / core.md に承認の 1 行 (カードの 7 語入り・2 行以内) / _meta.md 条 5 は承認された全文 (例外は worktree: block の 1 つ) / tasks.md から T2 テンプレートへのポインタ / project-setup.md に 4 手順・自動化 4 本・ビュー 8 枚・画面でしか付けられない 3 つ / T2 は 2 つの形を区別して書く"
 }
 
-# ---------- case 6: 数の予算 (hook<=5 / skill<=3 / smoke case<=10。command は v2.7.0 で上限を外し、数だけ出す) ----------
+# ---------- case 6: 数の予算 (hook<=6 / skill<=3 / smoke case<=10。command は v2.7.0 で上限を外し、数だけ出す) ----------
 # hook は hooks/*.sh だけを数える (hooks.json は宣言であって hook スクリプトではない)。
 # skill は skills/<名前>/SKILL.md を数える。本体は呼ばれた時だけ読まれるが name と
 # description は常に載るため、数を予算で抑える (rules/_meta.md 「数の予算」)。
@@ -2380,13 +2388,11 @@ case_6() {
   cmds="$(find "$ROOT/commands" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
   skills="$(find "$ROOT/skills" -maxdepth 2 -name 'SKILL.md' 2>/dev/null | wc -l | tr -d ' ')"
   cases="$(grep -c '^case_[0-9][0-9]*()' "$here/smoke.sh" 2>/dev/null | tr -d ' ')"
-  local msg="hook=${hooks}/5 command=${cmds} skill=${skills}/3 smoke case=${cases}/10"
-  local pcmds pskills
-  pcmds="$(find "$ROOT/plugins/hirai-project-method/commands" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
-  pskills="$(find "$ROOT/plugins/hirai-project-method/skills" -maxdepth 2 -name 'SKILL.md' 2>/dev/null | wc -l | tr -d ' ')"
-  msg="$msg / 足すプラグイン command=${pcmds}/2 skill=${pskills}/1"
-  if [ "${hooks:-0}" -gt 5 ] || [ "${skills:-0}" -gt 3 ] \
-     || [ "${cases:-0}" -gt 10 ] || [ "${pcmds:-0}" -gt 2 ] || [ "${pskills:-0}" -gt 1 ]; then
+  # hook の上限は 6 (5 → 6)。2 つのプラグインを 1 つにして、タスク管理の機能の hook coordinator-load.sh
+  # (コーディネーターの会話だけの PostToolUse) が同じプラグインに入ったため (heyapro-app #2042)。
+  local hook_max=6
+  local msg="hook=${hooks}/${hook_max} command=${cmds} skill=${skills}/3 smoke case=${cases}/10"
+  if [ "${hooks:-0}" -gt "$hook_max" ] || [ "${skills:-0}" -gt 3 ] || [ "${cases:-0}" -gt 10 ]; then
     fail 6 "数の予算" "$msg"; return
   fi
 
@@ -2395,12 +2401,9 @@ case_6() {
   # 説明文は毎セッション載る (rules/_meta.md 「数の予算」) ので、
   # 壊れた skill は予算だけ食って何もしない状態になる。
   local want sf nm ds bad6=""
-  # 土台の skill は 2 件 (github-project は足すプラグイン hirai-project-method へ移した)。
-  # 足すプラグインの skill は plugins/hirai-project-method/skills/ を同じ形で見る。
-  [ ! -e "$ROOT/skills/github-project" ] || bad6="$bad6 github-project が土台に残っている (足すプラグインへ移したはず)"
-  for want in grilling context-engineering plugins/hirai-project-method/skills/github-project; do
+  # skill は 3 件 (grilling・context-engineering と、タスク管理の機能の github-project)。
+  for want in grilling context-engineering github-project; do
     sf="$ROOT/skills/$want/SKILL.md"
-    case "$want" in plugins/*) sf="$ROOT/$want/SKILL.md"; want="github-project" ;; esac
     if [ ! -f "$sf" ]; then bad6="$bad6 ${want}:SKILL.md が無い"; continue; fi
     nm="$(awk 'NR==1&&$0!="---"{exit} NR>1&&/^---[[:space:]]*$/{exit} sub(/^name:[[:space:]]*/,""){print;exit}' "$sf")"
     ds="$(awk 'NR==1&&$0!="---"{exit} NR>1&&/^---[[:space:]]*$/{exit} /^description:[[:space:]]*./{print "ok";exit}' "$sf")"
@@ -2420,7 +2423,7 @@ case_6() {
   fi
   if [ -n "$bad6" ]; then fail 6 "同梱 skill が実在し出典を持つ" "不備:$bad6"; return; fi
 
-  pass 6 "数の予算 ${msg} / 同梱 skill 3 件 (土台 2 + 足すプラグイン 1) の name はフォルダ名と一致し description を持つ / 出典 URL 4 件が残っている"
+  pass 6 "数の予算 ${msg} / 同梱 skill 3 件 (タスク管理の機能の github-project を含む) の name はフォルダ名と一致し description を持つ / 出典 URL 4 件が残っている"
 }
 
 # 更新検知 case (7/8) 用の作業 dir を組む。プラグインと同じ配置 (hooks/ scripts/ VERSION) にする。
@@ -2643,7 +2646,7 @@ case_8() {
     printf '%s' "$cached_v" > "$dir/latest"
     date +%s > "$dir/stamp"          # 期限内にして通信を起こさない
     out="$(run_session_start "$tmp" "$td" "on")"
-    want="[harness] 更新あり v${local_v} → v${cached_v} (/hirai-lite:update で適用)"
+    want="[harness] 更新あり v${local_v} → v${cached_v} (/tkm-harness:update で適用)"
     if [ "$expect" = "yes" ]; then
       if ! printf '%s\n' "$out" | grep -qF "$want"; then
         fail 8 "新版で 1 行通知" "local=${local_v} cached=${cached_v} で期待行が無い: $out"; failed=1; break
@@ -2669,7 +2672,7 @@ EOF
   # 画面下部 2 行目のお知らせ。SessionStart が置いた控えを statusline が読むだけで、通信は起きない。
   # 上から順に 1 つだけ出し (1 更新あり > 2 context 高 > 何も出さない)、設定リンクは常時残る。
   local flag why; flag="$(update_flag_path "$td" "$tmp")"
-  local up='更新あり → /hirai-lite:update' ctxmsg='きりの良いところで /hirai-lite:state save'
+  local up='更新あり → /tkm-harness:update' ctxmsg='きりの良いところで /tkm-harness:state save'
   local j_low='{"model":{"display_name":"X"},"context_window":{"used_percentage":12}}'
   local j_high='{"model":{"display_name":"X"},"context_window":{"used_percentage":85}}'
   while [ "$failed" -eq 0 ]; do
@@ -2813,21 +2816,21 @@ EOF
   rm -rf "$wtmp" "$wtd"
   if [ -n "$badw" ]; then fail 8 "github-project と更新あり・入れ替えの行が全部出ても 5 行以内" "$badw"; return; fi
 
-  # 6 巡目: 足すプラグインの行の絞り (worktree で入れた行・別のリポの行)・更新の知らせが各リポの版で 1 行・
+  # 6 巡目: hirai-task の行の絞り (worktree で入れた行・別のリポの行)・更新の知らせが 1 行・
   # coordinator があっても前回の続きは latest.md・cwd が違う画面下。壊した複製 5 通りで FAIL することも見る。
   local r6u; r6u="$(r6_suite update)"
-  if [ -n "$r6u" ]; then fail 8 "足すプラグインの行の絞り・更新の知らせ・開始時と画面下" "$r6u"; return; fi
+  if [ -n "$r6u" ]; then fail 8 "hirai-task の行の絞り・更新の知らせ・開始時と画面下" "$r6u"; return; fi
 
-  pass 8 "新版のみ 1 行通知 / 同版・旧版は無通知 / 0.9.0 < 0.10.0 と 1.9.0 < 1.10.0 を数値比較 / 画面下部 2 行目は設定リンクを常時出しつつ お知らせは 更新あり > context 高 > 無表示 の順に 1 つだけ (off で停止・閾値可変・通信なし) / 既定の閾値 50% (v1.15.0) を境に 49% 無出力・50% でお知らせを出す / フラグの鍵は案件 (CLAUDE_PROJECT_DIR) ごとに分かれ、plugin_root と project_root が別のパスでも project_root 側だけに置かれ、他案件の更新ありは漏れない / tasks: github-project の行と更新あり・入れ替えの行が同時に出ても 5 行以内 / 足すプラグインの行は worktree で入れても本体・別 worktree から当たり別のリポの行は採らず、更新の知らせは各リポの行の版で土台と合わせて 1 行・前回の続きは coordinator でなく latest.md・cwd が違う画面下も会話のリポで引く (壊した複製 5 通りで FAIL)"
+  pass 8 "新版のみ 1 行通知 / 同版・旧版は無通知 / 0.9.0 < 0.10.0 と 1.9.0 < 1.10.0 を数値比較 / 画面下部 2 行目は設定リンクを常時出しつつ お知らせは 更新あり > context 高 > 無表示 の順に 1 つだけ (off で停止・閾値可変・通信なし) / 既定の閾値 50% (v1.15.0) を境に 49% 無出力・50% でお知らせを出す / フラグの鍵は案件 (CLAUDE_PROJECT_DIR) ごとに分かれ、plugin_root と project_root が別のパスでも project_root 側だけに置かれ、他案件の更新ありは漏れない / tasks: github-project の行と更新あり・入れ替えの行が同時に出ても 5 行以内 / hirai-task の行は worktree で入れても本体・別 worktree から当たり別のリポの行は採らず、更新の知らせは 1 行・前回の続きは coordinator でなく latest.md・cwd が違う画面下も会話のリポで引く (壊した複製 5 通りで FAIL)"
 }
 
 # ---------- case 9: マニフェストが妥当な JSON で、版が VERSION と一致する ----------
 # 不一致だと更新検知 (VERSION 基準) と /plugin update (plugin.json 基準) が別の版を指し、
 # 「更新あり」の通知が嘘になる。
 case_9() {
-  local f ver pver mver PM="$ROOT/plugins/hirai-project-method"
+  local f ver pver PM="$ROOT"
   for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json templates/settings.json \
-           plugins/hirai-project-method/.claude-plugin/plugin.json; do
+           .claude-plugin/plugin.json; do
     if [ ! -f "$ROOT/$f" ]; then fail 9 "マニフェストが存在する" "$f が無い"; return; fi
     if ! python3 -m json.tool "$ROOT/$f" >/dev/null 2>&1; then
       fail 9 "マニフェストが妥当な JSON" "$f が JSON として読めない"; return
@@ -2840,73 +2843,82 @@ case_9() {
     fail 9 "plugin.json の version が VERSION と一致" "VERSION=${ver} plugin.json=${pver}"; return
   fi
 
-  # 既定の更新 URL の ref (github.com/thirai-classlab/hirai-method-lite/<ref>/VERSION) は、
-  # 配る系列の branch と一致する。3.0.0 から配る系列は main 1 本 (v2 は凍結)。
-  # ずれると、この branch の VERSION が別の branch の VERSION と比べ続け、「更新あり」が
-  # 一生出ない (または退役した 2.x の版と比べる)。3 か所の一致と、それが main であることを見る。
-  local uref umd urm
-  uref="$(sed -n 's#.*hirai-method-lite/\([^/]*\)/VERSION.*#\1#p' "$ROOT/scripts/update-check.sh" | head -1)"
-  umd="$(sed -n 's#.*hirai-method-lite/\([^/]*\)/VERSION.*#\1#p' "$ROOT/commands/update.md" | head -1)"
-  urm="$(sed -n 's#.*hirai-method-lite/\([^/]*\)/VERSION.*#\1#p' "$ROOT/README.md" | head -1)"
-  if [ -z "$uref" ] || [ "$umd" != "$uref" ] || [ "$urm" != "$uref" ]; then
-    fail 9 "既定の更新 URL の ref が 3 か所で一致する" \
-      "update-check.sh=${uref:-無} update.md=${umd:-無} README.md=${urm:-無}"; return
-  fi
-  if [ "$uref" != "main" ]; then
-    fail 9 "既定の更新 URL の ref が配る系列 (main) を指す" "ref=${uref} (v2 は凍結。main 1 本から配る)"; return
-  fi
+  # 更新の知らせの取得先は決め打ちしない (TKM-R5.2)。HARNESS_UPDATE_URL > known_marketplaces.json の配布元の source。
+  # github・git (github.com) は https://raw.githubusercontent.com/<owner>/<repo>/main/VERSION、dir・file 無し・
+  # 読めない JSON は空 (通信しない)。配る系列は main 1 本。
+  local uhome uout ubad="" ucase
+  uhome="$(mkt)"; mkdir -p "$uhome/.claude/plugins"
+  for ucase in \
+    'github|{"tkm-harness":{"source":{"source":"github","repo":"acme/fork"}}}|https://raw.githubusercontent.com/acme/fork/main/VERSION' \
+    'git|{"tkm-harness":{"source":{"source":"git","url":"https://github.com/acme/fork2.git"}}}|https://raw.githubusercontent.com/acme/fork2/main/VERSION' \
+    'dir|{"tkm-harness":{"source":{"source":"directory","path":"/work/tkm-harness"}}}|' \
+    '別の配布元だけ|{"other":{"source":{"source":"github","repo":"acme/other"}}}|' \
+    'broken|not json|' ; do
+    printf '%s' "$(printf '%s' "$ucase" | cut -d'|' -f2)" > "$uhome/.claude/plugins/known_marketplaces.json"
+    uout="$(env -i HOME="$uhome" PATH="$PATH" bash -c ". \"$ROOT/scripts/update-check.sh\"; harness_update_url" 2>/dev/null)"
+    [ "$uout" = "$(printf '%s' "$ucase" | cut -d'|' -f3)" ] || ubad="$ubad [$(printf '%s' "$ucase" | cut -d'|' -f1): [$uout]]"
+  done
+  rm -f "$uhome/.claude/plugins/known_marketplaces.json"
+  uout="$(env -i HOME="$uhome" PATH="$PATH" bash -c ". \"$ROOT/scripts/update-check.sh\"; harness_update_url" 2>/dev/null)"
+  [ -z "$uout" ] || ubad="$ubad [file 無し: [$uout]]"
+  printf '%s' '{"mine":{"source":{"source":"github","repo":"acme/mine"}}}' > "$uhome/.claude/plugins/known_marketplaces.json"
+  uout="$(env -i HOME="$uhome" PATH="$PATH" HARNESS_MARKETPLACE_NAME=mine bash -c ". \"$ROOT/scripts/update-check.sh\"; harness_update_url" 2>/dev/null)"
+  [ "$uout" = "https://raw.githubusercontent.com/acme/mine/main/VERSION" ] || ubad="$ubad [HARNESS_MARKETPLACE_NAME: [$uout]]"
+  uout="$(env -i HOME="$uhome" PATH="$PATH" HARNESS_UPDATE_URL=http://example.invalid/V bash -c ". \"$ROOT/scripts/update-check.sh\"; harness_update_url" 2>/dev/null)"
+  [ "$uout" = "http://example.invalid/V" ] || ubad="$ubad [HARNESS_UPDATE_URL の上書き: [$uout]]"
+  rm -rf "$uhome"
+  if [ -n "$ubad" ]; then fail 9 "更新の URL は配布元の source から組む (github・git・dir・file 無しの 4 通り)" "$ubad"; return; fi
+  grep -qE 'thirai-classlab|hirai-method-lite' "$ROOT/scripts/update-check.sh" && { fail 9 "update-check.sh に持ち主・リポの名前を書かない" "$(grep -nE 'thirai-classlab|hirai-method-lite' "$ROOT/scripts/update-check.sh" | head -1)"; return; }
 
-  # カタログ (marketplace.json) は 3 行: hirai-lite (土台・source "./")・hirai-project-method
-  # (足すプラグイン・source ./plugins/hirai-project-method)・hirai-lite-v2 (退役・ref v2 のまま)。
-  # 版は VERSION / plugin.json と一致し、足すプラグインは自分の plugin.json・VERSION と一致する。
-  # 土台の entry 名は update-check.sh の HARNESS_ENTRY_NAME と同じ。控えの置き場 (ghp-path.sh の
-  # HARNESS_GHP_ID) は Claude Code が entry 名とカタログ名から作るディレクトリ名
-  # (<entry 名>-<カタログ名>) と同じ。ずれると、控えの置き場が実際の data の置き場と別になる。
-  local cat pmver pmpver want_id ename_const ghp_id mname
-  cat="$(python3 - "$ROOT/.claude-plugin/marketplace.json" "$PM/.claude-plugin/plugin.json" "$PM/VERSION" "$ROOT/.claude-plugin/plugin.json" <<'PYEOF' 2>&1
+  # カタログ (marketplace.json) は 1 つのプラグイン tkm-harness (source "./"・owner.name tkm-harness)。
+  # 版は VERSION と plugin.json と一致し、plugin.json に dependencies・repository は無い (fork がそのまま使える)。
+  # entry 名は update-check.sh の HARNESS_ENTRY_NAME と同じ。控えの置き場 (ghp-path.sh の HARNESS_GHP_ID) は
+  # Claude Code が entry 名とカタログ名から作るディレクトリ名 (<entry 名>-<カタログ名>) と同じ。
+  local cat want_id ename_const ghp_id mname
+  cat="$(python3 - "$ROOT/.claude-plugin/marketplace.json" "$ROOT/.claude-plugin/plugin.json" "$ROOT/VERSION" <<'PYEOF' 2>&1
 import json, sys
 d = json.load(open(sys.argv[1]))
-pm = json.load(open(sys.argv[2]))
-pmv = open(sys.argv[3]).read().strip()
-base = json.load(open(sys.argv[4]))
+base = json.load(open(sys.argv[2]))
+ver = open(sys.argv[3]).read().strip()
 errs = []
 names = [e.get("name") for e in d.get("plugins", [])]
-if sorted(names) != ["hirai-lite", "hirai-lite-v2", "hirai-project-method"]:
-    errs.append("entry が 3 行でない: %s" % names)
-by = {e.get("name"): e for e in d.get("plugins", [])}
-b = by.get("hirai-lite", {})
-if b.get("source") != "./": errs.append("hirai-lite の source が ./ でない: %r" % (b.get("source"),))
-if b.get("version") != base.get("version"): errs.append("hirai-lite の版 %s が plugin.json %s と違う" % (b.get("version"), base.get("version")))
-p = by.get("hirai-project-method", {})
-if p.get("source") != "./plugins/hirai-project-method": errs.append("hirai-project-method の source が違う: %r" % (p.get("source"),))
-if not (p.get("version") == pm.get("version") == pmv): errs.append("hirai-project-method の版がそろわない: catalog=%s plugin.json=%s VERSION=%s" % (p.get("version"), pm.get("version"), pmv))
-if pm.get("name") != "hirai-project-method": errs.append("足すプラグインの plugin.json の name が違う")
-deps = pm.get("dependencies") or []
-ok = [x for x in deps if isinstance(x, dict) and x.get("name") == "hirai-lite" and str(x.get("version", "")).startswith(">=3.")]
-if not ok: errs.append("足すプラグインの dependencies に hirai-lite >=3.x が無い: %r" % (deps,))
-v = by.get("hirai-lite-v2", {})
-src = v.get("source") if isinstance(v.get("source"), dict) else {}
-if src.get("ref") != "v2": errs.append("hirai-lite-v2 の ref が v2 でない: %r" % (src,))
-if src.get("source") != "url" or not str(src.get("url", "")).startswith("https://") or not str(src.get("url", "")).endswith("hirai-method-lite.git"):
-    errs.append("hirai-lite-v2 の取得元が url 形 (source url・https・hirai-method-lite.git) でない: %r" % (src,))
-if v.get("version") != "2.9.0": errs.append("hirai-lite-v2 の版が 2.9.0 でない: %s" % v.get("version"))
-if "退役" not in (v.get("description") or ""): errs.append("hirai-lite-v2 の description に 退役 が無い")
-print("ERR " + " / ".join(errs) if errs else "OK\t%s\t%s" % (d.get("name", ""), pmv))
+if names != ["tkm-harness"]:
+    errs.append("entry が tkm-harness 1 つでない: %s" % names)
+e = (d.get("plugins") or [{}])[0]
+if d.get("name") != "tkm-harness": errs.append("カタログの name が tkm-harness でない: %r" % d.get("name"))
+if (d.get("owner") or {}).get("name") != "tkm-harness": errs.append("owner.name が tkm-harness でない: %r" % d.get("owner"))
+if e.get("source") != "./": errs.append("source が ./ でない: %r" % (e.get("source"),))
+if not (e.get("version") == base.get("version") == ver): errs.append("版がそろわない: catalog=%s plugin.json=%s VERSION=%s" % (e.get("version"), base.get("version"), ver))
+if (d.get("metadata") or {}).get("version") != ver: errs.append("metadata.version が VERSION と違う")
+if base.get("name") != "tkm-harness": errs.append("plugin.json の name が tkm-harness でない")
+for k in ("dependencies", "repository", "homepage"):
+    if k in base: errs.append("plugin.json に %s がある (fork がそのまま使えない)" % k)
+print("ERR " + " / ".join(errs) if errs else "OK\t%s" % d.get("name", ""))
 PYEOF
 )"
   case "$cat" in
     OK*) ;;
-    *) fail 9 "カタログ 3 行 (hirai-lite 3.x・hirai-project-method 1.x・退役の hirai-lite-v2) と plugin.json の版・依存が一致する" "$cat"; return ;;
+    *) fail 9 "カタログは 1 つのプラグイン tkm-harness で、plugin.json の版・名前・依存なしが一致する" "$cat"; return ;;
   esac
-  mname="$(printf '%s' "$cat" | cut -f2)"; pmver="$(printf '%s' "$cat" | cut -f3)"
+  mname="$(printf '%s' "$cat" | cut -f2)"
   ename_const="$(sed -n 's/^HARNESS_ENTRY_NAME="\(.*\)"$/\1/p' "$ROOT/scripts/update-check.sh" | head -1)"
-  if [ "$ename_const" != "hirai-lite" ]; then
-    fail 9 "entry 名が update-check.sh の HARNESS_ENTRY_NAME と一致 (hirai-lite)" "update-check.sh=${ename_const:-無}"; return
+  if [ "$ename_const" != "tkm-harness" ]; then
+    fail 9 "entry 名が update-check.sh の HARNESS_ENTRY_NAME と一致 (tkm-harness)" "update-check.sh=${ename_const:-無}"; return
   fi
-  want_id="hirai-project-method-${mname}"
+  want_id="tkm-harness-${mname}"
   ghp_id="$(sed -n 's/^HARNESS_GHP_ID="\(.*\)"$/\1/p' "$PM/scripts/ghp-path.sh" | head -1)"
   if [ "$ghp_id" != "$want_id" ]; then
     fail 9 "ghp-path.sh の HARNESS_GHP_ID が <entry 名>-<カタログ名> と一致" "want=${want_id} ghp-path.sh=${ghp_id:-無}"; return
+  fi
+  # 名前の付け替え (TKM-R5・fork してそのまま使える): 動く部品に旧い名前・持ち主・リポの名前が残っていない。
+  # 残してよいのは、旧系列 hirai-lite-v2 から移る道 (退役の hirai-lite-v2・その控え) と、出典を書いた文書だけ。
+  local namehits
+  namehits="$(cd "$ROOT" && grep -rnE '/hirai-lite:|/hirai-project-method:|hirai-lite@hirai-lite|hirai-project-method@hirai-lite|cache/hirai-lite/|HIRAI_METHOD_|thirai-classlab|hirai-method-lite|hirai-project-method' \
+              hooks scripts bin commands skills templates rules agents .claude-plugin docs/rules-reference 2>/dev/null \
+            | grep -v 'hirai-lite-v2' \
+            | grep -v 'docs/rules-reference/\(design-process\|plugin-development\)\.md:' | head -3)"
+  if [ -n "$namehits" ]; then
+    fail 9 "動く部品に旧い名前 (hirai-lite・hirai-project-method・HIRAI_METHOD_) と持ち主・リポの名前が残っていない" "$namehits"; return
   fi
   # 退役した 2.x の entry 名 (hirai-lite-v2) の決め打ちが、土台と足すプラグインの動く部品に残っていない。
   # 残してよいのは、2.x から移る手順の説明 (update.md・init.md の「退役」の行・tasks-path.sh の
@@ -2914,7 +2926,7 @@ PYEOF
   local v2hits
   v2hits="$(grep -rn 'hirai-lite-v2\|HARNESS_V2_ENTRY_NAME' "$ROOT/hooks" "$ROOT/scripts" "$ROOT/bin" "$ROOT/templates" \
             "$PM/bin" "$PM/scripts" "$PM/commands" "$PM/skills" "$ROOT/commands" "$ROOT/rules" 2>/dev/null \
-            | grep -v 'scripts/tasks-path\.sh:\|scripts/update-check\.sh:\|plugins/hirai-project-method/scripts/ghp-path\.sh:' \
+            | grep -v 'scripts/tasks-path\.sh:\|scripts/update-check\.sh:\|scripts/ghp-path\.sh:' \
             | grep -v 'commands/update\.md:\|commands/init\.md:' | head -3)"
   if [ -n "$v2hits" ]; then
     fail 9 "hirai-lite-v2 の決め打ちが動く部品に残っていない" "$v2hits"; return
@@ -2924,13 +2936,12 @@ PYEOF
      | grep -v ':[0-9]*:[[:space:]]*#' | grep -q .; then
     fail 9 "2.x の控え (hirai-lite-v2-hirai-lite) を読むのは tasks-path.sh の移行だけ" "$(grep -n 'hirai-lite-v2-hirai-lite' "$ROOT/scripts/update-check.sh" "$PM/scripts/ghp-path.sh" "$PM/bin/hirai-task" | head -2)"; return
   fi
-  # 手順書と README の install / update / uninstall は、土台 (hirai-lite@hirai-lite) と足すプラグイン
-  # (hirai-project-method@hirai-lite) を指す。hirai-lite-v2@ は 2.x から移る説明の中だけに在る。
+  # 手順書と README の install / update / uninstall は tkm-harness@tkm-harness を指す。hirai-lite-v2@ は 2.x から移る説明の中だけに在る。
   local ent_hits
   ent_hits="$(grep -nE 'plugin (install|update) hirai-lite-v2@' "$ROOT/README.md" "$ROOT"/commands/*.md 2>/dev/null \
               | grep -v '2\.x' | grep -v '退役' | grep -v '移' | head -3)"
   if [ -n "$ent_hits" ]; then
-    fail 9 "README と commands/ の install・update が hirai-lite@hirai-lite を指す (退役した hirai-lite-v2@ へ案内しない)" "$ent_hits"; return
+    fail 9 "README と commands/ の install・update が tkm-harness@tkm-harness を指す (退役した hirai-lite-v2@ へ案内しない)" "$ent_hits"; return
   fi
   # CLAUDE_PLUGIN_DATA / CLAUDE_PLUGIN_ROOT が別の値でも、空でも、書く側と読む側は同じ控えを指す。
   local c9tmp c9a c9b c9c
@@ -2946,7 +2957,7 @@ PYEOF
       "unset=${c9a} decoy=${c9b} want=${c9c}"; return
   fi
 
-  pass 9 "マニフェスト 5 件が妥当な JSON / version=${pver} が VERSION と一致 / 既定の更新 URL の ref (${uref}) が 3 か所で一致し main (配る系列は 1 本) / カタログは 3 行 (hirai-lite ${ver}・source ./ / hirai-project-method ${pmver}・source ./plugins/hirai-project-method・依存 hirai-lite >=3 / hirai-lite-v2 2.9.0・ref v2・退役) で版が plugin.json・VERSION と一致し、土台の entry 名が HARNESS_ENTRY_NAME と、控えの置き場が <entry 名>-<カタログ名> と一致 / hirai-lite-v2 の決め打ちが動く部品に無く、install の案内は hirai-lite@hirai-lite / env の有無で控えのパスが変わらない"
+  pass 9 "マニフェスト 5 件が妥当な JSON / version=${pver} が VERSION と一致 / 更新の URL は配布元の source から組む (github・git・dir・file 無しの 4 通りと上書き 2 通り) / カタログは tkm-harness 1 つ (source ./・owner tkm-harness・依存 repository なし) / 控えの id=${want_id} / 動く部品に旧い名前と持ち主・リポの名前が無い"
 }
 
 # ---------- case 10: 同梱物 (MCP 定義 / agents) が壊れていない ----------
@@ -3068,7 +3079,7 @@ print(" ".join(k for k in ("commands", "agents", "hooks") if k in m))
     fail 10 "commands/state.md <= 150 行" "${n_sm} 行 -- 詳細は skill 側へ出す"; return
   fi
   # 並び: 節の見出し → 0 件なら書かない → 承認を取る → /add-rule へ渡す
-  for marker in '次回に効くものを置く' '0 件なら' 'AskUserQuestion' 'hirai-lite:add-rule'; do
+  for marker in '次回に効くものを置く' '0 件なら' 'AskUserQuestion' 'tkm-harness:add-rule'; do
     off="$(grep -obF -m1 "$marker" "$sm" 2>/dev/null | head -n 1 | cut -d: -f1)"  # -m1 は 1 行の中の一致をすべて出す
     if [ -z "$off" ]; then bad="$bad state.md:[${marker}]が無い"; continue; fi
     if [ "$off" -le "$prev" ]; then bad="$bad state.md:[${marker}]の順序が逆"; fi
@@ -3076,7 +3087,7 @@ print(" ".join(k for k in ("commands", "agents", "hooks") if k in m))
   done
   # 自動で書く側 (承認不要・追記のみ) と、承認が要る側の切り分けが本文に残っている
   for key in 'harness_incidents_file' '追記のみ' '承認不要' 'Documents index' \
-             'hirai-lite:context-engineering'; do
+             'tkm-harness:context-engineering'; do
     grep -qF "$key" "$sm" || bad="$bad state.md:[${key}]が無い"
   done
   if [ -n "$bad" ]; then fail 10 "/state save が次回へ効かせる工程を持つ" "$bad"; return; fi
@@ -3144,9 +3155,9 @@ print(" ".join(out))
 PYCMD
 )"
   [ -z "$cmdbad" ] || bad="$bad コマンドの中のカードの例が決まりを破る(${cmdbad})"
-  # 進め方の用語集 (wave・feature・8 状態) は GitHub Project の形の用語なので足すプラグインに在り、土台の /init は配らない。
-  [ -f "$ROOT/plugins/hirai-project-method/docs/rules-reference/glossary.md" ] || bad="$bad 進め方の用語集 (plugins/hirai-project-method/docs/rules-reference/glossary.md) が無い"
-  [ ! -e "$ROOT/docs/rules-reference/glossary.md" ] || bad="$bad 用語集が土台に残っている (足すプラグインへ移したはず)"
+  # 進め方の用語集 (wave・feature・8 状態) は GitHub Project の形の用語 (タスク管理の機能) で、プラグインには在るが /init は導入先へ配らない。
+  [ -f "$ROOT/docs/rules-reference/glossary.md" ] || bad="$bad 進め方の用語集 (docs/rules-reference/glossary.md) が無い"
+  grep -q 'glossary' "$ROOT/commands/init.md" && bad="$bad /init が用語集を導入先へ配る形になっている (配らない決まり)"
   # ファイルのどこかに path が在るだけでは足りない。承認の場面と結びついていない行
   # (置き場の説明・配置手順など) でも grep は通ってしまい、v1.14.2 で init.md を検査対象に
   # 入れた際に「承認のポインタを消しても、配置手順に同じパスが残っていて PASS する」ことが
@@ -3227,11 +3238,11 @@ PYCMD
         ( cd "$aw/mp" && git init -q . 2>/dev/null; env CLAUDE_PLUGIN_ROOT="$ROOT" HOME="$aw/mu/home2" bash -c "$blk" ) >/dev/null 2>&1
         if [ "$mi" = ok ]; then
           grep -q '^mode: ' "$aw/mu/home/.claude/mode.yml" 2>/dev/null || abad="$abad /init user がホームに mode.yml を置かない"
-          grep -qE 'HIRAI_METHOD_|^nightly_ci:' "$aw/mu/home/.claude/mode.yml" 2>/dev/null && abad="$abad /init user がホームへ tasks・worktree・notify の案内か nightly_ci: を写した"
+          grep -qE 'TKM_HARNESS_|^nightly_ci:' "$aw/mu/home/.claude/mode.yml" 2>/dev/null && abad="$abad /init user がホームへ tasks・worktree・notify の案内か nightly_ci: を写した"
           grep -qE '^(tasks|worktree|notify):' "$aw/mp/.claude/mode.yml" 2>/dev/null && abad="$abad /init project が mode.yml に tasks:・worktree:・notify: の行を写した (値は settings.json の env に書く)"
-          grep -q 'HIRAI_METHOD_TASKS' "$aw/mp/.claude/mode.yml" 2>/dev/null || abad="$abad /init project が mode.yml に settings.json の env の案内を写さない"
+          grep -q 'TKM_HARNESS_TASKS' "$aw/mp/.claude/mode.yml" 2>/dev/null || abad="$abad /init project が mode.yml に settings.json の env の案内を写さない"
         else
-          grep -q 'HIRAI_METHOD_TASKS' "$aw/mu/home/.claude/mode.yml" 2>/dev/null || abad="$abad 壊した init の block (user の sed 無効) でも user のホームに案内が写らない (確かめが空振り)"
+          grep -q 'TKM_HARNESS_TASKS' "$aw/mu/home/.claude/mode.yml" 2>/dev/null || abad="$abad 壊した init の block (user の sed 無効) でも user のホームに案内が写らない (確かめが空振り)"
         fi
       done
     fi
@@ -3266,11 +3277,11 @@ PYCMD
   # 書き方が割れると片方だけ直る) (3) 未設定でも実際に最新の版を解決できる (4) 共通ライブラリの
   # harness_plugin_root と同じ答えを返す (解決の作法が離れたらここが落ちる)。
   local pr_bad="" boot n_boot n_uniq unguarded pw out_boot out_fn n_up
-  # 除外は素材行 (cache の fallback `cache/hirai-lite/hirai-lite/` を持つ行) だけに絞る。
-  # 末尾の / までを含めるので、退役した旧系列 (`cache/hirai-lite/hirai-lite-v2/`) へ落ちる行が
+  # 除外は素材行 (cache の fallback `cache/*/tkm-harness/` を持つ行) だけに絞る。
+  # 末尾の / までを含めるので、退役した旧系列 (`cache/*/hirai-lite-v2/`) へ落ちる行が
   # 紛れ込んでも「無防備な使用」として引っかかる。
   unguarded="$(grep -n 'CLAUDE_PLUGIN_ROOT' "$ROOT"/commands/*.md \
-               | grep -v 'plugins/cache/hirai-lite/hirai-lite/' | head -3)"
+               | grep -vF 'plugins/cache/*/tkm-harness/' | head -3)"
   [ -z "$unguarded" ] || pr_bad="$pr_bad 無防備な使用:[${unguarded}]"
   n_boot="$(grep -h '^P="${CLAUDE_PLUGIN_ROOT' "$ROOT"/commands/*.md | grep -c . | tr -d ' ')"
   n_uniq="$(grep -h '^P="${CLAUDE_PLUGIN_ROOT' "$ROOT"/commands/*.md | sort -u | grep -c . | tr -d ' ')"
@@ -3283,10 +3294,11 @@ PYCMD
   if [ -z "$boot" ]; then
     fail 10 "/update の素材行" "commands/update.md から取り出せない"; return
   fi
-  # 未設定 + 偽 HOME で逐語実行する。installed_plugins.json に hirai-lite の entry を 2 版
+  # 未設定 + 偽 HOME で逐語実行する。installed_plugins.json に tkm-harness の entry を 2 版
   # (3.0.0 / 3.10.0。辞書順だと "3.10.0" < "3.0.0" になるので、単純な文字列比較では古い版を
   # 選んでしまう) 置き、**退役した旧系列 hirai-lite-v2 の entry を、より大きい版 (9.9.0・DECOY) で**
-  # 置く。cache にも hirai-lite と hirai-lite-v2 の両方を置く。hirai-lite の最大版 (3.10.0) が勝ち、
+  # 置く。cache にも tkm-harness と hirai-lite-v2 の両方を、配布元の段を fork の名前 (some-fork) にして置く
+  # (配布元の段は決め打ちしない)。tkm-harness の最大版 (3.10.0) が勝ち、
   # hirai-lite-v2 には落ちない (3.0.0 の決め打ち撤去の退行を拾う)。
   pw="$(mkt)"; mkdir -p "$pw/proj" "$pw/td"
   local v3a="$pw/home/.claude/plugins/inst3/3.0.0" v3b="$pw/home/.claude/plugins/inst3/3.10.0" v2d="$pw/home/.claude/plugins/inst2/9.9.0"
@@ -3297,7 +3309,7 @@ PYCMD
   mkdir -p "$pw/home/.claude/plugins"
   cat > "$pw/home/.claude/plugins/installed_plugins.json" <<JSONEOF
 {"version":2,"plugins":{
-  "hirai-lite@hirai-lite":[
+  "tkm-harness@tkm-harness":[
     {"scope":"project","projectPath":"/a","installPath":"$v3a","version":"3.0.0"},
     {"scope":"project","projectPath":"/b","installPath":"$v3b","version":"3.10.0"}
   ],
@@ -3306,32 +3318,32 @@ PYCMD
   ]
 }}
 JSONEOF
-  mkdir -p "$pw/home/.claude/plugins/cache/hirai-lite/hirai-lite/3.0.0" \
-           "$pw/home/.claude/plugins/cache/hirai-lite/hirai-lite-v2/9.9.0"
-  printf 'OLD\n' > "$pw/home/.claude/plugins/cache/hirai-lite/hirai-lite/3.0.0/VERSION"
-  printf 'DECOY\n' > "$pw/home/.claude/plugins/cache/hirai-lite/hirai-lite-v2/9.9.0/VERSION"
+  mkdir -p "$pw/home/.claude/plugins/cache/some-fork/tkm-harness/3.0.0" \
+           "$pw/home/.claude/plugins/cache/some-fork/hirai-lite-v2/9.9.0"
+  printf 'OLD\n' > "$pw/home/.claude/plugins/cache/some-fork/tkm-harness/3.0.0/VERSION"
+  printf 'DECOY\n' > "$pw/home/.claude/plugins/cache/some-fork/hirai-lite-v2/9.9.0/VERSION"
   out_boot="$(cd "$pw/proj" && env -u CLAUDE_PLUGIN_ROOT HOME="$pw/home" TMPDIR="$pw/td" \
               bash -c "$boot"'; cat "$P/VERSION"' 2>&1)"
   [ "$out_boot" = NEW ] \
-    || pr_bad="$pr_bad installed_plugins.json の hirai-lite の最大版 (辞書順では負ける 3.10.0) に解決しない (退役した hirai-lite-v2 へ落ちていないか):[${out_boot}]"
+    || pr_bad="$pr_bad installed_plugins.json の tkm-harness の最大版 (辞書順では負ける 3.10.0) に解決しない (退役した hirai-lite-v2 へ落ちていないか):[${out_boot}]"
   out_boot="$(cd "$pw/proj" && env -u CLAUDE_PLUGIN_ROOT HOME="$pw/home" TMPDIR="$pw/td" \
               bash -c "$boot"'; printf %s "$P"' 2>&1)"
   out_fn="$(cd "$pw/proj" && env -u CLAUDE_PLUGIN_ROOT HOME="$pw/home" TMPDIR="$pw/td" \
             bash -c ". \"$ROOT/scripts/update-check.sh\"; harness_plugin_root" 2>&1)"
   [ "$out_boot" = "$out_fn" ] || pr_bad="$pr_bad 素材行と harness_plugin_root の答えが違う:[${out_boot}] [${out_fn}]"
-  # installed_plugins.json が無い (または hirai-lite の行が無い) ときは、hirai-lite の
-  # キャッシュ (cache/hirai-lite/hirai-lite/) の最大版へ fallback する (退役した
-  # cache/hirai-lite/hirai-lite-v2/ には落ちない)。既存の 3.0.0 (OLD) に加えて 3.10.0 (NEW) を置く —
+  # installed_plugins.json が無い (または tkm-harness の行が無い) ときは、tkm-harness の
+  # キャッシュ (cache/*/tkm-harness/。配布元の段は何でもよい) の最大版へ fallback する (退役した
+  # cache/*/hirai-lite-v2/ には落ちない)。既存の 3.0.0 (OLD) に加えて 3.10.0 (NEW) を置く —
   # 辞書順では "3.10.0" < "3.0.0" になるため、`sort -V` を落とすと古い方 (3.0.0) を
   # 拾ってしまう (`tail -1` が入れ替わる)。この状態を以降の「手順 0」検査にも
   # 引き継ぐ (最終的に有効な版が NEW になる)。
   rm -f "$pw/home/.claude/plugins/installed_plugins.json"
-  mkdir -p "$pw/home/.claude/plugins/cache/hirai-lite/hirai-lite/3.10.0"
-  printf 'NEW\n' > "$pw/home/.claude/plugins/cache/hirai-lite/hirai-lite/3.10.0/VERSION"
+  mkdir -p "$pw/home/.claude/plugins/cache/some-fork/tkm-harness/3.10.0"
+  printf 'NEW\n' > "$pw/home/.claude/plugins/cache/some-fork/tkm-harness/3.10.0/VERSION"
   out_boot="$(cd "$pw/proj" && env -u CLAUDE_PLUGIN_ROOT HOME="$pw/home" TMPDIR="$pw/td" \
               bash -c "$boot"'; cat "$P/VERSION"' 2>&1)"
   [ "$out_boot" = NEW ] \
-    || pr_bad="$pr_bad installed_plugins.json 無しで hirai-lite のキャッシュの最大版に fallback しない:[${out_boot}]"
+    || pr_bad="$pr_bad installed_plugins.json 無しで tkm-harness のキャッシュ (配布元の段が some-fork) の最大版に fallback しない:[${out_boot}]"
   out_boot="$(cd "$pw/proj" && env -u CLAUDE_PLUGIN_ROOT HOME="$pw/home" TMPDIR="$pw/td" \
               bash -c "$boot"'; printf %s "$P"' 2>&1)"
   out_fn="$(cd "$pw/proj" && env -u CLAUDE_PLUGIN_ROOT HOME="$pw/home" TMPDIR="$pw/td" \
@@ -3380,12 +3392,12 @@ JSONEOF
   # hirai-task (足すプラグインの bin/): 実行でき、偽の HOME・gh 無しで --selftest が exit 0、引数なしは exit 2、
   # git の外 (リポを決められない) では読む側も exit 2 で gh を呼ばない、公開リポなので
   # 導入先の内部の名前を持ち込まない (R12 の語)。
-  local ht_home ht_rc ht_out PM="$ROOT/plugins/hirai-project-method"
+  local ht_home ht_rc ht_out PM="$ROOT"
   ht_home="$(mkt)"; mkdir -p "$ht_home/nogh"
   printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\nexit 1\n' "$ht_home" > "$ht_home/nogh/gh"; chmod +x "$ht_home/nogh/gh"
-  [ -x "$PM/bin/hirai-task" ] || pr_bad="$pr_bad plugins/hirai-project-method/bin/hirai-task が実行できない"
+  [ -x "$PM/bin/hirai-task" ] || pr_bad="$pr_bad bin/hirai-task が実行できない"
   [ -x "$ROOT/bin/hirai-notify" ] || pr_bad="$pr_bad bin/hirai-notify が実行できない"
-  ht_out="$(cd "$ht_home" && env HOME="$ht_home" PATH="$ht_home/nogh:$PATH" HIRAI_LITE_ROOT="$ROOT" python3 "$PM/bin/hirai-task" --selftest 2>&1)"; ht_rc=$?
+  ht_out="$(cd "$ht_home" && env HOME="$ht_home" PATH="$ht_home/nogh:$PATH" python3 "$PM/bin/hirai-task" --selftest 2>&1)"; ht_rc=$?
   [ "$ht_rc" -eq 0 ] || pr_bad="$pr_bad hirai-task --selftest が exit ${ht_rc}: $(printf '%s' "$ht_out" | grep FAIL | head -3)"
   (cd "$ht_home" && env HOME="$ht_home" PATH="$ht_home/nogh:$PATH" python3 "$PM/bin/hirai-task" >/dev/null 2>&1); ht_rc=$?
   [ "$ht_rc" -eq 2 ] || pr_bad="$pr_bad hirai-task を引数なしで呼んだ exit が 2 でない: ${ht_rc}"
@@ -3749,13 +3761,9 @@ PYEOF
   for f in commands/commit.md rules/code.md docs/rules-reference/git-and-pr.md README.md; do
     grep -qF '雛形も検査も無いときだけ' "$ROOT/$f" || pr_bad="$pr_bad ${f} に、導入先の雛形・検査を先に使う決まり（雛形も検査も無いときだけ 4 種別）が無い"
   done
-  # 版が変わらない理由: 足すプラグインを入れたリポの土台は、配る側が tag を打つまで上がらない (update.md の手順 5)
-  grep -qF '配る側が tag `hirai-lite--v<版>` を打つまで上がらない' "$ROOT/commands/update.md" || pr_bad="$pr_bad update.md に、tag を打つまで土台が上がらないことが無い"
-  # 戻し方: 足すプラグインを入れたリポの土台は、tag が残る間は下がらない (README)
-  grep -qF 'tag が残る間は下がりません' "$ROOT/README.md" || pr_bad="$pr_bad README に、足すプラグインを入れたリポの土台が revert だけでは下がらないことが無い"
-  # 移行の手順の合格の条件に、版の数字（hirai-lite v3.0.0 など）を決め打ちしない（版を上げるたびに「先へ進まない」で止まる）
-  grep -rnE 'hirai-lite v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/commands" "$ROOT/README.md" "$ROOT/docs" 2>/dev/null | grep -q . \
-    && pr_bad="$pr_bad 版の決め打ち: $(grep -rnoE 'hirai-lite v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/commands" "$ROOT/README.md" "$ROOT/docs" 2>/dev/null | head -1)"
+  # 移行の手順の合格の条件に、版の数字（tkm-harness v3.0.0 など）を決め打ちしない（版を上げるたびに「先へ進まない」で止まる）
+  grep -rnE 'tkm-harness v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/commands" "$ROOT/README.md" "$ROOT/docs" 2>/dev/null | grep -q . \
+    && pr_bad="$pr_bad 版の決め打ち: $(grep -rnoE 'tkm-harness v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/commands" "$ROOT/README.md" "$ROOT/docs" 2>/dev/null | head -1)"
   grep -qF '30 秒を超えると何も出さずに打ち切られ' "$ROOT/README.md" || pr_bad="$pr_bad README に知らせの hook が 30 秒で打ち切られることが無い"
   # (h) 3.0.0 の直しが残っている: pr-retarget は bin/ にあり scripts/ に無い (Bash ツールでは土台の bin/ が PATH に入る) /
   # 承認ビューの節の本体は足すプラグインにあり土台の approval-template には指しだけ / 設計の起点は 3 行以内
@@ -3775,7 +3783,7 @@ PYEOF
   local r6n; r6n="$(r6_suite notify)$(r6_suite worktrees)"; [ -z "$r6n" ] || pr_bad="$pr_bad [6 巡目の notify・hirai-worktrees] $r6n"
   if [ -n "$pr_bad" ]; then fail 10 "commands はプラグイン本体の場所を素材行で解決する" "$pr_bad"; return; fi
 
-  pass 10 "MCP 定義は鍵を直書きせず・serena は起動時に画面を開かず README の起動方法と同じ (壊した複製 4 通りで FAIL) / agent ${n} 件の frontmatter が妥当 / plugin.json は既定配置に任せている / state.md ${n_sm} 行 (<=150) に 仕分け→0 件なら書かない→承認→/add-rule 委譲 の工程がこの順で在る / 承認テンプレート (T2) にカード 3 種と目印 + カードの 7 語 + AskUserQuestion + 記入例 ${n_ex} 件 (どれも長さの決まりの内) + 悪い例/良い例 + 進め方の用語集 / 承認を求める ${n_site} コマンドすべてが AskUserQuestion と同じ行にポインタを持ちカードの 7 語を備える / 手順書の逐語実行で /init は承認の型を導入先へ置き 2 回目は上書きせず user では docs/ を作らず、/update は無いときだけ足し在れば触らず docs/ を新設しない / commands の CLAUDE_PLUGIN_ROOT 無防備使用 0 件・素材行 ${n_boot} 本が 1 種類で \$P を使う全ブロックに在り、未設定でも installed_plugins.json の hirai-lite の最大版 (辞書順では負ける 3.10.0 で確認。退役した hirai-lite-v2 の大きい版には落ちない) → hirai-lite キャッシュの最大版の順で解決し harness_plugin_root と一致 / update.md ${n_up} 行 (<=220) / init.md ${n_in} 行 (<=310) / 手順 0 の逐語実行で 控えはコピー (project 側も home 側も元が残る)・置き場は一時領域の rules-backup-*・消えるタイミングを表示 を実挙動で確認 / hirai-notify は サブ dir・相対 path・引用符つき notify・/bin/bash 3.2・UTF-8 で <絶対 path>｜<要約> を送り、値の無い --to・--dispatch-id と取り違えは exit 2、引数が環境変数より先、notify: off は何も送らない / pr-retarget は bin/ にあり旧名が無く、承認ビューの節は足すプラグインにあり、設計の起点は 3 行以内で、ADR の置き場の行がある / guard の入れ子・heredoc・日本語・大小の path・notify の秘密の伏せと coordinator の期限・hirai-worktrees の 4 条件が壊した複製で FAIL し / hirai-task は偽の HOME・gh 無しで --selftest が通り、引数なしと git の外では exit 2、gh を呼ばず、絶対パスを持たない (内部の名前は HIRAI_INTERNAL_WORDS を渡したときだけ見る)"
+  pass 10 "MCP 定義は鍵を直書きせず・serena は起動時に画面を開かず README の起動方法と同じ (壊した複製 4 通りで FAIL) / agent ${n} 件の frontmatter が妥当 / plugin.json は既定配置に任せている / state.md ${n_sm} 行 (<=150) に 仕分け→0 件なら書かない→承認→/add-rule 委譲 の工程がこの順で在る / 承認テンプレート (T2) にカード 3 種と目印 + カードの 7 語 + AskUserQuestion + 記入例 ${n_ex} 件 (どれも長さの決まりの内) + 悪い例/良い例 + 進め方の用語集 / 承認を求める ${n_site} コマンドすべてが AskUserQuestion と同じ行にポインタを持ちカードの 7 語を備える / 手順書の逐語実行で /init は承認の型を導入先へ置き 2 回目は上書きせず user では docs/ を作らず、/update は無いときだけ足し在れば触らず docs/ を新設しない / commands の CLAUDE_PLUGIN_ROOT 無防備使用 0 件・素材行 ${n_boot} 本が 1 種類で \$P を使う全ブロックに在り、未設定でも installed_plugins.json の tkm-harness の最大版 (辞書順では負ける 3.10.0 で確認。退役した hirai-lite-v2 の大きい版には落ちない) → hirai-lite キャッシュの最大版の順で解決し harness_plugin_root と一致 / update.md ${n_up} 行 (<=220) / init.md ${n_in} 行 (<=310) / 手順 0 の逐語実行で 控えはコピー (project 側も home 側も元が残る)・置き場は一時領域の rules-backup-*・消えるタイミングを表示 を実挙動で確認 / hirai-notify は サブ dir・相対 path・引用符つき notify・/bin/bash 3.2・UTF-8 で <絶対 path>｜<要約> を送り、値の無い --to・--dispatch-id と取り違えは exit 2、引数が環境変数より先、notify: off は何も送らない / pr-retarget は bin/ にあり旧名が無く、承認ビューの節は足すプラグインにあり、設計の起点は 3 行以内で、ADR の置き場の行がある / guard の入れ子・heredoc・日本語・大小の path・notify の秘密の伏せと coordinator の期限・hirai-worktrees の 4 条件が壊した複製で FAIL し / hirai-task は偽の HOME・gh 無しで --selftest が通り、引数なしと git の外では exit 2、gh を呼ばず、絶対パスを持たない (内部の名前は HIRAI_INTERNAL_WORDS を渡したときだけ見る)"
 }
 
 case_1; case_2; case_3; case_4; case_5; case_6; case_7; case_8; case_9; case_10

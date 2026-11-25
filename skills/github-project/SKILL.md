@@ -28,7 +28,7 @@ description: GitHub Project でやること（wave・feature・task の issue �
 
 ## 進みと割り振りの表（進捗を聞かれたとき）
 
-`hirai-task load` が、GitHub Project の issue・PR・CI の実物から表を出す（読むだけ。`--json` は同じ材料の機械可読）。「どこで何件止まっているか」は `/hirai-project-method:board`（件数と止まり）、`load` は進み（%）と、だれが何をどの順でしているか。
+`hirai-task load` が、GitHub Project の issue・PR・CI の実物から表を出す（読むだけ。`--json` は同じ材料の機械可読）。「どこで何件止まっているか」は `/tkm-harness:board`（件数と止まり）、`load` は進み（%）と、だれが何をどの順でしているか。
 
 - **表はそのまま貼る**: メインエージェントは、`hirai-task load` の出力を言い換えず、数え直さず貼る ／ 例: 「進捗を見せて」に `hirai-task load` の出力だけを返す ／ 失効: なし
 - **表を出すのは 4 つの時機だけ**: メインエージェントは、新しい task を振ったとき（着手を含む）・完了したとき・進捗の確認を頼まれたとき・task に進捗があったとき（段が上がった・止まった）に表を出し、返答のたびには出さない ／ 例: 割り振りは `hirai-task assign 40 sess-a 1` の出力の終わりに出る ／ 失効: なし
@@ -71,7 +71,7 @@ load_mainline_label: ベータの本線
 
 ## 関連
 
-- 立ち上げ・Status の動かし方・ビュー: `docs/rules-reference/project-setup.md`（無ければプラグイン同梱の同名ファイル）。新しいリポでは利用者に `/hirai-project-method:project-setup` を打ってもらう（Claude からは呼べない）
-- 全体像と、どこで何件止まっているか: `/hirai-project-method:board`（`hirai-task board`）
+- 立ち上げ・Status の動かし方・ビュー: `docs/rules-reference/project-setup.md`（無ければプラグイン同梱の同名ファイル）。新しいリポでは利用者に `/tkm-harness:project-setup` を打ってもらう（Claude からは呼べない）
+- 全体像と、どこで何件止まっているか: `/tkm-harness:board`（`hirai-task board`）
 - 承認を求めるときの型（承認カード・判断カード・人の作業カード）: `docs/rules-reference/approval-template.md`
 - 進め方の用語: `docs/rules-reference/glossary.md`（案件を知らない人に渡すとき）

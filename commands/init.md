@@ -1,5 +1,5 @@
 ---
-description: 1 回目はプラグインの rules / settings / mode.yml / CLAUDE.md / statusline / draft・事故記録の置き場を、このプロジェクト (既定) または全プロジェクト共通 (user) へ冪等に配置する (確認は 3 問。ユーザー設定に statusLine があれば 4 問。やること管理は台帳が既定 — GitHub Project で回すリポは `tasks: github-project` にして足すプラグイン hirai-project-method を入れる)。2 回目は grilling skill で案件を伺い、CLAUDE.md と docs/ を埋める。既存ファイルは上書きしない。
+description: 1 回目はプラグインの rules / settings / mode.yml / CLAUDE.md / statusline / draft・事故記録の置き場を、このプロジェクト (既定) または全プロジェクト共通 (user) へ冪等に配置する (確認は 3 問。ユーザー設定に statusLine があれば 4 問。やること管理は台帳が既定 — GitHub Project で回すリポは `tasks: github-project` にしてタスク管理の機能 を入れる)。2 回目は grilling skill で案件を伺い、CLAUDE.md と docs/ を埋める。既存ファイルは上書きしない。
 argument-hint: "[user]"
 disable-model-invocation: true
 ---
@@ -10,12 +10,12 @@ disable-model-invocation: true
 
 ## 0. 素材の置き場所といまの状態を調べる（読むだけ）
 
-`$CLAUDE_PLUGIN_ROOT` は空で渡ることがある。空・不在なら次の順で探す: `$CLAUDE_PLUGIN_ROOT` → `~/.claude/plugins/installed_plugins.json` のうち plugin 名が `hirai-lite` の行 (実際のエントリ名が変わったら、この行と `scripts/update-check.sh` の `HARNESS_ENTRY_NAME` を合わせる) の**版が最新の installPath** → `~/.claude/plugins/cache/hirai-lite/hirai-lite/<版>/` のうち**版が最新のもの**。退役した旧系列の行（`hirai-lite-v2`）と `marketplaces/hirai-lite` には落とさない。下の 1 行目を**素材行**と呼び、素材を読む bash ブロックの先頭に毎回そのまま置く (ブロックごとに新しいシェルで動くため、変数は持ち越されない)。
+`$CLAUDE_PLUGIN_ROOT` は空で渡ることがある。空・不在なら次の順で探す: `$CLAUDE_PLUGIN_ROOT` → `~/.claude/plugins/installed_plugins.json` のうち plugin 名が `tkm-harness` の行 (実際のエントリ名が変わったら、この行と `scripts/update-check.sh` の `HARNESS_ENTRY_NAME` を合わせる) の**版が最新の installPath** → `~/.claude/plugins/cache/*/tkm-harness/<版>/` のうち**版が最新のもの**。退役した旧系列の行（`hirai-lite-v2`）と `marketplaces/hirai-lite` には落とさない。下の 1 行目を**素材行**と呼び、素材を読む bash ブロックの先頭に毎回そのまま置く (ブロックごとに新しいシェルで動くため、変数は持ち越されない)。
 
 ```bash
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh" 2>/dev/null; R="$(command -v harness_root >/dev/null 2>&1 && harness_root "$PWD")"; [ -n "$R" ] && [ "$R" != "$(builtin pwd -P)" ] && echo "ここはリポのサブディレクトリ。$R で開き直してから打つ（この行が出たら止める）"; ls -d "$P/rules" "$P/templates/settings.json" >/dev/null && echo "素材 $P (版 $(cat "$P/VERSION" 2>/dev/null))"
-{ [ -d .claude/tasks ] || [ -d .claude/draft ] || [ -d .claude/rules-reference ]; } && echo "旧レイアウトあり (.claude/ の書類を /hirai-lite:update で docs/ へ移す)"; echo "台帳・draft・事故記録の置き場 docs (無ければ作る)"
+{ [ -d .claude/tasks ] || [ -d .claude/draft ] || [ -d .claude/rules-reference ]; } && echo "旧レイアウトあり (.claude/ の書類を /tkm-harness:update で docs/ へ移す)"; echo "台帳・draft・事故記録の置き場 docs (無ければ作る)"
 for d in .claude "$HOME/.claude"; do for t in rules settings.json mode.yml statusline.sh; do [ -e "$d/$t" ] && echo "既存 $d/$t"; done; done; for c in CLAUDE.md "$HOME/.claude/CLAUDE.md"; do [ -e "$c" ] && echo "既存 $c"; done; echo "(出ていないものは未配置)"
 for a in AGENTS.md .claude/AGENTS.md; do [ -e "$a" ] && echo "既存 $a (CLAUDE.md を置くと読まれなくなるので、置くときは先頭で @$a を読み込む)"; done; python3 -I -c 'import json,sys;s=json.load(open(sys.argv[1])).get("statusLine");print("ユーザー設定に statusLine あり: "+str(s.get("command",""))[:80]) if isinstance(s,dict) else None' "$HOME/.claude/settings.json" 2>/dev/null
 # 第 2 段階に進むか: 4 点セットが揃った配置先があり、対応する CLAUDE.md にプレースホルダ <...> が残っている
@@ -33,9 +33,9 @@ if [ -n "$CM" ] && [ -f "$CM" ] && [ "$(grep -c '<[^<>]*>' "$CM")" -gt 0 ]; then
 | # | `header` | `question` | `options` (先頭が既定 / `label` — `description`) |
 |---|---|---|---|
 | 1 | `置き場所` | 設定一式をどこに入れますか | `このプロジェクトのみ (推奨)` — いま開いているフォルダの `.claude/` に置きます。ほかのプロジェクトには影響しません ／ `全プロジェクト共通` — ホームの `~/.claude/` に置き、このパソコンで開く全プロジェクトに効きます |
-| 2 | `ultracode` | `ultracode`（深く考えて自動で手分けする。利用量が増える）を有効にしますか | `有効にする (推奨)` — 回答が丁寧になりますが、そのぶん利用量（費用）が増えます ／ `有効にしない` — 利用量は増えません。あとから `/hirai-lite:config` で有効にできます |
+| 2 | `ultracode` | `ultracode`（深く考えて自動で手分けする。利用量が増える）を有効にしますか | `有効にする (推奨)` — 回答が丁寧になりますが、そのぶん利用量（費用）が増えます ／ `有効にしない` — 利用量は増えません。あとから `/tkm-harness:config` で有効にできます |
 | 3 | `mode` | `mode`（進め方）をどちらにしますか | `normal（確認あり）(推奨)` — 重要な分かれ道で確認してから進みます。はじめて使うときはこちら ／ `loop（自動で進む）` — 確認を求めず最後まで進みます。止めたいときは「stop」と伝えます |
-| 4 | `画面下部` | 画面下部の表示を hirai-lite のもの（進め方・残り容量・やることの数）にしますか。いまはユーザー設定の表示が出ています | `いまの表示のまま (推奨)` — このプロジェクトの設定に画面下部の表示を書きません。あとから `/hirai-lite:config` で切り替えられます ／ `hirai-lite の表示にする` — このプロジェクトではユーザー設定の表示が隠れます |
+| 4 | `画面下部` | 画面下部の表示を tkm-harness のもの（進め方・残り容量・やることの数）にしますか。いまはユーザー設定の表示が出ています | `いまの表示のまま (推奨)` — このプロジェクトの設定に画面下部の表示を書きません。あとから `/tkm-harness:config` で切り替えられます ／ `tkm-harness の表示にする` — このプロジェクトではユーザー設定の表示が隠れます |
 
 **書類の置き場所は聞かない。** このプロジェクトに入れるときは**常に `docs/`** を使う (無ければ作る、手順 7)。 **`AskUserQuestion` が使えないとき** (ツール不在・呼び出しに失敗した等) は、同じ質問を平文 1 通で送って返事を待つ (v1.5.0 までのやり方。既定を明記し「はい」の一言で全部を既定で進める。書き方は `docs/rules-reference/approval-template.md` の「AskUserQuestion が使えないとき」)。
 
@@ -65,7 +65,7 @@ SCOPE=; D=.claude; [ "$SCOPE" = user ] && D="$HOME/.claude"; mkdir -p "$D"; echo
 
 ```bash
 SCOPE=; D=.claude; [ "$SCOPE" = user ] && D="$HOME/.claude"; mkdir -p "$D/rules"
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 for f in "$P"/rules/*.md; do d="$D/rules/$(basename "$f")"; if [ -e "$d" ]; then echo "kept   $d"; else cp "$f" "$d" && echo "placed $d"; fi; done
 for f in "$D"/rules/*.md; do sed -n '1,10p' "$f" | grep -q '^paths:' && echo "T1 $f" || echo "T0 $f"; done
 ```
@@ -83,11 +83,11 @@ mkdir -p "$D/rules-archive" && : > "$D/rules-archive/.gitkeep" && ls -a "$D/rule
 
 ## 5. settings.json を配置・マージする
 
-`ULTRA` は手順 1 の質問 2 の答え。「有効にする」(既定) なら `on`、「有効にしない」なら `off`。`SL` は質問 4 の答えで、「いまの表示のまま」(既定) なら `off`、「hirai-lite の表示にする」か質問 4 を省いたときは `on`。
+`ULTRA` は手順 1 の質問 2 の答え。「有効にする」(既定) なら `on`、「有効にしない」なら `off`。`SL` は質問 4 の答えで、「いまの表示のまま」(既定) なら `off`、「tkm-harness の表示にする」か質問 4 を省いたときは `on`。
 
 ```bash
 SCOPE=; D=.claude; [ "$SCOPE" = user ] && D="$HOME/.claude"; ULTRA=on; SL=on
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 cat "$P/templates/settings.json"   # 素材。差分提示の元にする
 if [ -e "$D/settings.json" ]; then echo "kept   $D/settings.json (下記手順で差分を提示する)"; else
   cp "$P/templates/settings.json" "$D/settings.json" && echo "placed $D/settings.json"
@@ -108,11 +108,11 @@ python3 -m json.tool "$D/settings.json" >/dev/null && echo "settings.json は妥
 
 `MODE` は手順 1 の質問 3 の答え。「normal（確認あり）」(既定) なら `normal`、「loop（自動で進む）」なら `loop`。
 
-**進め方の書き込み先は `$D` で決め打ちせず、`/config` と同じ `harness_mode_write_file`（すでに在る側に書く）に通す。** `$D` 基準にすると、ホーム側だけに `mode.yml` を置いている人のプロジェクトへ `.claude/mode.yml` を新設し、ホーム側を黙って覆い隠す。`user` 指定のときだけはホーム側に入れると決まっているので、そちらを直に指す。**`user` 指定のときは、雛形の「機能の切り替え（tasks / worktree / notify）」の案内と `nightly_ci:`（雛形の `# 機能の切り替え（tasks / worktree / notify）` の行から末尾まで）をホームに写さない**（ホームの値は全リポに効くため、`tasks`・`worktree`・`notify` はプロジェクトの `.claude/settings.json` の `env` にだけ書く。`/hirai-lite:config` の項目 8 が書く。`nightly_ci:` はプロジェクトの `.claude/mode.yml` に書く）。
+**進め方の書き込み先は `$D` で決め打ちせず、`/config` と同じ `harness_mode_write_file`（すでに在る側に書く）に通す。** `$D` 基準にすると、ホーム側だけに `mode.yml` を置いている人のプロジェクトへ `.claude/mode.yml` を新設し、ホーム側を黙って覆い隠す。`user` 指定のときだけはホーム側に入れると決まっているので、そちらを直に指す。**`user` 指定のときは、雛形の「機能の切り替え（tasks / worktree / notify）」の案内と `nightly_ci:`（雛形の `# 機能の切り替え（tasks / worktree / notify）` の行から末尾まで）をホームに写さない**（ホームの値は全リポに効くため、`tasks`・`worktree`・`notify` はプロジェクトの `.claude/settings.json` の `env` にだけ書く。`/tkm-harness:config` の項目 8 が書く。`nightly_ci:` はプロジェクトの `.claude/mode.yml` に書く）。
 
 ```bash
 SCOPE=; D=.claude; [ "$SCOPE" = user ] && D="$HOME/.claude"; MODE=normal
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
 if [ "$SCOPE" = user ]; then MF="$HOME/.claude/mode.yml"; else MF="$(harness_mode_write_file "$PWD")"; fi
 mkdir -p "$(dirname "$MF")"
@@ -129,32 +129,32 @@ bash "$D/statusline.sh" </dev/null
 
 ## 7. 台帳・draft・事故記録を作る（このプロジェクトに入れるときだけ）
 
-**やること管理の既定は台帳（`tasks: ledger`。尋ねて止まらない）。** GitHub Project で回すリポは、台帳を作ったあとで `/plugin install hirai-project-method@hirai-lite` を入れ、`/hirai-lite:config` の項目 8 で `tasks: github-project` にし、`/hirai-project-method:project-setup` を打ってもらう（Claude からは呼べない。Project の作成・リポへの紐づけ・項目を自動で行い、画面でしかできない分は URL つきで案内する）。
+**やること管理の既定は台帳（`tasks: ledger`。尋ねて止まらない）。** GitHub Project で回すリポは、台帳を作ったあとで `/plugin install tkm-harness@tkm-harness` を入れ、`/tkm-harness:config` の項目 8 で `tasks: github-project` にし、`/tkm-harness:project-setup` を打ってもらう（Claude からは呼べない。Project の作成・リポへの紐づけ・項目を自動で行い、画面でしかできない分は URL つきで案内する）。
 
-台帳 / 設計メモ / 事故記録は**プロジェクトごとの中身**なので、`user` 指定時は作らない。**置き場は常に `docs/`** で、無ければ作る (`docs/tasks/` `docs/draft/` `docs/rules-reference/` の 3 つ)。承認の型 (`docs/rules-reference/approval-template.md`) だけは**プロジェクトに依存しない参照資料**だが、各コマンドのポインタが**プロジェクト相対の `docs/rules-reference/`** を指すため、置き場はここに揃える（`user` 指定時は `docs/` を作らないので置かない。ポインタの 2 段目「プラグイン同梱の同名ファイル」で解決する）。ただし**旧レイアウト (`.claude/tasks/` などが残っている環境) では、ここでは何も作らず `/hirai-lite:update` の移行手順 (手順 2) に回す**。
+台帳 / 設計メモ / 事故記録は**プロジェクトごとの中身**なので、`user` 指定時は作らない。**置き場は常に `docs/`** で、無ければ作る (`docs/tasks/` `docs/draft/` `docs/rules-reference/` の 3 つ)。承認の型 (`docs/rules-reference/approval-template.md`) だけは**プロジェクトに依存しない参照資料**だが、各コマンドのポインタが**プロジェクト相対の `docs/rules-reference/`** を指すため、置き場はここに揃える（`user` 指定時は `docs/` を作らないので置かない。ポインタの 2 段目「プラグイン同梱の同名ファイル」で解決する）。ただし**旧レイアウト (`.claude/tasks/` などが残っている環境) では、ここでは何も作らず `/tkm-harness:update` の移行手順 (手順 2) に回す**。
 
 ```bash
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
-SCOPE=; if [ "$SCOPE" = user ]; then echo "skip 台帳 / 設計メモ / 記録帳 (全プロジェクト共通には作らない)"; elif ls -d .claude/tasks .claude/draft .claude/rules-reference 2>/dev/null | grep -q .; then echo "skip 旧レイアウト — .claude/ の書類を /hirai-lite:update で docs/ へ移してから作る"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+SCOPE=; if [ "$SCOPE" = user ]; then echo "skip 台帳 / 設計メモ / 記録帳 (全プロジェクト共通には作らない)"; elif ls -d .claude/tasks .claude/draft .claude/rules-reference 2>/dev/null | grep -q .; then echo "skip 旧レイアウト — .claude/ の書類を /tkm-harness:update で docs/ へ移してから作る"
 else BASE=docs; mkdir -p "$BASE/tasks" "$BASE/draft" "$BASE/rules-reference"; : > "$BASE/draft/.gitkeep"
 . "$P/scripts/tasks-path.sh"  # 台帳の 2 ファイルは tasks: が ledger のときだけ作る (github-project のリポには作らない)
 if [ "$(harness_tasks_form "$PWD")" = ledger ]; then
 [ -e "$BASE/tasks/list.md" ] || printf '# タスク台帳\n\nstatus は 未着手 / 進行中 / 完了 の 3 種。\n\n| # | status | タスク | 概要 | 依存先 | 詳細 |\n|---|--------|-------|------|-------|------|\n' > "$BASE/tasks/list.md"
 [ -e "$BASE/tasks/parking-lot.md" ] || printf '# 保留タスク\n\n| # | 状態 | タスク | 保留理由 | 再開条件 | 元の設計 |\n|---|------|-------|---------|---------|---------|\n' > "$BASE/tasks/parking-lot.md"; fi
-[ -e "$BASE/rules-reference/incidents.md" ] || printf '# 事故記録\n\n1 回目はここに 1 行。2 回目で /hirai-lite:add-rule に回す。\n\n| 日付 | 事象 | 影響 | 直し方 | 再発回数 |\n|-----|------|------|-------|--------|\n' > "$BASE/rules-reference/incidents.md"
+[ -e "$BASE/rules-reference/incidents.md" ] || printf '# 事故記録\n\n1 回目はここに 1 行。2 回目で /tkm-harness:add-rule に回す。\n\n| 日付 | 事象 | 影響 | 直し方 | 再発回数 |\n|-----|------|------|-------|--------|\n' > "$BASE/rules-reference/incidents.md"
 [ -e "$BASE/rules-reference/approval-template.md" ] || cp "$P/docs/rules-reference/approval-template.md" "$BASE/rules-reference/approval-template.md"; PR=.github/pull_request_template.md; HAVE=; for f in pull_request_template.md PULL_REQUEST_TEMPLATE.md docs/pull_request_template.md .github/pull_request_template.md .github/PULL_REQUEST_TEMPLATE.md PULL_REQUEST_TEMPLATE docs/PULL_REQUEST_TEMPLATE .github/PULL_REQUEST_TEMPLATE; do [ -e "$f" ] && HAVE=1; done; if [ -n "$HAVE" ]; then echo "kept   PR の本文の雛形 (すでにある)"; else mkdir -p .github && cp "$P/templates/pull_request_template.md" "$PR" && echo "placed $PR"; fi
 ls "$BASE/rules-reference/incidents.md" "$BASE/rules-reference/approval-template.md" && ls -d "$BASE/draft"
 fi
 ```
 
-`docs/` が新しくできたかどうかを手元に控える (手順 9 の報告で 1 行使う)。`skip 旧レイアウト` と出たときは、手順 9 の報告で書類の行を出さず、代わりに `/hirai-lite:update` を案内する 1 行を書く。 **PR の本文の雛形**（`templates/pull_request_template.md`・4 種別）は、導入先に `pull_request_template.md` がリポ直下・`docs/`・`.github/` のどこにも無いときだけ `.github/pull_request_template.md` へ置く。あれば 1 バイトも触らない（`kept`）。`user` 指定時は置かない。置いたときは手順 9 の報告で 1 行足す（`✅ PR の本文の雛形を置きました → .github/pull_request_template.md`。画面のキャプチャを載せる道具は `hirai-pr-asset`）。
+`docs/` が新しくできたかどうかを手元に控える (手順 9 の報告で 1 行使う)。`skip 旧レイアウト` と出たときは、手順 9 の報告で書類の行を出さず、代わりに `/tkm-harness:update` を案内する 1 行を書く。 **PR の本文の雛形**（`templates/pull_request_template.md`・4 種別）は、導入先に `pull_request_template.md` がリポ直下・`docs/`・`.github/` のどこにも無いときだけ `.github/pull_request_template.md` へ置く。あれば 1 バイトも触らない（`kept`）。`user` 指定時は置かない。置いたときは手順 9 の報告で 1 行足す（`✅ PR の本文の雛形を置きました → .github/pull_request_template.md`。画面のキャプチャを載せる道具は `hirai-pr-asset`）。
 
 ## 8. 二重ロードを調べる
 
 同じルールがプロジェクト側とホーム側の両方にあると、同じ文章が 2 回読み込まれて容量を無駄に使う。**引数に関わらず毎回**実行する。引数の順番は固定。
 
 ```bash
-P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
+P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 bash "$P/scripts/scope-check.sh" .claude "$HOME/.claude"
 ```
 
@@ -174,10 +174,10 @@ bash の出力は作業ログであって報告ではない。**最後に必ず�
    本番反映や強制 push など、取り返しのつかない操作の前に確認が入ります
 ✅ ultracode（深く考えて自動で手分けする。利用量が増える）を有効にしました
 ✅ mode（進め方）の設定を置きました → .claude/mode.yml（いまは normal（確認あり））
-   後から /hirai-lite:config で loop（自動で進む）に変えられます
+   後から /tkm-harness:config で loop（自動で進む）に変えられます
 ✅ プロジェクト情報の下書きを置きました → CLAUDE.md（中身は次回に伺って埋めます）
 ✅ タスク一覧表を作りました → docs/tasks/list.md
-   GitHub Project で回すときは、足すプラグイン（/plugin install hirai-project-method@hirai-lite）を入れて /hirai-lite:config で tasks を github-project にします
+   GitHub Project で回すときは、/tkm-harness:config で tasks を github-project にします
 ✅ 設計メモの置き場を作りました → docs/draft/
 ✅ 困ったことの記録帳と、承認をお願いするときの型（承認カード）を置きました → docs/rules-reference/
 ✅ statusLine（画面下部の情報表示）を有効にしました（進め方・残り容量・やること の数が見えます）
@@ -186,18 +186,18 @@ bash の出力は作業ログであって報告ではない。**最後に必ず�
 
 次にやること
 このセッションを一度閉じて開き直すと、置いたルールが読み込まれます。そのうえで
-**もう一度 /hirai-lite:init と入力してください。今度は案件のことを伺い、CLAUDE.md と
+**もう一度 /tkm-harness:init と入力してください。今度は案件のことを伺い、CLAUDE.md と
 docs/ の書類を埋めます。**
 ```
 
 - 質問 2 で「有効にしない」を選ばれたら、3 行目を `✅ ultracode（深く考えて自動で手分けする設定）は入れていません（利用量は増えません）` に差し替える。
-- 質問 3 で `loop（自動で進む）` を選ばれたら、mode の 2 行を `✅ mode（進め方）の設定を置きました → <実際の書き込み先>（いまは loop（自動で進む））` ＋ `後から /hirai-lite:config で normal（確認あり）に戻せます。止めたいときは「stop」と伝えてください` に差し替える。**どちらを選んでも「後から /hirai-lite:config で変えられます」の 1 行は必ず残す。** パスは手順 6 の `$MF` の実測値を書く（ホーム側だった場合は `~/.claude/mode.yml` と出る）。
-- `docs/` を新しく作ったときは、タスク一覧表の行の前に 1 行足す: `✅ 書類の置き場を作りました → docs/`。手順 7 が `skip 旧レイアウト` だったときは手順 7 の 4 行を出さず、代わりに 1 行書く: `やることの一覧表などは .claude/ の下にあります。/hirai-lite:update を実行すると docs/ へ移します（中身はそのまま移動します）。`
-- `imported AGENTS.md` と出たときは CLAUDE.md の行に 1 行足す: `   AGENTS.md も読まれるよう、先頭で読み込んでいます（Codex など他のエージェントと同じ指示を共有できます）`。手順 5 で `removed … statusLine` と出たときは statusLine の行を `✅ 画面下部の表示は、いまの表示（ユーザー設定）のままにしました。/hirai-lite:config で切り替えられます` に差し替える。
+- 質問 3 で `loop（自動で進む）` を選ばれたら、mode の 2 行を `✅ mode（進め方）の設定を置きました → <実際の書き込み先>（いまは loop（自動で進む））` ＋ `後から /tkm-harness:config で normal（確認あり）に戻せます。止めたいときは「stop」と伝えてください` に差し替える。**どちらを選んでも「後から /tkm-harness:config で変えられます」の 1 行は必ず残す。** パスは手順 6 の `$MF` の実測値を書く（ホーム側だった場合は `~/.claude/mode.yml` と出る）。
+- `docs/` を新しく作ったときは、タスク一覧表の行の前に 1 行足す: `✅ 書類の置き場を作りました → docs/`。手順 7 が `skip 旧レイアウト` だったときは手順 7 の 4 行を出さず、代わりに 1 行書く: `やることの一覧表などは .claude/ の下にあります。/tkm-harness:update を実行すると docs/ へ移します（中身はそのまま移動します）。`
+- `imported AGENTS.md` と出たときは CLAUDE.md の行に 1 行足す: `   AGENTS.md も読まれるよう、先頭で読み込んでいます（Codex など他のエージェントと同じ指示を共有できます）`。手順 5 で `removed … statusLine` と出たときは statusLine の行を `✅ 画面下部の表示は、いまの表示（ユーザー設定）のままにしました。/tkm-harness:config で切り替えられます` に差し替える。
 - `CLAUDE.md` がすでにあった場合は、その 2 行を出さず「そのままにしたもの」に数える (中身は 1 バイトも触っていない)。手順 1 で「すでに一式が入っています」と伝えた再実行のときは、1 行目を `すでに入っている一式を確認しました。変更はありません。` にし、`✅` 行を出さずに「そのままにしたもの」の件数と一覧だけを書く。
-- `user` 指定時は 1 行目を `すべてのプロジェクトで使えるようにしました。` にし、パスを `~/.claude/…` に差し替え、**タスク一覧表 / 設計メモの置き場 / 困ったことの記録帳の 3 行を省く**。代わりに 1 行足す: `やることの一覧表と設計メモは、プロジェクトごとの中身なので案内していません（各プロジェクトで /hirai-lite:init を実行すると案内します）。`
+- `user` 指定時は 1 行目を `すべてのプロジェクトで使えるようにしました。` にし、パスを `~/.claude/…` に差し替え、**タスク一覧表 / 設計メモの置き場 / 困ったことの記録帳の 3 行を省く**。代わりに 1 行足す: `やることの一覧表と設計メモは、プロジェクトごとの中身なので案内していません（各プロジェクトで /tkm-harness:init を実行すると案内します）。`
 - 手順 8 の警告が出ていたら、報告の末尾にその全文をそのまま貼る。中身が違うファイルがあれば末尾に 1 行足し、**手順 5 の承認の型（承認カード → `AskUserQuestion`）で**指示を待ってから書き換える。例: `.claude/settings.json はすでにあり、中身が違います。足したい安全設定が 4 件あります。入れてよいですか?`
-- 途中で止まったら同じ調子で「何が起きたか」「どうすればよいか」「ここまでに置いたもの」を書く。例: `⚠️ 安全設定のファイル (.claude/settings.json) が読めませんでした。書き方が壊れている可能性があります。中身を直すか、別名に退避してから /hirai-lite:init をもう一度実行してください。ここまでに置いたもの: ルール 5 件 / 台帳と設計メモの置き場`
+- 途中で止まったら同じ調子で「何が起きたか」「どうすればよいか」「ここまでに置いたもの」を書く。例: `⚠️ 安全設定のファイル (.claude/settings.json) が読めませんでした。書き方が壊れている可能性があります。中身を直すか、別名に退避してから /tkm-harness:init をもう一度実行してください。ここまでに置いたもの: ルール 5 件 / 台帳と設計メモの置き場`
 
 ## 10. 案件を伺い、CLAUDE.md と docs/ を埋める（第 2 段階）
 
@@ -265,7 +265,7 @@ echo "== 既存の書類 =="; find docs -name '*.md' 2>/dev/null | head -20; ech
 | `$BASE/architecture.md` | 構成 / データの持ち方 / その技術を選んだ理由 | 構成・データ・技術判断のどれかが 1 件以上挙がった |
 | `$BASE/draft/<slug>.md` | 設計メモ | これから作るものが具体化している。雛形は `templates/draft.md` |
 
-各ファイルは**得られた項目だけ**を書く（挙がらなかった見出しは置かない）。`list.md` は既存の表に行を足すだけにする (`status` は `未着手`。`tasks: github-project` のリポは台帳を使わず、GitHub の issue と Project の Status で表す)。**進捗表 (`status.md` の類) は新しく作らない** — 台帳の `status` 列がその役目。やることが挙がったら `draft/` に起こし、承認を経てから `/hirai-lite:new-task` でタスクにする。
+各ファイルは**得られた項目だけ**を書く（挙がらなかった見出しは置かない）。`list.md` は既存の表に行を足すだけにする (`status` は `未着手`。`tasks: github-project` のリポは台帳を使わず、GitHub の issue と Project の Status で表す)。**進捗表 (`status.md` の類) は新しく作らない** — 台帳の `status` 列がその役目。やることが挙がったら `draft/` に起こし、承認を経てから `/tkm-harness:new-task` でタスクにする。
 
 ### 10-6. 報告する
 
@@ -275,7 +275,7 @@ echo "== 既存の書類 =="; find docs -name '*.md' 2>/dev/null | head -20; ech
 ✅ CLAUDE.md を埋めました（プロジェクト概要 / Tech Stack / Commands）
 ✅ ゴールと背景をまとめました → docs/overview.md
 ✅ 要件をまとめました → docs/requirements.md
-✅ やることを 3 件、設計メモにまとめました → docs/draft/（承認されたら /hirai-lite:new-task で task（やること）にします）
+✅ やることを 3 件、設計メモにまとめました → docs/draft/（承認されたら /tkm-harness:new-task で task（やること）にします）
 
 伺えなかったところは書類を作っていません（構成の判断 → docs/architecture.md）。
 あとから話していただければ足します。
