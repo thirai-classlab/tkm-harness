@@ -85,7 +85,10 @@ merged_into:
 - TKM-R9.2 Given `TKM_HARNESS_LOAD_ON_START=off`（settings.json の env） When 会話を開く Then 入れない（既定は入れる。プラグインの設定項目 `userConfig` は project の settings.json に置けないので env で持つ）
 - TKM-R9.3 after-merge と assign・start・done の出力の最後の表（`print_load_after`）は今のまま。担当の知らせ・ユーザーの発言のたびには入れない（PostToolUse の `coordinator-load.sh` は今のまま）
 - TKM-R9.4 委譲の手順の文書に「`orca orchestration worker-start` のすぐあとに `hirai-task assign <issue> <担当> [順]` を打つ」「worker-start の作業ツリーに `orca worktree set --display-name <短い題> --issue <番号>` を付ける」「担当は状況が変わったら `orca worktree set --worktree current --comment <いまやっていること>` を打つ」を足す
-- TKM-R9.5 コーディネーターの判定（`hirai-task is-coordinator`）は、付け忘れても表が出る形にする（案はテックリードに問い中）
+- TKM-R9.5 コーディネーターの判定（`hirai-task is-coordinator`）は Orca の CLI で取る（テックリード 2026-11-26 03:4x「OrcaCLIからとれへん？」）: 上書き `TKM_HARNESS_ROLE=coordinator|worker` > `HC_NOTIFY=off`（今までの印）> `orca orchestration run-current --json` が Run を返す端末（2 秒で切る）。null・orca が無い・時間切れ・`TKM_HARNESS_TASKS` が github-project でない・`TKM_HARNESS_NOTIFY` が orca でない は偽。真の会話では `hirai-notify` を送らない（自分の Run に「Rejected escalation」が届かない）
+- TKM-R9.6 Given 本体の checkout（linked worktree でない）の Orca の会話で run-current が null When 会話を開く Then 「コーディネーターなら `orca orchestration run-use --id <Run>` で結び付けると進みの表が入る」の 1 行を出す（Run の候補は `run-list` の新しい順の 1 本）
+
+実測（2026-11-26 03:2x）: 担当の端末で `orca orchestration run-current --json` は `{"run": null}`（0.14 秒）。担当の端末から `--from <コーディネーターの端末>` を付けても null で、結び付けは引数の handle ではなく打った pane で決まる。Run の `coordinator_handle` は古い端末（term_70efac0c…）のままなのに、コーディネーターの今の端末では Run が返る（コーディネーターの実測）。新しい pane で開いたコーディネーターで返るかは未検証（担当の pane から `run-use` を打つと Run を取ってしまうので試さない）。返らないときのために TKM-R9.6 を置く
 
 ## 3. 公式で確かめたこと・実測
 
