@@ -2808,6 +2808,7 @@ def _feature_checks(t, tmp_dir: str) -> None:
         mark = gh_task.parse_task_mark(feature)
         assert mark['rows'] == 'CHK-01,CHK-02', mark
         assert mark['reads'] == 'docs/a.md,docs/b.md,docs/c.md', f'行の束の和（重複なし・出てきた順）になっていない: {mark}'
+        assert mark['reqs'] == 'R1,R2', f'チェックリストの行の要件が reqs= に入っていない: {mark}'
         assert 'CHK-03' not in feature.split('<!-- rmp-task')[0].split('## やること')[1].split('## 出どころ')[0], feature
         assert added == [], 'この回に起こす feature は起こすときの本文に入れる（あとから足さない）'
         # 印つきの task は issue のまま。チェックリストの行を指す blocked by は、行の親の feature の番号になる（自分の親なら付けない）
@@ -2844,20 +2845,21 @@ def _feature_checks(t, tmp_dir: str) -> None:
         body = ('<!-- card:approval -->\n**決めること**: x\n<!-- /card -->\n\n## 完了条件\nOK\n\n## やること\n'
                 '- [x] CHK-01: 済み\n- [ ] CHK-02: 途中\n\n## 出どころ\n設計\n\n'
                 '<!-- rmp-task: id=CHK-F1 src=chk@PR9 rows=CHK-01,CHK-02 reads=docs/a.md -->\n')
-        adds = [{'id': 'CHK-01', 'title': '済み', 'reads': ['docs/z.md']},
-                {'id': 'CHK-03', 'title': '足す行', 'reads': ['docs/a.md', 'docs/b.md']}]
+        adds = [{'id': 'CHK-01', 'title': '済み', 'reads': ['docs/z.md'], 'reqs': ['Z1']},
+                {'id': 'CHK-03', 'title': '足す行', 'reads': ['docs/a.md', 'docs/b.md'], 'reqs': ['R3']}]
         new_body, added = gh_task.append_checklist_to_body(body, adds)
         assert added == ['CHK-03'], added
         assert '- [ ] CHK-02: 途中\n- [ ] CHK-03: 足す行\n\n## 出どころ' in new_body, new_body
         mark = gh_task.parse_task_mark(new_body)
         assert mark['rows'] == 'CHK-01,CHK-02,CHK-03' and mark['reads'] == 'docs/a.md,docs/b.md', mark
+        assert mark['reqs'] == 'R3', f'足した行の要件が reqs= に入っていない: {mark}'
         assert gh_task.append_checklist_to_body(new_body, adds)[1] == [] and gh_task.append_checklist_to_body(new_body, adds)[0] == new_body
         # 節が無い feature は、目印の前に節を作る。目印が無い本文は末尾に足す
         plain = '<!-- card:approval -->\n**決めること**: x\n<!-- /card -->\n\n## 完了条件\nOK\n\n<!-- rmp-task: id=CHK-F1 src=chk@PR9 -->\n'
         made, _ = gh_task.append_checklist_to_body(plain, adds[1:])
         assert '## 完了条件\nOK\n\n## やること\n- [ ] CHK-03: 足す行\n\n<!-- rmp-task:' in made, made
         mark2 = gh_task.parse_task_mark(made)
-        assert mark2['rows'] == 'CHK-03' and mark2['reads'] == 'docs/a.md,docs/b.md', mark2
+        assert mark2['rows'] == 'CHK-03' and mark2['reads'] == 'docs/a.md,docs/b.md' and mark2['reqs'] == 'R3', mark2
         nomark, _ = gh_task.append_checklist_to_body('本文\n', adds[1:])
         assert nomark == '本文\n\n## やること\n- [ ] CHK-03: 足す行\n', repr(nomark)
 
@@ -6333,6 +6335,29 @@ def main() -> int:
             assert rc == 0 and '読む束の未決 1 件' in out, (rc, message, out)  # 要件が無い task は止めず一覧だけ
 
         t('start: reqs= の範囲（R1〜R3）を開いて照らす。reqs= が無い task は [要判断] で止めず一覧に出す', _stop_ids_expand_ranges_and_no_reqs)
+
+        def _feature_start_stops_on_row_requirement() -> None:
+            readme = 'docs/4-domains/chat/README.md'
+            body = _readme(4) + '\n## 7. 要件と受入\n- CHK-R2 の言い回し `[要判断: どの言い回しか]`\n'
+            # チェックリストの行 CHK-02 の要件 CHK-R2 は、feature の目印の reqs= に入る（feature の行自身の要件は CHK-R1）
+            feature_body = gh_task.table_issue_body(
+                dict(id='CHK-F1', stream='FE', reqs='CHK-R1', done='ok'), 'tbl', 'PR9', '—',
+                checklist=[dict(id='CHK-02', title='文言', reqs='CHK-R2')])
+            mark = gh_task.parse_task_mark(feature_body)
+            assert mark['reqs'] == 'CHK-R1,CHK-R2', mark
+            feature_body = feature_body.replace(f'rows=CHK-02', f'rows=CHK-02 reads={readme}')
+            record: list = []
+            gh_task.run_gh = make_write_gh(
+                {741: dict(title='feature', status=gh_task.READY_STATUS, kind='feature', body=feature_body)}, record=record)
+            message, rc = '', -1
+            with redirect_stdout(io.StringIO()):
+                try:
+                    rc = _with_root(_ds_tree({readme: body}), lambda: gh_task.cmd_start(741, None))
+                except gh_task.GhError as exc:
+                    rc, message = exc.code, str(exc)
+            assert rc == 2 and '[要判断]' in message and record == [], (rc, message, record)
+
+        t('HM-R4.4 start <feature>: チェックリストの行の要件に [要判断] があれば、task と同じく着手不可で Status を書かない', _feature_start_stops_on_row_requirement)
 
         def _stop_keeps_other_reasons() -> None:
             readme = 'docs/4-domains/chat/README.md'

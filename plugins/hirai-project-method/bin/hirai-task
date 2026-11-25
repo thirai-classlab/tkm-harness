@@ -3257,6 +3257,11 @@ def _merge_csv(*lists: list[str]) -> list[str]:
     return list(dict.fromkeys(x for items in lists for x in items if x))
 
 
+def _req_ids(text: str) -> list[str]:
+    """表の「要件」欄（`R1, R2`・`—`）を ID の並びにする。"""
+    return [r.strip() for r in re.split(r'[,、]', text or '') if r.strip() and r.strip() != '—']
+
+
 def table_issue_body(row: dict, slug: str, src_pr: str, domain: str, proposal_lines: list[str] | None = None,
                      card: str | None = None, checklist: list[dict] | None = None) -> str:
     """表の行の issue の本文。checklist は feature の本文に持つ「コードの task」の行（HM-R4.3。issue にしない）。
@@ -3267,7 +3272,9 @@ def table_issue_body(row: dict, slug: str, src_pr: str, domain: str, proposal_li
               f'src={slug}@{src_pr}' if src_pr else f'src={slug}']
     if domain and domain != '—':
         fields.append(f'domain={domain}')
-    reqs = ','.join(r.strip() for r in re.split(r'[,、]', row['reqs']) if r.strip() and r.strip() != '—')
+    # feature の目印の reqs= は、feature の行の要件とチェックリストの行の要件の和（start の止める検査が、
+    # チェックリストの行の要件の [要判断] でも効くように。reads= と同じ合わせ方）
+    reqs = ','.join(_merge_csv(_req_ids(row['reqs']), *(_req_ids(c['reqs']) for c in checklist)))
     if reqs:
         fields.append(f'reqs={reqs}')
     if checklist:
@@ -3332,6 +3339,11 @@ def append_checklist_to_body(body: str, adds: list[dict]) -> tuple[str, list[str
         if reads_value:
             inner = (re.sub(r'(?<!\S)reads=\S*', lambda _m: f'reads={reads_value}', inner, count=1)
                      if re.search(r'(?<!\S)reads=', inner) else f'{inner} reads={reads_value}')
+        old_reqs = [r.strip() for r in mark.get('reqs', '').split(',') if r.strip()]
+        reqs_value = ','.join(_merge_csv(old_reqs, *(a.get('reqs', []) for a in fresh)))
+        if reqs_value:
+            inner = (re.sub(r'(?<!\S)reqs=\S*', lambda _m: f'reqs={reqs_value}', inner, count=1)
+                     if re.search(r'(?<!\S)reqs=', inner) else f'{inner} reqs={reqs_value}')
         new_body = new_body[:begin] + inner + new_body[finish:]
     return new_body, [a['id'] for a in fresh]
 
@@ -3485,7 +3497,7 @@ def cmd_new_from_table(argv: list[str]) -> int:
         if not parent_ref.startswith('#'):
             continue
         number = int(parent_ref[1:])
-        adds = [{'id': c['id'], 'title': c['title'], 'reads': bundle_of(c)} for c in group]
+        adds = [{'id': c['id'], 'title': c['title'], 'reads': bundle_of(c), 'reqs': _req_ids(c['reqs'])} for c in group]
         added = add_checklist_rows(number, adds)
         print(f'  #{number} のチェックリストに {len(added)} 行足した（{",".join(added) or "既にある行のみ"}）')
     return 0
