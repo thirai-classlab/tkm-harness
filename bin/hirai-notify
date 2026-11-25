@@ -36,7 +36,7 @@
 #     更新から 24 時間を過ぎたら使わない。done を送れたら消す）
 #   > どれも無く ORCA_TERMINAL_HANDLE があれば --to を省いて送る（Orca の active Dispatch では宛先省略が Run の受け口。届かなければ orca の stderr）。
 #
-# `.claude/mode.yml` の `notify: off`（既定）なら何もせず exit 0。env HC_NOTIFY が優先。
+# `.claude/settings.json` の env `HIRAI_METHOD_NOTIFY`（既定 off）が orca でなければ何もせず exit 0。シェルの HC_NOTIFY が優先（4.x の間は mode.yml の notify: も読む）。
 # <file> は絶対 path に直して送る（無ければ exit 2）。--to と --dispatch-id の両方が引数にあれば --dispatch-id。引数は環境変数より先。
 # 送れなかったときは理由を stderr に出して exit 1（黙って捨てない）。
 # 送る操作は、検査の結果を見てから別の呼び出しで打つ（`;` `&&` `||` の分岐の後ろに繋げない）。
@@ -96,12 +96,12 @@ if [ -n "$arg_task" ] && { [ -z "$dispatch" ] || { [ "$kind" != "done" ] && [ "$
   echo "hirai-notify: --task-id は done・stopped を --dispatch-id（か HIRAI_DISPATCH_ID）と合わせて打つときだけ" >&2; usage; exit 2
 fi
 
-# notify の値: env HC_NOTIFY > プロジェクトの mode.yml > ホームの mode.yml > off
+# notify の値: scripts/tasks-path.sh の harness_notify（HC_NOTIFY > HIRAI_METHOD_NOTIFY > settings の file > mode.yml > off）
 # プロジェクトの root は harness_top "$PWD"（git のトップ。トップが HOME か HOME の祖先なら cwd のまま。開始時の表示・guard と同じ規則）
 lib="$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && builtin pwd -P)/scripts/tasks-path.sh"
 notify="${HC_NOTIFY:-}"
 if [ -z "$notify" ] && [ -f "$lib" ]; then
-  notify="$( . "$lib" 2>/dev/null && harness_yml_value "$PWD" notify )" || notify=""
+  notify="$( . "$lib" 2>/dev/null && harness_notify "$PWD" )" || notify=""
 fi
 [ "$notify" = "orca" ] || exit 0
 

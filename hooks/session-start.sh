@@ -133,10 +133,16 @@ done
 # --- 効いている設定: 版と tasks / worktree / notify を 1 行で (何が効いているかを 1 か所で見る) ---
 plugin_version=""
 command -v harness_local_version >/dev/null 2>&1 && plugin_version="$(harness_local_version "$plugin_root" 2>/dev/null || true)"
+# 3 項目の値は harness_setting 系の 1 本から (HC_* > HIRAI_METHOD_* > settings の file > mode.yml > 既定)。
 cfg_worktree="${HC_WORKTREE:-}"; cfg_notify="${HC_NOTIFY:-}"
-if command -v harness_yml_value >/dev/null 2>&1; then
-  [ -n "$cfg_worktree" ] || cfg_worktree="$(harness_yml_value "$root" worktree 2>/dev/null || true)"
-  [ -n "$cfg_notify" ] || cfg_notify="$(harness_yml_value "$root" notify 2>/dev/null || true)"
+if command -v harness_worktree >/dev/null 2>&1; then
+  cfg_worktree="$(harness_worktree "$root" 2>/dev/null || true)"
+  cfg_notify="$(harness_notify "$root" 2>/dev/null || true)"
+fi
+# mode.yml にだけ在る項目があれば、settings.json の env への移し方を 1 行で言う (HM-R2.4)
+migrate_line=""
+if command -v harness_setting_from_yml_only >/dev/null 2>&1 && [ -n "$(harness_setting_from_yml_only "$root" 2>/dev/null || true)" ]; then
+  migrate_line="[harness] mode.yml の tasks:・worktree:・notify: は settings.json の env（HIRAI_METHOD_TASKS など）へ移せます（/hirai-lite:config の項目 8）"
 fi
 settings_line="hirai-lite ${plugin_version:+v${plugin_version}・}tasks: ${tasks_form}・worktree: ${cfg_worktree:-off}・notify: ${cfg_notify:-off}"
 
@@ -152,6 +158,10 @@ fi
 extra_line="$update_line"
 if [ -n "$sync_line" ]; then
   if [ -n "$extra_line" ]; then extra_line="${extra_line} ／ ${sync_line#\[harness\] }"; else extra_line="$sync_line"; fi
+fi
+# 移行の案内もここへ足す (開始時の表示は 5 行以内)
+if [ -n "$migrate_line" ]; then
+  if [ -n "$extra_line" ]; then extra_line="${extra_line} ／ ${migrate_line#\[harness\] }"; else extra_line="$migrate_line"; fi
 fi
 [ -n "$extra_line" ] && echo "$extra_line"
 # Orca の worktree の警告・知らせ方 (worktree / notify が off なら何も出ない)。

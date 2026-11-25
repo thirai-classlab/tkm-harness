@@ -106,7 +106,7 @@ case "$mode" in
   *)      mode_label="$mode";                mode_col="$DIM" ;;
 esac
 
-# 未完了タスク: tasks: (mode.yml) が決める。ledger (既定) は台帳の件数、github-project は
+# 未完了タスク: tasks (settings.json の env HIRAI_METHOD_TASKS。harness_tasks_form が決める) が決める。ledger (既定) は台帳の件数、github-project は
 # 足すプラグインの `hirai-task line` (控えを読むだけ。--refresh を付けないので gh を叩かない。HIRAI_TASK_ROOT で会話のリポを渡す。
 # 取り直しは session-start.sh が起こす)。github-project のときだけ見出し語を「あなたの番」に替える —
 # 「やること 6（承認…」だと 6 を Project 番号のように読めるため。

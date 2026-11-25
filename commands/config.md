@@ -25,7 +25,7 @@ if [ "$tform" = "github-project" ]; then
 else
   echo "設定一式の置き場: $D / やること一覧: $(harness_tasks_file "$PWD" || echo '(まだありません)')"
 fi
-echo "tasks: $tform / worktree: $(harness_yml_value "$PWD" worktree | grep . || echo off) / notify: $(harness_yml_value "$PWD" notify | grep . || echo off)"
+echo "tasks: $tform / worktree: $(harness_worktree "$PWD") / notify: $(harness_notify "$PWD")"
 grep -q '"ultracode"[[:space:]]*:[[:space:]]*true' "$D/settings.json" 2>/dev/null && echo "ultracode: 有効" || echo "ultracode: 無効"
 grep -q '"statusLine"' "$D/settings.json" 2>/dev/null && echo "statusLine（画面下部の情報表示）: 有効" || echo "statusLine（画面下部の情報表示）: 無効"
 for f in CLAUDE.md "$HOME/.claude/CLAUDE.md" "$R"/*.md; do
@@ -161,17 +161,17 @@ harness_auto_sync "$PWD"
 報告書式: `更新後の入れ替えを有効にしました → <パス>。プラグインが新しくなった回に、画面下部などのスクリプトを自動で最新にします（元の内容は .bak に残します）` ／ 無効にしたときは `更新後の入れ替えを無効にしました → <パス>。これまでどおり /hirai-lite:update で手動更新してください`。書き込み先が `~/.claude/mode.yml` だったときだけ 1 行足す: `この設定はすべてのプロジェクトに効きます`
 
 ### 8. 形と Orca（tasks / worktree / notify）
-3 つとも `.claude/mode.yml` の 1 行で、`harness_yml_set` が**その 1 行だけ**を書き換える（書き込み先は**常にプロジェクトの `.claude/mode.yml`**で、`worktree`・`notify` は git の toplevel のもの、`tasks` は自分の `.claude/` を持つパッケージで開いたときだけそのパッケージのもの。ホームが git のときも `~/.claude/mode.yml` には書かない。`mode` と違い、ホームの mode.yml には書かない。他のリポにも効いてしまうため。読むときは項目ごとに 環境変数 → プロジェクト → ホーム → 既定の順）。値は `tasks`: `ledger`（既定）／ `github-project`、`worktree`: `off`（既定）／ `warn` ／ `block`、`notify`: `off`（既定）／ `orca`。
+3 つとも**プロジェクトの `.claude/settings.json` の `env`** の 1 つの名前で決まる: `HIRAI_METHOD_TASKS`・`HIRAI_METHOD_WORKTREE`・`HIRAI_METHOD_NOTIFY`（プラグインがプロジェクトの settings から読めるのは `env` だけ。https://code.claude.com/docs/en/settings-reference.md#env）。`harness_settings_set <項目> <値>` が**その 1 つのキーだけ**を書く（python3 で JSON を読み、ほかのキーは触らず、indent 2・ensure_ascii False で書き戻す。JSON として読めない file は上書きせず rc 1）。書き込み先は**常にプロジェクト（git の toplevel）の `.claude/settings.json`**。ホームの `~/.claude/settings.json` には書かない（他のリポにも効いてしまうため）。書いたら、同じ項目の行がプロジェクトの `.claude/mode.yml` にあれば同じ関数が消す（`local` のときは消さない。4.x の間だけ mode.yml も読むが、settings が先）。**自分だけ変えたいときは `.claude/settings.local.json`（git に入らない）に書ける**: `harness_settings_set <項目> <値> "$PWD" local`。読む順は 環境変数 `HC_*`（一時の上書き）→ `HIRAI_METHOD_*`（Claude Code の中では settings.local.json > settings.json が重なって届く）→ Claude Code の外では settings の file を直に読む → mode.yml → 既定。値は `tasks`: `ledger`（既定）／ `github-project`、`worktree`: `off`（既定）／ `warn` ／ `block`、`notify`: `off`（既定）／ `orca`。
 `tasks: github-project` にするときは、足すプラグインを入れてから（`/plugin install hirai-project-method@hirai-lite`）。`/hirai-lite:start-task` などが `hirai-task` を呼ぶ形に変わる。
 `worktree: block` は、Orca の worktree でない会話からの、Edit・Write・NotebookEdit と `git commit` を止める（MCP の書き込みの道具と Bash でのファイルの書き換えは止めない。読み取り・リポの外・git に入らない場所への書き込み・`git switch` も止めない）。**止める設定なので、有効にする前に承認カードで確認を取る**（2 と同じ型。「しないと」は並行の会話が同じ作業ツリーを触る事故が残ること）。`warn` と `off`、`notify` の切り替えに確認は要らない。
+**settings.json の `env` は、書いたあとに開いた会話から効く**（開いている会話の環境変数は変わらない。開き直してもらう）。
 ```bash
 P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" hirai-lite 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/hirai-lite/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
-f="$(harness_top "$PWD")/.claude/mode.yml"; echo "変えるファイル: $f"   # worktree・notify は toplevel の mode.yml。tasks だけ f を "$(harness_root "$PWD")/.claude/mode.yml" にする
-harness_yml_set "$f" worktree warn   # notify も同じ書き方
-harness_yml_value "$PWD" worktree
+f="$(harness_settings_set worktree warn "$PWD")" && echo "変えたファイル: $f"   # tasks・notify も同じ書き方。自分だけなら末尾に local を足す
+harness_worktree "$PWD" | cat   # HC_WORKTREE を打ったシェルでは、その値が先に出る
 ```
-報告書式: `worktree を warn にしました → <パス>。Orca の worktree でない会話に、開始時に警告を出します`。
+報告書式: `worktree を warn にしました → <パス>（env の HIRAI_METHOD_WORKTREE）。Orca の worktree でない会話に、開始時に警告を出します（開き直した会話から）`。自分だけの変更なら 1 行足す: `自分だけに効かせたいときは .claude/settings.local.json に書けます`。
 
 ## 判定できる終了条件
 
