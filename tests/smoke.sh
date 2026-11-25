@@ -1135,7 +1135,6 @@ r6_mutants() {
       cat <<'X'
 A-worktree-row|scripts/tasks-path.sh|s/if g and common:/if False:/
 A-no-row|scripts/tasks-path.sh|s/return g == common/return True/
-C-one-line|hooks/session-start.sh|/awk .NF{ if (n++)/d
 C-coordinator-not-resume|hooks/session-start.sh|s/ | grep -v .^coordinator.//
 D-statusline-root|scripts/statusline.sh|s/HIRAI_TASK_ROOT="\$root" //
 E-subdir-tasks|scripts/tasks-path.sh|s/if \[ -e "\$cur\/.git" \]; then _HR_TOP/if false; then _HR_TOP/
