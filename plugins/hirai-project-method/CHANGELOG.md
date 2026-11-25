@@ -2,6 +2,10 @@
 
 版の付け方は [semver](https://semver.org/lang/ja/)。`VERSION` と `.claude-plugin/plugin.json` の `version` は常に同じ値を持ち、`tests/smoke.sh` が一致を検証する。tag は `hirai-project-method--v<版>`。
 
+## Unreleased
+- **`hirai-task board --progress [--json]`**（新）: `load` と同じ計算（`hirai_load.build`）に、担当・「いまやっていること」・「これから立てる」を足した表（`scripts/hirai_progress.py`）。担当は `orca worktree list --json` の表示名・linkedIssue・linkedPR・comment が第一で、worker-list・task-list・inbox で補い、Orca が無いとき PR の branch 名 → Assignees に落ちる。読み取りだけ
+- **設定**: `load` の期限・本線は環境変数 `TKM_HARNESS_LOAD_DEADLINE`・`_DEADLINE_LABEL`・`_MAINLINE`・`_MAINLINE_LABEL` が先、無ければ `mode.yml` の `load_*`
+
 ## v1.2.0
 全体の進みと、振っているタスクの順番・進捗率の表（GitHub Project と PR・CI の実物から）を、道具の側で出す形にした（heyapro-app の #1978）。土台の動きは変えていない（土台は 3.1.0 のまま。直したのはリポ直下の README とカタログの説明文だけ）。
 

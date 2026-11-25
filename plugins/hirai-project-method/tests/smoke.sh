@@ -23,7 +23,7 @@ trap 'for d in "${tmpdirs[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done' EXIT
 case_1() {
   local missing="" f
   for f in bin/hirai-task scripts/ghp-path.sh scripts/hirai_board.py scripts/hirai_card.py scripts/hirai_project_setup.py \
-           scripts/hirai_task_selftest.py scripts/hirai_load.py commands/board.md commands/project-setup.md skills/github-project/SKILL.md hooks/hooks.json hooks/coordinator-load.sh \
+           scripts/hirai_task_selftest.py scripts/hirai_load.py scripts/hirai_progress.py commands/board.md commands/project-setup.md skills/github-project/SKILL.md hooks/hooks.json hooks/coordinator-load.sh \
            docs/rules-reference/project-setup.md docs/rules-reference/glossary.md .claude-plugin/plugin.json VERSION; do
     [ -f "$ROOT/$f" ] || missing="$missing $f"
   done

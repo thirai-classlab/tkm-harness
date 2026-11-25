@@ -5163,7 +5163,8 @@ _BOARD_USAGE = (
     '使い方: hirai-task board [--out <path>] [--refresh | --from <json>]   （HTML を書く）\n'
     '        hirai-task board --summary [--refresh | --from <json>]       （スマホで読む要約）\n'
     '        hirai-task board --text [--wave N | --feature N | --task N] [--refresh | --from <json>]\n'
-    '        hirai-task board [--summary] --publish <issue>               （要約を issue の目印の間に書く。いつも取り直す）'
+    '        hirai-task board [--summary] --publish <issue>               （要約を issue の目印の間に書く。いつも取り直す）\n'
+    '        hirai-task board --progress [--json] [--refresh | --from <json>]   （進みの表。担当と「いまやっていること」は Orca から）'
 )
 _BOARD_VALUE_FLAGS = ('--out', '--from', '--wave', '--feature', '--task', '--publish')
 _BOARD_NUMBER_FLAGS = ('--wave', '--feature', '--task', '--publish')
@@ -5177,11 +5178,11 @@ _NO_REPO_MESSAGE = (
 def parse_board_args(argv: list[str]) -> dict:
     """board の引数を、gh を叩く前に全部確かめる（誤りは exit 2）。"""
     opts: dict = {'text': False, 'summary': False, 'refresh': False, 'out': None, 'from': None,
-                  'publish': None, 'scope': None}
+                  'publish': None, 'scope': None, 'progress': False, 'json': False}
     args = list(argv)
     while args:
         flag = args.pop(0)
-        if flag in ('--text', '--summary', '--refresh'):
+        if flag in ('--text', '--summary', '--refresh', '--progress', '--json'):
             if opts[flag[2:]]:
                 die(f'{flag} が 2 回ある\n{_BOARD_USAGE}', 2)
             opts[flag[2:]] = True
@@ -5206,6 +5207,10 @@ def parse_board_args(argv: list[str]) -> dict:
 
 
 def _check_board_combination(opts: dict) -> None:
+    if opts['json'] and not opts['progress']:
+        die('--json は --progress と一緒に使う', 2)
+    if opts['progress'] and (opts['text'] or opts['summary'] or opts['publish'] is not None or opts['out'] or opts['scope']):
+        die('--progress は --text・--summary・--publish・--out・--wave・--feature・--task と一緒に使わない', 2)
     if opts['scope'] and not opts['text']:
         die('--wave・--feature・--task は --text と一緒に使う', 2)
     if sum(1 for key in ('text', 'summary') if opts[key]) + (opts['publish'] is not None) > 1 \
@@ -5421,6 +5426,16 @@ def _load_board_module():
     return hirai_board
 
 
+def _load_progress_module():
+    scripts_dir = os.path.join(_plugin_root(), 'scripts')
+    if not os.path.isfile(os.path.join(scripts_dir, 'hirai_progress.py')):
+        die(f'描く側が見つからない: {scripts_dir}/hirai_progress.py', 1)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import hirai_progress
+    return hirai_progress
+
+
 def _board_snapshot(opts: dict) -> tuple[dict, str]:
     if opts['from']:
         if not os.path.isfile(opts['from']):
@@ -5440,7 +5455,27 @@ def _board_snapshot(opts: dict) -> tuple[dict, str]:
     return snap, 'fetched'
 
 
+def cmd_board_progress(opts: dict) -> int:
+    """進みの表。計算は load と同じ（hirai_load.build）。担当と「いまやっていること」は Orca の読み取りから、
+    引けなければ PR の branch 名・Assignees から。読むだけ。"""
+    load, progress = _load_module(), _load_progress_module()
+    snap, how = _board_snapshot(opts)
+    view = board_view(snap, how)
+    _apply_overlay(view, snap['fetched_epoch'])
+    orca = progress.collect(REPO)
+    prs = fetch_load_prs(_assignee_candidates(view['issues'], orca['assign'] if orca else {}))
+    settings = _load_settings(prs, network=True)
+    model = progress.build(load, view, prs, settings, orca)
+    if opts['json']:
+        print(json.dumps(model, ensure_ascii=False, indent=2))
+    else:
+        print(progress.render(load, model), end='')
+    return 0
+
+
 def cmd_board(opts: dict) -> int:
+    if opts['progress']:
+        return cmd_board_progress(opts)
     board = _load_board_module()
     data = board_view(*_board_snapshot(opts))
     if opts['text']:
@@ -5483,7 +5518,7 @@ LOAD_POST_STEP_SECONDS = 25  # 書いたあとの表・Assignees の確かめで
 LOAD_EXIT_UNCHANGED = 3  # --changed で動いた所が無い（表を 1 行も出さない）
 _LOAD_USAGE = '使い方: hirai-task load [--json] [--changed] [--cached | --refresh] [--if-coordinator]'
 _ASSIGN_USAGE = '使い方: hirai-task assign <issue> <担当> [順] | hirai-task assign <issue> --clear'
-_LOAD_PR_NODE = '''number isDraft mergeable author { login }
+_LOAD_PR_NODE = '''number isDraft mergeable headRefName author { login }
         closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } } }'''
 _LOAD_PR_QUERY = '''
 query($owner:String!, $name:String!, $first:Int!) {
@@ -5566,7 +5601,7 @@ def _load_pr_row(node: dict, known: dict | None = None) -> dict:
     # GitHub は計算中に UNKNOWN を返す。その間は前の控えの値を使う（衝突の印が消えたり付いたりしない）
     conflict = mergeable == 'CONFLICTING' if mergeable != 'UNKNOWN' else bool((known or {}).get(node.get('number')))
     return {'number': node.get('number'), 'draft': bool(node.get('isDraft')), 'conflict': conflict,
-            'author': (node.get('author') or {}).get('login') or '', 'closes': closes, 'checks': rollup.get('state') or ''}
+            'author': (node.get('author') or {}).get('login') or '', 'head': node.get('headRefName') or '', 'closes': closes, 'checks': rollup.get('state') or ''}
 
 
 def _assignee_logins(node) -> list[str]:
@@ -5641,14 +5676,21 @@ def fetch_deadline_open(date: str) -> int | None:
     return None
 
 
+def _load_setting(key: str) -> str:
+    """load の設定 1 項目。環境変数 TKM_HARNESS_<KEY の大文字>（導入先の .claude/settings.json の env）が先、無ければ mode.yml。"""
+    value = os.environ.get('TKM_HARNESS_' + key.upper(), '').strip()
+    return value or _mode_setting(key, home=False)
+
+
 def _load_settings(prs: dict | None, *, network: bool) -> dict:
-    """プロジェクトの mode.yml の load_deadline（YYYY-MM-DD）・load_deadline_label・load_mainline・load_mainline_label。
+    """環境変数 TKM_HARNESS_LOAD_DEADLINE・_LOAD_DEADLINE_LABEL・_LOAD_MAINLINE・_LOAD_MAINLINE_LABEL が先、無ければ
+    プロジェクトの mode.yml の load_deadline（YYYY-MM-DD）・load_deadline_label・load_mainline・load_mainline_label。
     無い設定は空にして、その行・印を出さない。日付の形が違う・mode.yml を読めないときは、標準エラーに 1 行で期限の行を出さない。"""
     settings = {'deadline_date': '', 'deadline_label': '期限', 'deadline_open': None, 'mainline': '', 'mainline_label': '本線'}
     try:
-        date = _mode_setting('load_deadline', home=False)
-        settings['mainline'] = _mode_setting('load_mainline', home=False)
-        settings['mainline_label'] = _mode_setting('load_mainline_label', home=False) or '本線'
+        date = _load_setting('load_deadline')
+        settings['mainline'] = _load_setting('load_mainline')
+        settings['mainline_label'] = _load_setting('load_mainline_label') or '本線'
     except RuntimeError as exc:
         print(f'警告: {exc}。期限の行・本線の印は出さない', file=sys.stderr)
         return settings
@@ -5657,7 +5699,7 @@ def _load_settings(prs: dict | None, *, network: bool) -> dict:
         date = ''
     if date:
         settings['deadline_date'] = date
-        settings['deadline_label'] = _mode_setting('load_deadline_label', home=False) or f'期限（{date}）'
+        settings['deadline_label'] = _load_setting('load_deadline_label') or f'期限（{date}）'
         if network:
             settings['deadline_open'] = fetch_deadline_open(date)
         elif (prs or {}).get('deadline_date') == date:

@@ -28,6 +28,7 @@ tasks: github-project
 | `commands/board.md` | `/hirai-project-method:board` 全体像と、どこで何件止まっているか |
 | `commands/project-setup.md` | `/hirai-project-method:project-setup` Project の作成・紐づけ・項目・ビューの立ち上げ（既定は計画だけ。`--apply` で書く） |
 | `bin/hirai-task load`・`assign` | 全体の %・担当ごとの順番と進捗率の表と、割り振り・Assignees の決まり（「進捗を見せて」などで出る。決まりは `skills/github-project/` の「進みと割り振りの表」） |
+| `bin/hirai-task board --progress`・`scripts/hirai_progress.py` | `load` と同じ計算に、担当と「いまやっていること」（`orca worktree list` の表示名・linkedIssue・linkedPR・comment が第一。Orca が無いときは PR の branch 名と Assignees）と「これから立てる」を足した表。`--json` で同じ中身を機械の形で出す。期限・本線の設定は環境変数 `TKM_HARNESS_LOAD_DEADLINE`・`_DEADLINE_LABEL`・`_MAINLINE`・`_MAINLINE_LABEL`（導入先の `.claude/settings.json` の `env`）が先、無ければ `mode.yml` の `load_*` |
 | `hooks/coordinator-load.sh` | コーディネーターの会話だけの PostToolUse（止めない・gh も控えも読まない・知らせを受けたとき（前景の `orca orchestration check` の出力に message の id があるか `--ack` を付けたとき）「`hirai-task load --changed` を打つ」の 1 行を足す。`.claude/mode.yml` の `notify: orca` と `tasks: github-project`・`HC_NOTIFY=off`・Orca の端末・linked worktree でない、が全部そろうとき） |
 | `skills/github-project/` | GitHub Project の形の規範（正本は Project・3 段・Status 8 値・書き込みはメイン専任・承認カード） |
 | `docs/rules-reference/project-setup.md`・`glossary.md` | 立ち上げの手順と、wave・feature・8 状態の用語 |
