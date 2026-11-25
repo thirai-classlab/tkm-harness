@@ -2379,6 +2379,24 @@ def _card_checks(t, tmp_dir: str) -> None:
 
     t('card --sync: 承認しても動かない feature は「ひとこと」の末尾に今は動かない理由を付ける', _card_sync_marks_stalled)
 
+    def _card_sync_checklist_not_stalled() -> None:
+        original = bodies[809]
+        try:
+            for extra in ('\n\n## やること\n- [ ] CHK-01: 入力欄を作る\n',
+                          '\n\n<!-- rmp-task: id=F1 rows=CHK-01 -->\n'):
+                bodies[809] = original + extra
+                log: list = []
+                use(log=log)
+                rc, out = _run_main(['card', '809', '--sync'])
+                assert rc == 0, f'exit {rc}: {out}'
+                assert ('item-update', 'F_ひとこと', '画面をそろえる作業を始めるか') in log, \
+                    f'チェックリストの行があるのに「今は動かない」を付けた（{extra!r}）: {log}'
+        finally:
+            bodies[809] = original
+
+    t('card --sync: 子 0 本でも本文のチェックリストの行（`- [ ]` か目印の rows=）があれば「今は動かない」を付けない（HM-R4.3）',
+      _card_sync_checklist_not_stalled)
+
     def _card_sync_refuses() -> None:
         for number, with_fields, code, why in ((800, False, 2, 'hirai-task setup'), (801, True, 1, '承認カードが無い'),
                                                (802, True, 2, '承認カードだけ')):

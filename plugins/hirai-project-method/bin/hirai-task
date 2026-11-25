@@ -5607,7 +5607,7 @@ def board_view(snap: dict, how: str) -> dict:
     stalls = {}
     for i in issues:
         if i.get('kind') == FEATURE_KIND and i.get('state') != 'CLOSED' and i.get('status') == PENDING_STATUS:
-            reason = approval_stall_reason(i, items_by_number, children_of, extras)
+            reason = approval_stall_reason(i, items_by_number, children_of, extras, bodies.get(i['number'], ''))
             if reason:
                 stalls[i['number']] = reason
     return {
@@ -6267,16 +6267,25 @@ def expected_card_kind(kind: str, status: str, title: str, state: str = 'OPEN') 
     return 'work' if has_mark(title, USER_MARK) else None
 
 
+def feature_has_rows(body: str) -> bool:
+    """feature の本文が task の代わりに持つ作業（チェックリストの未完の行か、目印の rows=）があるか（HM-R4.3）。"""
+    mark = parse_task_mark(body or '') or {}
+    return checklist_open_count(body or '') > 0 or bool((mark.get('rows') or '').strip())
+
+
 def approval_stall_reason(
     feature: dict, items_by_number: dict[int, dict], children_of: dict[int, list[int]],
-    extras: dict[int, dict],
+    extras: dict[int, dict], body: str = '',
 ) -> str:
     """承認待ちの feature を承認しても、子の task が動き出さない理由（動くなら空文字）。
     ready と同じ門（blocked by）と、子の中身（人の作業・保留・判断待ちだけ、子が無い）を見る。
-    先の wave は理由にしない: 承認すれば子は wave の門を越えて動く（ADR-0760。カードの注意に出す）。"""
+    先の wave は理由にしない: 承認すれば子は wave の門を越えて動く（ADR-0760。カードの注意に出す）。
+    body は feature の本文。チェックリストの行（rows=）があれば作業ありとみなし、子の有無・種類では止まりにしない（HM-R4.3）。"""
     number = feature['number']
     if (extras.get(number) or {}).get('blocked_by_open', 0) > 0:
         return STALL_BLOCKED
+    if feature_has_rows(body):
+        return ''
     kids = [items_by_number[c] for c in children_of.get(number, []) if c in items_by_number]
     open_tasks = [k for k in kids if k.get('state') != 'CLOSED' and (k.get('kind') or '') not in EXCLUDE_KINDS]
     if not open_tasks:
@@ -6336,7 +6345,8 @@ def _stall_reason_for(project_number: int, number: int) -> str:
     feature = by_number.get(number)
     if feature is None or feature.get('kind') != FEATURE_KIND:
         return ''
-    return approval_stall_reason(feature, by_number, children_of, fetch_extras([number]))
+    return approval_stall_reason(feature, by_number, children_of, fetch_extras([number]),
+                                 fetch_bodies([number]).get(number, ''))
 
 
 def _card_targets(items: list[dict]) -> list[tuple[dict, str]]:
@@ -6377,7 +6387,7 @@ def cmd_card_lint() -> int:
     entries = []
     for i, kind in rows:
         card, problems = cards.read_card(bodies.get(i['number'], ''), kind)
-        stall = approval_stall_reason(i, by_number, children_of, extras) \
+        stall = approval_stall_reason(i, by_number, children_of, extras, bodies.get(i['number'], '')) \
             if kind == 'approval' and i.get('kind') == FEATURE_KIND else ''
         warnings, date = [], ''
         if card and kind == 'approval':
