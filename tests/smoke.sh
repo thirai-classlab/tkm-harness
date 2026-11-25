@@ -1686,6 +1686,13 @@ EOF6
   printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"user","version":"3.0.0","installPath":"/x"}]}}\n' > "$mhome/.claude/plugins/installed_plugins.json"
   mu="$(cd "$mrepo" && HOME="$mhome" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"; echo \"rc=\$?\"")"
   [ "$mu" = "rc=1" ] || mbad="$mbad [M-5] uninstall 後に cache の残りを採った (期待 空・rc=1): ${mu}"
+  # M-5b: installed_plugins.json が無いときだけ cache の最大版 (配布元の段は fork の名前でも当たる)。CLAUDE_PLUGIN_ROOT の bin/hirai-task はそれらより先
+  mv "$mhome/.claude/plugins/installed_plugins.json" "$mhome/.claude/plugins/installed_plugins.json.off"
+  mu="$(cd "$mrepo" && HOME="$mhome" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"")"
+  [ "$mu" = "$mhome/.claude/plugins/cache/some-fork/tkm-harness/1.0.0/bin/hirai-task" ] || mbad="$mbad [M-5b] installed 無しで cache (配布元の段 some-fork) の最大版を採らない: ${mu}"
+  mu="$(cd "$mrepo" && HOME="$mhome" CLAUDE_PLUGIN_ROOT="$ROOT" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"")"
+  [ "$mu" = "$ROOT/bin/hirai-task" ] || mbad="$mbad [M-5b] CLAUDE_PLUGIN_ROOT の bin/hirai-task を先に採らない: ${mu}"
+  mv "$mhome/.claude/plugins/installed_plugins.json.off" "$mhome/.claude/plugins/installed_plugins.json"
   printf '{"plugins":{"tkm-harness@tkm-harness":[{"scope":"project","projectPath":"/elsewhere/other","version":"1.0.0","installPath":"%s"}]}}\n' "$mw/other" > "$mhome/.claude/plugins/installed_plugins.json"
   mu="$(cd "$mrepo" && HOME="$mhome" PATH=/usr/bin:/bin /bin/bash -c ". \"$ROOT/scripts/tasks-path.sh\"; harness_pm_task_bin \"\$PWD\"; echo \"rc=\$?\"")"
   [ "$mu" = "rc=1" ] || mbad="$mbad [M-5] 別のリポの project 行だけのとき採った: ${mu}"
