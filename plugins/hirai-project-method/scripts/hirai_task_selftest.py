@@ -2584,6 +2584,390 @@ def _expect_exit(fn, expected_code: int) -> None:
     raise AssertionError('落ちるべきなのに通った')
 
 
+# ═════════════════════════════════════════════════════════════════════
+# ── feature を単位に回す（HM-R4。着手 → レビュー → 完了と、本文のチェックリスト） ──
+# ═════════════════════════════════════════════════════════════════════
+def _feature_checks(t, tmp_dir: str) -> None:
+    quiet = io.StringIO
+
+    def _start_feature_ready() -> None:
+        record: list = []
+        body = '本文\n<!-- rmp-task\nreads: docs/a.md,docs/b.md\n-->'
+        gh_task.run_gh = make_write_gh(
+            {701: dict(title='feature 行', status=gh_task.READY_STATUS, kind='feature', body=body)}, record=record,
+        )
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = gh_task.cmd_start(701, None)
+        assert rc == 0 and record == [('F_Status', 'O_Status_進行中')], (rc, record)
+        assert 'docs/a.md' in out.getvalue() and 'docs/b.md' in out.getvalue(), f'feature の読む束が出ない: {out.getvalue()!r}'
+
+    t('HM-R4.1 start: 着手可の feature は進行中に進み、目印の reads= を読む束として出す', _start_feature_ready)
+
+    def _start_feature_refused() -> None:
+        for status in (gh_task.PENDING_STATUS, ''):
+            record: list = []
+            gh_task.run_gh = make_write_gh(
+                {702: dict(title='feature 行', status=status, kind='feature')}, record=record,
+            )
+            _expect_exit(lambda: gh_task.cmd_start(702, None), 2)
+            assert record == [], (status, record)
+        record = []
+        gh_task.run_gh = make_write_gh({
+            703: dict(title='feature 行', status=gh_task.READY_STATUS, kind='feature', blockers=[(704, 'OPEN')]),
+        }, record=record)
+        _expect_exit(lambda: gh_task.cmd_start(703, None), 2)
+        gh_task.run_gh = make_write_gh({
+            705: dict(title='feature 行', status=gh_task.READY_STATUS, kind='feature', state='CLOSED'),
+        }, record=record)
+        _expect_exit(lambda: gh_task.cmd_start(705, None), 2)
+        gh_task.run_gh = make_write_gh({
+            706: dict(title='wave 行', status=gh_task.READY_STATUS, kind='wave'),
+        }, record=record)
+        _expect_exit(lambda: gh_task.cmd_start(706, None), 2)
+        assert record == [], record
+
+    t('HM-R4.1 start: 承認待ち・Status 空・開いた blocked by・閉じた feature と、種別 wave は断り、何も書かない', _start_feature_refused)
+
+    def _review_done_feature() -> None:
+        record: list = []
+        rest_calls: list = []
+
+        def rest_handler(method, path, body):
+            rest_calls.append((method, path, body))
+            return {}
+
+        gh_task.run_gh = make_write_gh(
+            {710: dict(title='feature 行', status=gh_task.IN_PROGRESS_STATUS, kind='feature')},
+            record=record, rest_handler=rest_handler,
+        )
+        with redirect_stdout(quiet()):
+            assert gh_task.cmd_review(710) == 0
+            assert gh_task.cmd_done(710, None) == 0
+            assert gh_task.cmd_done(710, '使わない') == 0
+        assert record == [('F_Status', 'O_Status_レビュー中'), ('F_Status', 'O_Status_完了'), ('F_Status', 'O_Status_完了')], record
+        reasons = [c[2].get('state_reason') for c in rest_calls if c[0] == 'PATCH']
+        assert reasons == ['completed', 'not_planned'], reasons
+
+    t('HM-R4.1 review・done（--not-planned も）は feature を受ける', _review_done_feature)
+
+    def _set_feature_status() -> None:
+        for status, value, ok in (
+            (gh_task.READY_STATUS, gh_task.IN_PROGRESS_STATUS, False),  # 進行中へは start を使う
+            (gh_task.IN_PROGRESS_STATUS, gh_task.REVIEW_STATUS, True),
+            (gh_task.REVIEW_STATUS, gh_task.DONE_STATUS, True),
+            (gh_task.IN_PROGRESS_STATUS, gh_task.IN_PROGRESS_STATUS, True),
+            (gh_task.IN_PROGRESS_STATUS, gh_task.READY_STATUS, False),
+            (gh_task.PENDING_STATUS, gh_task.READY_STATUS, False),
+            (gh_task.IN_PROGRESS_STATUS, gh_task.PENDING_STATUS, False),
+        ):
+            record: list = []
+            gh_task.run_gh = make_write_gh(
+                {720: dict(title='feature 行', status=status, kind='feature')}, record=record,
+            )
+            if ok:
+                with redirect_stdout(quiet()):
+                    assert gh_task.cmd_set(720, 'Status', value) == 0, (status, value)
+                assert record == [('F_Status', f'O_Status_{value}')], (status, value, record)
+            else:
+                _expect_exit(lambda: gh_task.cmd_set(720, 'Status', value), 2)
+                assert record == [], (status, value, record)
+        # 種別 wave は全部断る
+        for value in (gh_task.IN_PROGRESS_STATUS, gh_task.REVIEW_STATUS, gh_task.DONE_STATUS, gh_task.READY_STATUS):
+            gh_task.run_gh = make_write_gh({721: dict(title='wave', status=gh_task.IN_PROGRESS_STATUS, kind='wave')})
+            _expect_exit(lambda: gh_task.cmd_set(721, 'Status', value), 2)
+
+    t('HM-R4.1 set: feature は 進行中・レビュー中・完了 だけ書け、着手可・承認待ちは断る。wave は全部断る', _set_feature_status)
+
+    def _board_with_bodies(rows, bodies, extras=None):
+        """make_board_gh に、本文の問い合わせ（issue(number: N) { number body }）への答えを足した偽 gh。"""
+        base = make_board_gh(rows, extras)
+
+        def fake(args, input_text=None):
+            joined = ' '.join(args)
+            if re.search(r'\bi0:', joined) and 'number body }' in joined:
+                numbers = [int(n) for n in re.findall(r'issue\(number:\s*(\d+)\)', joined)]
+                data = {f'i{i}': {'issue': {'number': n, 'body': bodies.get(n, '')}} for i, n in enumerate(numbers)}
+                return 0, json.dumps({'data': data}), ''
+            return base(args)
+
+        return fake
+
+    def _ready_lists_features() -> None:
+        R, F, T = gh_task.READY_STATUS, 'feature', 'task'
+        rows = [
+            _fake_row(1, status=R, kind=F, title='チェックリストの feature'),
+            _fake_row(2, status=R, kind=F, title='子の task が残る feature'),
+            _fake_row(3, status=R, kind=T, parent_number=2, title='コードの task'),
+            _fake_row(4, status=R, kind=F, title='人の作業だけが子の feature'),
+            _fake_row(5, status=R, kind=T, parent_number=4, title='[User] 画面を見る'),
+            _fake_row(6, status=gh_task.PENDING_STATUS, kind=F, title='承認待ちの feature'),
+            _fake_row(7, status=R, kind=F, title='blocked by のある feature'),
+            _fake_row(8, status=R, kind=F, state='CLOSED', title='閉じた feature'),
+            _fake_row(9, status=R, kind=F, title='閉じた task だけが子の feature'),
+            _fake_row(10, status=R, kind=T, parent_number=9, state='CLOSED', title='済んだ task'),
+        ]
+        bodies = {1: '## やること\n- [ ] a: 一\n- [x] b: 二\n- [ ] c: 三\n', 4: '- [ ] z: 零\n'}
+        gh_task.run_gh = _board_with_bodies(rows, bodies, {7: {'blockers': [(99, 'OPEN')]}})
+        out = io.StringIO()
+        with redirect_stdout(out):
+            assert gh_task.main(['ready']) == 0
+        lines = out.getvalue().splitlines()
+        feats = {int(m.group(1)): line for line in lines if (m := re.match(r'\s+#(\d+)\s+\[feature\] ', line))}
+        assert sorted(feats) == [1, 4, 9], f'出す feature は 1・4・9 のはず: {out.getvalue()!r}'
+        assert 'チェックリスト未完 2 行' in feats[1] and 'チェックリスト未完 1 行' in feats[4] and '未完 0 行' in feats[9], feats
+        assert any(re.match(r'\s+#3\s+\[feature #2\] ', line) for line in lines), 'task の行が今までの形でない'
+        assert '着手可 4 件' in out.getvalue(), out.getvalue()
+
+    t('HM-R4.2 ready: 開いたコードの task の子が無い着手可の feature を、印とチェックリストの未完の行数つきで出す', _ready_lists_features)
+
+    # ── HM-R4.3: 表のコードの行は feature の本文のチェックリストへ ──
+    def _draft(name: str, rows_text: str) -> str:
+        text = (
+            '# 表の試験\n\nid_prefix: CHK\nkind: ハーネス\ndomain: —\nstatus: 承認\n'
+            'approvals: 要件=PR #9 設計=PR #9 task=PR #9\napproved_at: 2026-10-01（PR #9 の merge で承認）\n\n'
+            '## 1. 問題\n\n## 10. 完了条件\n\n## 11. task\n\n### 11-3. 表\n\n'
+            '| id | kind | stream | 題名 | 親 | 止める依存 | 要件 | 完了条件 |\n|---|---|---|---|---|---|---|---|\n'
+            + rows_text + '\n## 12. 履歴\n'
+        )
+        path = os.path.join(tmp_dir, name)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+        return path
+
+    def _run_table(path: str, *, existing=None, wave_open=None):
+        calls: list[dict] = []
+        added: list = []
+        saved = (gh_task.new_issue, gh_task.existing_table_marks, gh_task.add_checklist_rows,
+                 gh_task.table_unresolved_waves, gh_task.build_reads)
+        reads = {'R1': ['docs/a.md', 'docs/b.md'], 'R2': ['docs/b.md', 'docs/c.md'], '—': []}
+        gh_task.new_issue = lambda opts: calls.append(opts) or 800 + len(calls)
+        gh_task.existing_table_marks = lambda slug: dict(existing or {})
+        gh_task.add_checklist_rows = lambda number, adds: added.append((number, adds)) or [a['id'] for a in adds]
+        gh_task.table_unresolved_waves = lambda wave, cache: []
+        gh_task.build_reads = lambda reqs, domain, root=None, slug='', proposal_lines=None: list(reads.get(reqs.strip(), []))
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                rc = gh_task.cmd_new(['--from-table', path])
+        finally:
+            (gh_task.new_issue, gh_task.existing_table_marks, gh_task.add_checklist_rows,
+             gh_task.table_unresolved_waves, gh_task.build_reads) = saved
+        return rc, buf.getvalue(), calls, added
+
+    def _table_checklist_in_new_feature() -> None:
+        path = _draft('chk-new.md', (
+            '| CHK-F1 | feature | — | 画面を作る | wave #700 | — | — | — |\n'
+            '| CHK-01 | task | FE | 入力欄を作る | CHK-F1 | — | R1 | テストが通る |\n'
+            '| CHK-02 | task | FE | 文言を直す | feature CHK-F1 | CHK-01 | R2 | — |\n'
+            '| CHK-03 | task | FE | [操作] 配布する | CHK-F1 | CHK-02 | — | exit 0 |\n'
+            '| CHK-04 | task | FE | [User] 画面を見る | CHK-F1 | — | — | — |\n'))
+        rc, out, calls, added = _run_table(path)
+        assert rc == 0, out
+        assert [c['title'] for c in calls] == ['画面を作る', '[操作] 配布する', '[User] 画面を見る'], [c['title'] for c in calls]
+        feature = calls[0]['body']
+        assert '## やること\n- [ ] CHK-01: 入力欄を作る\n- [ ] CHK-02: 文言を直す\n' in feature, feature
+        mark = gh_task.parse_task_mark(feature)
+        assert mark['rows'] == 'CHK-01,CHK-02', mark
+        assert mark['reads'] == 'docs/a.md,docs/b.md,docs/c.md', f'行の束の和（重複なし・出てきた順）になっていない: {mark}'
+        assert 'CHK-03' not in feature.split('<!-- rmp-task')[0].split('## やること')[1].split('## 出どころ')[0], feature
+        assert added == [], 'この回に起こす feature は起こすときの本文に入れる（あとから足さない）'
+        # 印つきの task は issue のまま。チェックリストの行を指す blocked by は、行の親の feature の番号になる（自分の親なら付けない）
+        assert calls[1]['parent'] == 801 and calls[1]['blocked_by'] == [], calls[1]
+        assert calls[1]['body'].startswith('<!-- rmp-task: id=CHK-03 '), calls[1]['body']
+        assert '承認すると**: 作成済みの作業 4 件が着手できる状態になる' in feature, feature
+        assert '今は承認しても動かない' not in feature, f'チェックリストの行があるのに「子の作業が無い」になった: {feature}'
+
+    t('HM-R4.3 new --from-table: 印の無い task の行は feature の本文の「やること」とチェックリストになり、目印に rows=・reads=（束の和）', _table_checklist_in_new_feature)
+
+    def _table_feature_without_rows_still_stalls() -> None:
+        path = _draft('chk-empty.md', '| CHK-F1 | feature | — | 画面を作る | wave #700 | — | — | — |\n')
+        rc, out, calls, _ = _run_table(path)
+        assert rc == 0 and len(calls) == 1, out
+        assert '子の作業が無い' in calls[0]['body'] and 'rows=' not in calls[0]['body'], calls[0]['body']
+
+    t('HM-R4.3 new --from-table: チェックリストの行も子の task も無い feature は、今までどおり「子の作業が無い」と出す', _table_feature_without_rows_still_stalls)
+
+    def _table_rows_for_existing_feature() -> None:
+        path = _draft('chk-old.md', (
+            '| CHK-01 | task | FE | 入力欄を作る | feature #900 | — | R1 | — |\n'
+            '| CHK-02 | task | FE | 文言を直す | feature #900 | — | R2 | — |\n'))
+        rc, out, calls, added = _run_table(path)
+        assert rc == 0 and calls == [], (out, calls)
+        assert [(n, [(a['id'], a['title'], a['reads']) for a in adds]) for n, adds in added] == [
+            (900, [('CHK-01', '入力欄を作る', ['docs/a.md', 'docs/b.md']), ('CHK-02', '文言を直す', ['docs/b.md', 'docs/c.md'])])], added
+        # 既に rows= にある行は、次の回で起票済みと数えて飛ばす
+        rc, out, calls, added = _run_table(path, existing={'CHK-01': 900})
+        assert [a['id'] for _n, adds in added for a in adds] == ['CHK-02'], added
+
+    t('HM-R4.3 new --from-table: 親が既にある feature なら、その feature の本文へ足す。rows= にある行は足さない', _table_rows_for_existing_feature)
+
+    def _append_to_existing_feature_body() -> None:
+        body = ('<!-- card:approval -->\n**決めること**: x\n<!-- /card -->\n\n## 完了条件\nOK\n\n## やること\n'
+                '- [x] CHK-01: 済み\n- [ ] CHK-02: 途中\n\n## 出どころ\n設計\n\n'
+                '<!-- rmp-task: id=CHK-F1 src=chk@PR9 rows=CHK-01,CHK-02 reads=docs/a.md -->\n')
+        adds = [{'id': 'CHK-01', 'title': '済み', 'reads': ['docs/z.md']},
+                {'id': 'CHK-03', 'title': '足す行', 'reads': ['docs/a.md', 'docs/b.md']}]
+        new_body, added = gh_task.append_checklist_to_body(body, adds)
+        assert added == ['CHK-03'], added
+        assert '- [ ] CHK-02: 途中\n- [ ] CHK-03: 足す行\n\n## 出どころ' in new_body, new_body
+        mark = gh_task.parse_task_mark(new_body)
+        assert mark['rows'] == 'CHK-01,CHK-02,CHK-03' and mark['reads'] == 'docs/a.md,docs/b.md', mark
+        assert gh_task.append_checklist_to_body(new_body, adds)[1] == [] and gh_task.append_checklist_to_body(new_body, adds)[0] == new_body
+        # 節が無い feature は、目印の前に節を作る。目印が無い本文は末尾に足す
+        plain = '<!-- card:approval -->\n**決めること**: x\n<!-- /card -->\n\n## 完了条件\nOK\n\n<!-- rmp-task: id=CHK-F1 src=chk@PR9 -->\n'
+        made, _ = gh_task.append_checklist_to_body(plain, adds[1:])
+        assert '## 完了条件\nOK\n\n## やること\n- [ ] CHK-03: 足す行\n\n<!-- rmp-task:' in made, made
+        mark2 = gh_task.parse_task_mark(made)
+        assert mark2['rows'] == 'CHK-03' and mark2['reads'] == 'docs/a.md,docs/b.md', mark2
+        nomark, _ = gh_task.append_checklist_to_body('本文\n', adds[1:])
+        assert nomark == '本文\n\n## やること\n- [ ] CHK-03: 足す行\n', repr(nomark)
+
+    t('HM-R4.3 既にある feature の本文: 「やること」の末尾へ足し、目印の rows=・reads= を合わせ、既にある行は足さない', _append_to_existing_feature_body)
+
+    def _add_checklist_rows_writes_once() -> None:
+        calls: list = []
+
+        def rest_handler(method, path, body):
+            calls.append((method, path, body))
+            if method == 'GET':
+                return {'body': '## やること\n- [ ] CHK-01: 一\n\n<!-- rmp-task: id=CHK-F1 src=chk@PR9 rows=CHK-01 -->\n'}
+            return {}
+
+        gh_task.run_gh = make_write_gh({}, rest_handler=rest_handler)
+        added = gh_task.add_checklist_rows(900, [{'id': 'CHK-02', 'title': '二', 'reads': []}])
+        assert added == ['CHK-02'], added
+        patches = [c for c in calls if c[0] == 'PATCH']
+        assert len(patches) == 1 and patches[0][1].endswith('/issues/900'), calls
+        assert '- [ ] CHK-02: 二' in patches[0][2]['body'] and 'rows=CHK-01,CHK-02' in patches[0][2]['body'], patches[0][2]
+        calls.clear()
+        assert gh_task.add_checklist_rows(900, [{'id': 'CHK-01', 'title': '一', 'reads': []}]) == []
+        assert [c for c in calls if c[0] == 'PATCH'] == [], '足す行が無いのに書いた'
+
+    t('HM-R4.3 add_checklist_rows: 本文を読んで 1 回の PATCH で書く。足す行が無ければ書かない', _add_checklist_rows_writes_once)
+
+    # ── HM-R4.4: coverage は rows= を起票済みと数え、show は feature の reads= を読む束として出す ──
+    def _cov_text(slug_rows: str) -> list[str]:
+        return (
+            '# 試験\n\nid_prefix: CHK\nkind: ハーネス\ndomain: —\nstatus: 承認\n'
+            'approvals: 要件=PR #9 設計=PR #9 task=PR #9\napproved_at: 2026-10-01（PR #9 の merge で承認）\n\n'
+            '## 1. 問題\n\n## 11. task\n\n### 11-3. 表\n\n'
+            '| id | kind | stream | 題名 | 親 | 止める依存 | 要件 | 完了条件 |\n|---|---|---|---|---|---|---|---|\n'
+            + slug_rows + '\n\n## 12. 履歴\n\n- 2026-10-01 PR #9 の merge で承認\n').splitlines()
+
+    def _coverage_counts_rows() -> None:
+        lines = _cov_text(
+            '| CHK-F1 | feature | — | 画面 | wave #700 | — | — | — |\n'
+            '| CHK-01 | task | FE | 一 | CHK-F1 | — | R1 | ok |\n'
+            '| CHK-02 | task | FE | 二 | CHK-F1 | — | R1 | ok |')
+        def mark(rows: str) -> dict:
+            body = f'## やること\n<!-- rmp-task: id=CHK-F1 src=cov@PR9{rows} -->\n'
+            return {'number': 50, 'state': 'OPEN', 'status': '進行中', 'mark': gh_task.parse_task_mark(body)}
+        with_rows = gh_task.coverage_findings({'cov': lines}, [mark(' rows=CHK-01,CHK-02')])
+        assert [r['id'] for r in with_rows['missing'][0][1]] == [], with_rows['missing']
+        half = gh_task.coverage_findings({'cov': lines}, [mark(' rows=CHK-01')])
+        assert [r['id'] for r in half['missing'][0][1]] == ['CHK-02'], half['missing']
+        none = gh_task.coverage_findings({'cov': lines}, [mark('')])
+        assert [r['id'] for r in none['missing'][0][1]] == ['CHK-01', 'CHK-02'], none['missing']
+
+    t('HM-R4.4 coverage: feature の目印の rows= の id を起票済みと数える（rows= が無ければ漏れとして出す）', _coverage_counts_rows)
+
+    def _table_mark_ids_counts_rows() -> None:
+        bodies = {
+            50: '## やること\n<!-- rmp-task: id=CHK-F1 src=cov@PR9 rows=CHK-01,CHK-02 -->\n',
+            51: '<!-- rmp-task: id=CHK-03 src=cov@PR9 -->\n',
+            52: '<!-- rmp-task: id=OTH-F1 src=other@PR9 rows=OTH-01 -->\n',
+        }
+        found = gh_task.table_mark_ids(bodies, 'cov')
+        assert found == {'CHK-F1': 50, 'CHK-01': 50, 'CHK-02': 50, 'CHK-03': 51}, found
+
+    t('HM-R4.3 起票済みの数え方: feature の目印の rows= の id を、その feature の番号で数える（ほかの提案の rows= は数えない）', _table_mark_ids_counts_rows)
+
+    def _show_feature_reads() -> None:
+        body = '## やること\n- [ ] CHK-01: 一\n\n<!-- rmp-task: id=CHK-F1 src=cov@PR9 rows=CHK-01 reads=docs/a.md#x,docs/b.md -->\n'
+
+        def fake(args, input_text=None):
+            joined = ' '.join(args)
+            if 'issueOrPullRequest' in joined:
+                node = {'__typename': 'Issue', 'number': 60, 'title': '画面', 'state': 'OPEN', 'url': '', 'parent': None,
+                        'body': body, 'blockedBy': {'totalCount': 0, 'nodes': []},
+                        'projectItems': {'nodes': [{'project': {'number': 7}, 'fieldValues': {'nodes': [
+                            {'__typename': 'ProjectV2ItemFieldSingleSelectValue', 'name': '着手可', 'field': {'name': 'Status'}},
+                            {'__typename': 'ProjectV2ItemFieldSingleSelectValue', 'name': 'feature', 'field': {'name': gh_task.KIND_FIELD}}]}}]}}
+                return 0, json.dumps({'data': {'repository': {'issueOrPullRequest': node}}}), ''
+            if 'projectsV2' in joined:
+                return _discovery_response()
+            return 1, '', f'unhandled: {joined[:100]}'
+
+        gh_task.run_gh = fake
+        out = io.StringIO()
+        with redirect_stdout(out):
+            assert gh_task.main(['show', '60']) == 0
+        text = out.getvalue()
+        assert '読む束（2 件' in text and '1. docs/a.md#x' in text and '2. docs/b.md' in text, text
+
+    t('HM-R4.4 show: feature の目印の reads= を読む束として出す（task と同じ形）', _show_feature_reads)
+
+    # ── HM-R4.5: 子の issue が 0 本の feature と after-merge ──
+    def _zero_child_feature_board() -> None:
+        feature = {'number': 740, 'type': 'Issue', 'kind': gh_task.FEATURE_KIND, 'status': gh_task.READY_STATUS,
+                   'state': 'OPEN', 'title': 'チェックリストの feature', 'parent_number': None}
+        gh_task.sleep_fn = lambda _s: None
+        orig_flag = gh_task.MIGRATION_ALIGN_WRITE_ENABLED
+        gh_task.MIGRATION_ALIGN_WRITE_ENABLED = True
+        try:
+            write_log: list = []
+            gh_task.run_gh = make_command_gh([feature], write_log=write_log)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                assert gh_task.main(['close-parents']) == 0
+            assert '閉じる親は 0 件' in out.getvalue() and write_log == [], (out.getvalue(), write_log)
+            with redirect_stdout(io.StringIO()):
+                assert gh_task.main(['align']) == 0
+            assert write_log == [], f'子の無い feature の Status を動かした: {write_log}'
+            # 反証: 子が全部閉じた feature は今までどおり閉じる（0 本を閉じない検査が、閉じない検査で空振りしていない）
+            kid = {'number': 741, 'type': 'Issue', 'kind': 'task', 'status': gh_task.DONE_STATUS, 'state': 'CLOSED',
+                   'title': 't', 'parent_number': 740}
+            gh_task.run_gh = make_command_gh([feature, kid], summaries={740: {'total': 1, 'completed': 1}}, write_log=write_log)
+            with redirect_stdout(io.StringIO()):
+                gh_task.main(['close-parents'])
+            assert [e[:2] for e in write_log if e[0] == 'PATCH'] == [('PATCH', f'repos/{gh_task.REPO}/issues/740')], write_log
+        finally:
+            gh_task.MIGRATION_ALIGN_WRITE_ENABLED = orig_flag
+
+    t('HM-R4.5 close-parents は子が 0 本の feature を閉じず、align は Status を動かさない（子が全部閉じた feature は閉じる）', _zero_child_feature_board)
+
+    def _after_merge_done_feature() -> None:
+        orig_flag = gh_task.MIGRATION_ALIGN_WRITE_ENABLED
+        gh_task.MIGRATION_ALIGN_WRITE_ENABLED = True
+        gh_task.sleep_fn = lambda _s: None
+
+        def run(status: str, state: str):
+            write_log: list = []
+            feature = {'number': 750, 'type': 'Issue', 'kind': gh_task.FEATURE_KIND, 'status': status,
+                       'state': state, 'title': 'F', 'parent_number': None}
+            gh_task.run_gh = make_command_gh([feature], closing_refs={95: [750]}, write_log=write_log)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                assert gh_task.main(['after-merge', '95']) == 0
+            return [e for e in write_log if e[0] == 'item-update'], out.getvalue()
+
+        try:
+            for status in (gh_task.IN_PROGRESS_STATUS, gh_task.REVIEW_STATUS):
+                writes, text = run(status, 'CLOSED')
+                assert writes == [('item-update', 'F_Status', 'O_Status_完了')], (status, writes, text)
+            writes, text = run(gh_task.READY_STATUS, 'CLOSED')
+            assert writes == [], f'着手可のまま閉じた feature へ 完了 を書いた: {writes}'
+            writes, text = run(gh_task.REVIEW_STATUS, 'OPEN')
+            assert writes == [] and 'まだ閉じていない' in text, (writes, text)
+            writes, text = run(gh_task.DONE_STATUS, 'CLOSED')
+            assert writes == [], writes
+        finally:
+            gh_task.MIGRATION_ALIGN_WRITE_ENABLED = orig_flag
+
+    t('HM-R4.5 after-merge: PR が Closes で閉じた feature（進行中・レビュー中）の Status を 完了 にする。open のまま・着手可のままは書かない', _after_merge_done_feature)
+
+
 def main() -> int:
     fail = 0
     results: list[str] = []
@@ -3009,12 +3393,12 @@ def main() -> int:
             # 混同しないようにする（種別=wave のケースと対称に揃える）。
             record: list = []
             gh_task.run_gh = make_write_gh(
-                {606: dict(title='feature 行', status=gh_task.READY_STATUS, kind='feature')}, record=record,
+                {606: dict(title='feature 行', status=gh_task.PENDING_STATUS, kind='feature')}, record=record,
             )
-            _expect_exit(lambda: gh_task.cmd_set(606, 'Status', gh_task.DONE_STATUS), 2)
+            _expect_exit(lambda: gh_task.cmd_set(606, 'Status', gh_task.READY_STATUS), 2)
             assert record == []
 
-        t('set は種別=feature への Status の書き込みを断る', _set_rejects_feature_status)
+        t('set は種別=feature の承認待ち → 着手可を断る（人がボードで動かす）', _set_rejects_feature_status)
 
         def _set_rejects_wave_status() -> None:
             record: list = []
@@ -3183,12 +3567,12 @@ def main() -> int:
         def _start_rejects_feature_kind() -> None:
             record: list = []
             gh_task.run_gh = make_write_gh(
-                {645: dict(title='feature 行', status=gh_task.READY_STATUS, kind='feature')}, record=record,
+                {645: dict(title='feature 行', status=gh_task.PENDING_STATUS, kind='feature')}, record=record,
             )
             _expect_exit(lambda: gh_task.cmd_start(645, None), 2)
             assert record == []
 
-        t('start は種別=feature を断る', _start_rejects_feature_kind)
+        t('start は承認待ちの feature を断る（着手可にするのは人。HM-R4.1 は着手可の feature だけ受ける）', _start_rejects_feature_kind)
 
         def _start_rejects_unresolved_blockers_approved() -> None:
             gh_task.run_gh = make_write_gh({
@@ -4840,18 +5224,19 @@ def main() -> int:
         def _from_table_dry_run_lists_rows() -> None:
             rc, out = _from_table(_table_draft('tbl-ok.md'), '--dry-run')
             assert rc == 0, f'exit {rc}\n{out}'
-            assert '起票する 2 件' in out, out
+            assert '起票する 1 件' in out and 'チェックリストに足す 1 行' in out, out
             assert 'TBL-01' in out and 'TBL-03' in out, out
             assert '親=#900' in out, f'親が出ていない: {out}'
             assert '目印=[操作]' in out, f'目印が出ていない: {out}'
             assert 'blocked by=TBL-01' in out, f'blocked by が出ていない: {out}'
             assert '起票しない 1 件' in out and 'TBL-02' in out and '[要判断]' in out, f'飛ばした理由が出ていない: {out}'
 
-        t('new --from-table --dry-run: 表 3 行（[要判断] 1・blocked by 1）→ 起票 2 件と、飛ばした理由', _from_table_dry_run_lists_rows)
+        t('new --from-table --dry-run: 表 3 行（[要判断] 1・blocked by 1）→ 起票 1 件（印つき）・チェックリスト 1 行・飛ばした理由', _from_table_dry_run_lists_rows)
 
         def _from_table_files_in_order_with_blockers() -> None:
             calls: list[dict] = []
-            orig_new_issue, orig_existing = gh_task.new_issue, gh_task.existing_table_marks
+            added: list = []
+            orig_new_issue, orig_existing, orig_add = gh_task.new_issue, gh_task.existing_table_marks, gh_task.add_checklist_rows
 
             def fake_new_issue(opts: dict) -> int:
                 calls.append(opts)
@@ -4859,18 +5244,21 @@ def main() -> int:
 
             gh_task.new_issue = fake_new_issue
             gh_task.existing_table_marks = lambda slug: {}
+            gh_task.add_checklist_rows = lambda number, adds: added.append((number, adds)) or [a['id'] for a in adds]
             try:
                 rc, out = _from_table(_table_draft('tbl-run.md'))
             finally:
-                gh_task.new_issue, gh_task.existing_table_marks = orig_new_issue, orig_existing
+                gh_task.new_issue, gh_task.existing_table_marks, gh_task.add_checklist_rows = orig_new_issue, orig_existing, orig_add
             assert rc == 0, f'exit {rc}\n{out}'
-            assert [c['title'] for c in calls] == ['土台を書く', '[操作] 本番へ出す'], [c['title'] for c in calls]
-            assert calls[0]['parent'] == 900 and calls[0].get('blocked_by') in (None, []), calls[0]
-            assert calls[1]['blocked_by'] == [501], f'blocked by が起票した番号になっていない: {calls[1]}'
-            assert calls[0]['body'].startswith('<!-- rmp-task: id=TBL-01 '), calls[0]['body']
+            assert [c['title'] for c in calls] == ['[操作] 本番へ出す'], [c['title'] for c in calls]
+            assert calls[0]['parent'] == 900, calls[0]
+            # TBL-01 はチェックリストの行（issue にしない）。それを指す blocked by は、同じ親の feature なので付けない
+            assert calls[0]['blocked_by'] == [], f'親の feature を blocked by にしてはいけない: {calls[0]}'
+            assert calls[0]['body'].startswith('<!-- rmp-task: id=TBL-03 '), calls[0]['body']
             assert 'src=tbl-run@PR9' in calls[0]['body'] and 'reqs=TBL-R1' in calls[0]['body'], calls[0]['body']
+            assert [(n, [a['id'] for a in adds]) for n, adds in added] == [(900, ['TBL-01'])], added
 
-        t('new --from-table: 起票は 2 件・blocked by は起票した番号・本文の先頭に目印', _from_table_files_in_order_with_blockers)
+        t('new --from-table: 印つきの行だけ issue（目印は先頭）・印なしの task は既にある feature #900 のチェックリストへ', _from_table_files_in_order_with_blockers)
 
         def _from_table_skips_existing_marks() -> None:
             calls: list[dict] = []
@@ -4917,14 +5305,14 @@ def main() -> int:
             finally:
                 gh_task.new_issue, gh_task.existing_table_marks = orig_new_issue, orig_existing
                 gh_task.table_unresolved_waves = orig_open
-            new_card = calls[3]['body']
+            new_card = calls[1]['body']
             for needle in ('**推奨**: 承認する', '**目的**: 登録を 3 分にする', '**位置**: 入居者の登録の残り',
                            '**注意**: 外部の審査が要る。承認すると先の wave を待たずに着手できる', '**しないと**: 登録の途中で半数が離れる'):
                 assert needle in new_card, f'新しい見出しの「{needle}」が無い: {new_card}'
             assert rc2 == 0 and 'task' not in new_card.split('<!-- /card -->')[0], f'カードに内部の語 task が出た: {new_card}'
             assert '今は承認しても動かない' not in new_card, f'先の wave を止まる理由に書いた: {new_card}'
             assert '先の wave' not in calls[0]['body'], f'先の wave が出ているのに無いときの注意が出た: {calls[0]["body"]}'
-            assert rc == 0 and [c['title'] for c in calls[:3]] == ['登録の画面', '入力欄を減らす', '確認の画面を消す'], (rc, out)
+            assert rc == 0 and [c['title'] for c in calls] == ['登録の画面', '登録の画面'], (rc, out)
             feature = calls[0]['body']
             assert feature.startswith('<!-- card:approval -->\n**決めること**: 「登録の画面」を始めるか。**推奨**: <…>'), feature
             for needle in ('**目的**: 入居者が 3 分で登録を終えられる', '**位置**: 段「6 入居者の登録」の一部',
@@ -4933,7 +5321,8 @@ def main() -> int:
                 assert needle in feature, f'「{needle}」が無い: {feature}'
             assert feature.rstrip().splitlines()[-1].startswith('<!-- rmp-task: id=TBF-F1 '), f'目印が末尾に無い: {feature}'
             assert gh_task.parse_task_mark(feature)['id'] == 'TBF-F1'
-            assert calls[1]['body'].startswith('<!-- rmp-task: id=TBF-01 '), 'task の本文は今の形（目印が先頭）のまま'
+            assert '## やること\n- [ ] TBF-01: 入力欄を減らす\n- [ ] TBF-02: 確認の画面を消す\n' in feature, f'チェックリストが無い: {feature}'
+            assert 'rows=TBF-01,TBF-02' in feature and 'TBF-03' not in feature.split('## やること')[1].split('## ')[0], feature
             assert 'hirai-task card 701 --sync' in out, out
             assert '#600' not in new_card, f'wave の番号は注意に入れない（詳しい版に置く）: {new_card}'
             problems = gh_task._load_card_module().read_card(new_card, 'approval')[1]
@@ -10266,6 +10655,7 @@ def main() -> int:
         _board_checks(t, cache_tmp_dir)
         _card_checks(t, cache_tmp_dir)
         _load_checks(t, cache_tmp_dir)
+        _feature_checks(t, cache_tmp_dir)
     finally:
         gh_task.run_gh = orig_run_gh
         gh_task.PROJECT_NUMBER_OVERRIDE = orig_override

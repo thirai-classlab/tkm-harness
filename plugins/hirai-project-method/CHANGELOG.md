@@ -2,6 +2,10 @@
 
 版の付け方は [semver](https://semver.org/lang/ja/)。`VERSION` と `.claude-plugin/plugin.json` の `version` は常に同じ値を持ち、`tests/smoke.sh` が一致を検証する。tag は `hirai-project-method--v<版>`。
 
+## Unreleased
+
+- **feature を単位に回す（HM-R4・heyapro-app #2042）**: `start`・`review`・`done`（`--not-planned` も）・`set <feature> Status 進行中|レビュー中|完了` が種別 feature を受ける（start は着手可で開いた blocked by が無い feature だけ。承認待ち・Status 空は断る。`set` の着手可・承認待ちと、種別 wave は全部断る）。`ready` は開いたコードの task の子が無い着手可の feature を `[feature]` の印とチェックリスト未完の行数つきで出す。`new --from-table` は印の無い task の行を親の feature の本文の `## やること`（`- [ ] <id>: <題名>`）にし、目印に `rows=`・`reads=` を書く（既にある feature には本文へ足す）。`coverage` は `rows=` を起票済みと数え、`show`・`start` は feature の `reads=` を読む束で出す。`after-merge` は `Closes` で閉じた feature を 完了 にする。`close-parents`・`align` は子が 0 本の feature を動かさない（検査: `hirai_task_selftest.py` の HM-R4.1〜4.5。実装を 12 か所壊して落ちることを確かめた）
+
 ## v1.2.0
 全体の進みと、振っているタスクの順番・進捗率の表（GitHub Project と PR・CI の実物から）を、道具の側で出す形にした（heyapro-app の #1978）。土台の動きは変えていない（土台は 3.1.0 のまま。直したのはリポ直下の README とカタログの説明文だけ）。
 

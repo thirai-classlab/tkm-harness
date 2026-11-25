@@ -1215,6 +1215,40 @@ def ready_rows(items: list[dict], extras: dict[int, dict]) -> list[dict]:
     return rows
 
 
+_CHECKLIST_OPEN_RE = re.compile(r'^\s*[-*]\s+\[ \]', re.MULTILINE)
+
+
+def checklist_open_count(body: str) -> int:
+    """本文のチェックリストの未完（`- [ ]`）の行数。feature の本文が task の代わりに持つ行（HM-R4.2）。"""
+    return len(_CHECKLIST_OPEN_RE.findall(body or ''))
+
+
+def ready_feature_rows(items: list[dict], extras: dict[int, dict]) -> list[dict]:
+    """ready に出す feature（HM-R4.2）。open で Status が着手可、開いた blocked by が無く、
+    子に開いた「コードの task」（種別が wave・feature・設計メモでなく、題名に `[操作]`・`[User]` が無い issue）が
+    無いもの。作業が本文のチェックリストにある feature が、子の task なしで着手できる単位になる。"""
+    items_by_number, children_of = _board_index(items)
+    rows = []
+    for i in items:
+        if i.get('type') != 'Issue' or i.get('state') == 'CLOSED':
+            continue
+        if i.get('kind') != FEATURE_KIND or i.get('status') != READY_STATUS:
+            continue
+        if (extras.get(i['number']) or {}).get('blocked_by_open', 0) > 0:
+            continue
+        has_open_code_task = any(
+            (c := items_by_number.get(n)) is not None
+            and c.get('type') == 'Issue' and c.get('state') != 'CLOSED'
+            and (c.get('kind') or '') not in EXCLUDE_KINDS
+            and not has_mark(c.get('title') or '')
+            for n in children_of.get(i['number'], [])
+        )
+        if not has_open_code_task:
+            rows.append(i)
+    rows.sort(key=ready_sort_key(items))
+    return rows
+
+
 # ready に出ない理由（board が「着手可なのに着手できない」を理由ごとに数える。文言は board の要約の行名）
 NOT_READY_USER = '[User]（人の作業）'
 NOT_READY_NO_FEATURE = '親が feature でない・無い'
@@ -1256,9 +1290,9 @@ def is_closed_not_done(item: dict) -> bool:
 CLOSED_DONE_FROM = (IN_PROGRESS_STATUS, REVIEW_STATUS, '')
 
 
-def closed_done_blocker(title: str, kind: str, status: str) -> str:
+def closed_done_blocker(title: str, kind: str, status: str, *, allow_feature: bool = False) -> str:
     """today が 完了 を書かない理由（書くなら空）。板の行と、書く直前に読み直した行の両方に当てる。"""
-    if kind in EXCLUDE_KINDS:
+    if kind in EXCLUDE_KINDS and not (allow_feature and kind == FEATURE_KIND):  # feature は after-merge だけが 完了 を書く（HM-R4.5）
         return f'{KIND_FIELD}が {kind}'
     mark = next((m for m in MARKS if has_mark(title, m)), '')
     if mark:
@@ -1327,19 +1361,30 @@ def cmd_ready() -> int:
         i['parent_number'] for i in tasks
         if i.get('status') == READY_STATUS and i.get('parent_number') is not None
     ]
-    extras = fetch_extras(ready_numbers + review_numbers + parent_numbers)
+    feature_numbers = [
+        i['number'] for i in items
+        if i.get('type') == 'Issue' and i.get('kind') == FEATURE_KIND and i.get('status') == READY_STATUS
+        and i.get('state') != 'CLOSED'
+    ]
+    extras = fetch_extras(ready_numbers + review_numbers + parent_numbers + feature_numbers)
     rows = ready_rows(items, extras)
-    if not rows:
+    feature_rows = ready_feature_rows(items, extras)
+    if not rows and not feature_rows:
         print('着手可の issue は 0 件')
     else:
-        # 「旧い形」の印のために、出す行の本文だけを引く（#829）
-        row_bodies = fetch_bodies([i['number'] for i in rows])
-        print(f'着手可 {len(rows)} 件')
+        # 「旧い形」の印と feature のチェックリストの未完の数のために、出す行の本文だけを引く（#829）
+        row_bodies = fetch_bodies([i['number'] for i in rows + feature_rows])
+        print(f'着手可 {len(rows) + len(feature_rows)} 件')
         for i in rows:
             order = i.get('order')
             order_text = f' (着手順 {order:g})' if order is not None else ''
             old_text = OLD_FORM_SUFFIX if is_old_form(row_bodies.get(i['number'], '')) else ''
             print(f"  #{i['number']:<4} [feature #{i['parent_number']}]{order_text} {i['title'][:64]}{old_text}")
+        for i in feature_rows:
+            order = i.get('order')
+            order_text = f' (着手順 {order:g})' if order is not None else ''
+            open_lines = checklist_open_count(row_bodies.get(i['number'], ''))
+            print(f"  #{i['number']:<4} [feature]{order_text} チェックリスト未完 {open_lines} 行 {i['title'][:64]}")
     for line in ready_warnings(items, extras):
         print(line)
     return 0
@@ -1567,11 +1612,15 @@ def cmd_approve(number: int) -> int:
     return 2
 
 
-# ── wave・feature の Status はスクリプトで動かさない。set・start・review・
-# done・reopen の全部から呼ぶ。
-def _reject_wave_feature(item: dict, number: int, verb: str) -> None:
+# ── wave の Status はスクリプトで動かさない。feature は、着手可から先（start・review・done・
+# set の進行中・レビュー中・完了）だけ動かせる（PR と承認の単位が feature のため。HM-R4.1）。
+# 承認待ち → 着手可は人がボードで行う。set・start・review・done・reopen の全部から呼ぶ。
+FEATURE_WRITABLE_STATUSES = (IN_PROGRESS_STATUS, REVIEW_STATUS, DONE_STATUS)
+
+
+def _reject_wave_feature(item: dict, number: int, verb: str, *, allow_feature: bool = False) -> None:
     kind = item['fields'].get(KIND_FIELD, '')
-    if kind in ('wave', 'feature'):
+    if kind == 'wave' or (kind == 'feature' and not allow_feature):
         die(
             f'#{number}（種別={kind}）は {verb} で動かさない。'
             'align・close-parents か、ボードで動かすこと', 2,
@@ -1640,7 +1689,13 @@ def _require_in_progress_or_later(item: dict, number: int, value: str) -> None:
 def _guard_status_write(
     project_number: int, item: dict, number: int, value: str, *, reopening: bool = False,
 ) -> None:
-    _reject_wave_feature(item, number, 'Status の書き込み')
+    _reject_wave_feature(item, number, 'Status の書き込み', allow_feature=True)
+    if item['fields'].get(KIND_FIELD, '') == FEATURE_KIND and value not in FEATURE_WRITABLE_STATUSES:
+        die(
+            f'#{number}（種別=feature）の Status を「{value}」へは書かない。'
+            f'feature に書けるのは {"・".join(FEATURE_WRITABLE_STATUSES)} だけ'
+            '（承認待ち → 着手可は人がボードで動かす）', 2,
+        )
     if value in (REVIEW_STATUS, DONE_STATUS) and not reopening:
         _require_in_progress_or_later(item, number, value)
     if value not in (READY_STATUS, IN_PROGRESS_STATUS):
@@ -1763,14 +1818,39 @@ def split_start_blockers(project_number: int, item: dict) -> tuple[list[int], li
     return blocking, waived
 
 
+def _start_feature(project_number: int, number: int, item: dict, approved: str | None, reread: bool) -> int:
+    """種別 feature の start（HM-R4.1）。通すのは Status 着手可で、開いた blocked by が無いときだけ。
+    承認待ち・Status 空は人がボードで着手可にするまで断る。読む束は feature の目印の reads=。"""
+    if approved is not None:
+        die(f'#{number} は feature。start --approved は使えない（{OPERATION_MARK} の task 用）', 2)
+    status = item['fields'].get('Status', '')
+    if status != READY_STATUS:
+        die(
+            f'#{number}（feature）の Status は「{status or "空"}」。feature の承認待ち → 着手可は'
+            '人がボードで行う。start は着手可の feature だけ進める', 2,
+        )
+    if item['blocked_by_open']:
+        blockers = ', '.join(f'#{n}' for n in item['blocked_by_open'])
+        die(f'#{number}（feature）には未完了の blocked by がある: {blockers}', 2)
+    reread_updates = start_reread_plan(number, parse_task_mark(item.get('body') or ''), reread)
+    item_id = rest_item_id(project_number, number) if reread_updates else None
+    item = reread_rewrite_body(number, item, reread_updates)
+    write_single_select_rest(project_number, number, 'Status', IN_PROGRESS_STATUS, item_id=item_id)
+    print(f'#{number} Status={IN_PROGRESS_STATUS}（feature）')
+    print_reading_bundle(item.get('body') or '')
+    return 0
+
+
 # ── start（着手可から。目印なしで親の feature が着手可なら承認待ちからも。
 #    `[操作]` は --approved で承認待ちからも） ──
 def cmd_start(number: int, approved: str | None, reread: bool = False) -> int:
     project_number = discover_project_number()
     item = _require_item(project_number, number)
-    _reject_wave_feature(item, number, 'start')
+    _reject_wave_feature(item, number, 'start', allow_feature=True)
     _reject_closed(item, number, 'start')
     warn_if_kind_empty(project_number, item, number)
+    if item['fields'].get(KIND_FIELD, '') == FEATURE_KIND:
+        return _start_feature(project_number, number, item, approved, reread)
     waived = []
     if item['blocked_by_open']:
         blocking, waived = split_start_blockers(project_number, item)
@@ -1843,7 +1923,7 @@ def cmd_start(number: int, approved: str | None, reread: bool = False) -> int:
 def cmd_review(number: int) -> int:
     project_number = discover_project_number()
     item = _require_item(project_number, number)
-    _reject_wave_feature(item, number, 'review')
+    _reject_wave_feature(item, number, 'review', allow_feature=True)
     _require_in_progress_or_later(item, number, REVIEW_STATUS)
     write_single_select_rest(project_number, number, 'Status', REVIEW_STATUS)
     print(f'#{number} Status={REVIEW_STATUS}')
@@ -1854,7 +1934,7 @@ def cmd_review(number: int) -> int:
 def cmd_done(number: int, not_planned_reason: str | None) -> int:
     project_number = discover_project_number()
     item = _require_item(project_number, number)
-    _reject_wave_feature(item, number, 'done')
+    _reject_wave_feature(item, number, 'done', allow_feature=True)
     write_single_select_rest(project_number, number, 'Status', DONE_STATUS)
     if not_planned_reason is not None:
         rest('POST', f'repos/{REPO}/issues/{number}/comments', {
@@ -3162,8 +3242,23 @@ def table_unresolved_waves(wave_number: int, cache: dict) -> list[int]:
     return unresolved_wave_numbers(wave_number, by_number, children_of, bodies, extras)
 
 
+CHECKLIST_HEADING = '## やること'
+
+
+def checklist_line(row_id: str, title: str) -> str:
+    return f'- [ ] {row_id}: {title}'
+
+
+def _merge_csv(*lists: list[str]) -> list[str]:
+    """出てきた順に重複を除く。"""
+    return list(dict.fromkeys(x for items in lists for x in items if x))
+
+
 def table_issue_body(row: dict, slug: str, src_pr: str, domain: str, proposal_lines: list[str] | None = None,
-                     card: str | None = None) -> str:
+                     card: str | None = None, checklist: list[dict] | None = None) -> str:
+    """表の行の issue の本文。checklist は feature の本文に持つ「コードの task」の行（HM-R4.3。issue にしない）。
+    本文に `## やること` の節（`- [ ] <行の id>: <題名>`）を作り、目印に rows=（行の id）と reads=（その束の和）を書く。"""
+    checklist = checklist or []
     rev = current_rev_field(domain)
     fields = [f'id={row["id"]}', *([f'rev={rev}'] if rev else []), f'stream={row["stream"]}',
               f'src={slug}@{src_pr}' if src_pr else f'src={slug}']
@@ -3172,17 +3267,81 @@ def table_issue_body(row: dict, slug: str, src_pr: str, domain: str, proposal_li
     reqs = ','.join(r.strip() for r in re.split(r'[,、]', row['reqs']) if r.strip() and r.strip() != '—')
     if reqs:
         fields.append(f'reqs={reqs}')
-    reads = build_reads(row['reqs'], domain, slug=slug, proposal_lines=proposal_lines)
+    if checklist:
+        fields.append(f'rows={",".join(c["id"] for c in checklist)}')
+    reads = _merge_csv(
+        build_reads(row['reqs'], domain, slug=slug, proposal_lines=proposal_lines),
+        *(build_reads(c['reqs'], domain, slug=slug, proposal_lines=proposal_lines) for c in checklist),
+    )
     if reads:
         fields.append(f'reads={",".join(reads)}')
     done = row['done'] if row['done'] not in ('', '—') else '（設計の表に完了条件なし）'
     mark = f'<!-- {TABLE_MARK}: {" ".join(fields)} -->'
+    todo = ''.join(f'{checklist_line(c["id"], c["title"])}\n' for c in checklist)
     rest = (f'## 完了条件\n{done}\n\n'
-            f'## 出どころ\n設計 `{slug}` の「11-3. 表」の {row["id"]}。手順は設計の該当節に従う。\n')
+            + (f'{CHECKLIST_HEADING}\n{todo}\n' if checklist else '')
+            + f'## 出どころ\n設計 `{slug}` の「11-3. 表」の {row["id"]}。手順は設計の該当節に従う。\n')
     if card:
         # feature は承認ビューで読まれる。カードを先頭に、機械向けの目印を末尾に置く（2.8.0）。
         return f'{card}\n\n{rest}\n{mark}\n'
     return f'{mark}\n\n{rest}'
+
+
+def _row_in_checklist(body: str, row_id: str, rows: list[str]) -> bool:
+    return row_id in rows or bool(re.search(rf'^\s*[-*]\s+\[[ xX]\]\s+{re.escape(row_id)}:', body, re.MULTILINE))
+
+
+def append_checklist_to_body(body: str, adds: list[dict]) -> tuple[str, list[str]]:
+    """既にある feature の本文の `## やること` の末尾へ、まだ無い行（`- [ ] <id>: <題名>`）を足し、目印の rows=・reads= に
+    足した行の id と束を足す。(新しい本文, 足した行の id)。足す行が無ければ本文を変えない。目印の外は、足す行のほか 1 バイトも変えない。"""
+    mark = parse_task_mark(body) or {}
+    have = [r.strip() for r in mark.get('rows', '').split(',') if r.strip()]
+    fresh = [a for a in adds if not _row_in_checklist(body, a['id'], have)]
+    if not fresh:
+        return body, []
+    lines = body.split('\n')
+    found = _real_task_mark(body)
+    mark_line = body.count('\n', 0, found[0]) if found else None
+    start = next((i for i, line in enumerate(lines) if line.strip() == CHECKLIST_HEADING), None)
+    new_lines = [checklist_line(a['id'], a['title']) for a in fresh]
+    if start is not None:
+        end = start + 1
+        while end < len(lines) and not lines[end].startswith('## ') and end != mark_line:
+            end += 1
+        while end > start + 1 and not lines[end - 1].strip():
+            end -= 1
+        lines[end:end] = new_lines
+    else:
+        at = mark_line if mark_line not in (None, 0) else len(lines)
+        block = [CHECKLIST_HEADING, *new_lines, '']
+        if at == len(lines) and lines and lines[-1] == '':
+            at -= 1
+            block = ['', CHECKLIST_HEADING, *new_lines]
+        lines[at:at] = block
+    new_body = '\n'.join(lines)
+    if found:
+        begin, finish, inner = _real_task_mark(new_body)
+        rows_value = ','.join(_merge_csv(have, [a['id'] for a in fresh]))
+        inner = (re.sub(r'(?<!\S)rows=\S*', lambda _m: f'rows={rows_value}', inner, count=1)
+                 if re.search(r'(?<!\S)rows=', inner) else f'{inner} rows={rows_value}')
+        old_reads = [r.strip() for r in mark.get('reads', '').split(',') if r.strip()]
+        reads_value = ','.join(_merge_csv(old_reads, *(a.get('reads', []) for a in fresh)))
+        if reads_value:
+            inner = (re.sub(r'(?<!\S)reads=\S*', lambda _m: f'reads={reads_value}', inner, count=1)
+                     if re.search(r'(?<!\S)reads=', inner) else f'{inner} reads={reads_value}')
+        new_body = new_body[:begin] + inner + new_body[finish:]
+    return new_body, [a['id'] for a in fresh]
+
+
+def add_checklist_rows(number: int, adds: list[dict]) -> list[str]:
+    """既にある feature #number の本文のチェックリストの末尾と目印の rows=・reads= に行を足す（REST で本文を読み、1 回の PATCH で書く）。
+    足した行の id を返す。"""
+    issue = rest('GET', f'repos/{REPO}/issues/{number}')
+    body = issue.get('body') or ''
+    new_body, added = append_checklist_to_body(body, adds)
+    if added:
+        rest('PATCH', f'repos/{REPO}/issues/{number}', {'body': new_body})
+    return added
 
 
 def table_mark_ids(bodies: dict[int, str], slug: str) -> dict[str, int]:
@@ -3195,6 +3354,11 @@ def table_mark_ids(bodies: dict[int, str], slug: str) -> dict[str, int]:
         match = pattern.match(mark[2]) if mark else None
         if match:
             found[match.group(1)] = number
+            # feature の本文のチェックリストの行（rows=）も、その feature の番号で起票済みと数える（HM-R4.3・R4.4）
+            rows_match = re.search(r'(?<!\S)rows=(\S*)', mark[2])
+            for row_id in (rows_match.group(1).split(',') if rows_match else []):
+                if row_id.strip():
+                    found.setdefault(row_id.strip(), number)
     return found
 
 
@@ -3233,13 +3397,40 @@ def cmd_new_from_table(argv: list[str]) -> int:
     src_pr = f'PR{pr.group(1)}' if pr else ''
     existing = {} if opts['dry_run'] else existing_table_marks(slug)
     fileable, skipped = plan_table_rows(rows, existing)
+    kind_of = {x.get('id', ''): x.get('kind', '') for x in rows}
+    parent_text = {x.get('id', ''): x.get('親', '') for x in rows}
+
+    def is_checklist(r: dict) -> bool:
+        """印（[操作]・[User]）の無い task で、親が feature の行は issue にせず、親の feature の本文のチェックリストに置く（HM-R4.3）。"""
+        if r['kind'] != TASK_KIND or r['marks']:
+            return False
+        text = parent_text.get(r['id'], '').strip()
+        if text.startswith('wave'):
+            return False
+        ref = re.sub(r'^feature\s+', '', text)
+        return kind_of.get(ref, FEATURE_KIND) == FEATURE_KIND
+
+    check_rows = [r for r in fileable if is_checklist(r)]
+    issue_rows = [r for r in fileable if r not in check_rows]
+    checklist_of: dict[str, list[dict]] = {}
+    for r in check_rows:
+        checklist_of.setdefault(r['parent'], []).append(r)
+
+    def bundle_of(r: dict) -> list[str]:
+        return build_reads(r['reqs'], header.get('domain', ''), slug=slug, proposal_lines=lines)
 
     print(f'draft: {path}（slug: {slug}・{stage}の段: 承認 {detail}）')
-    print(f'起票する {len(fileable)} 件:')
-    for r in fileable:
+    print(f'起票する {len(issue_rows)} 件:')
+    for r in issue_rows:
         blockers = ','.join(r['blockers']) or '—'
-        bundle = len(build_reads(r['reqs'], header.get('domain', ''), slug=slug, proposal_lines=lines))
-        print(f'  {r["id"]} / {r["kind"]} / 親={r["parent"]} / blocked by={blockers} / 目印={"".join(r["marks"]) or "—"} / 読む束={bundle} 件 / {r["title"]}')
+        print(f'  {r["id"]} / {r["kind"]} / 親={r["parent"]} / blocked by={blockers} / 目印={"".join(r["marks"]) or "—"} / 読む束={len(bundle_of(r))} 件 / {r["title"]}')
+        for note in _unresolved_notes(r['reqs'], header.get('domain', ''), slug, lines):
+            print(f'    警告: {note}')
+    print(f'親の feature の本文のチェックリストに足す {len(check_rows)} 行（issue にしない）:')
+    for r in check_rows:
+        print(f'  {r["id"]} / 親={r["parent"]} / 読む束={len(bundle_of(r))} 件 / {r["title"]}')
+        if r['blockers']:
+            print(f'    警告: チェックリストの行は blocked by を持たない（{",".join(r["blockers"])} は付けない）')
         for note in _unresolved_notes(r['reqs'], header.get('domain', ''), slug, lines):
             print(f'    警告: {note}')
     print(f'起票しない {len(skipped)} 件:')
@@ -3255,12 +3446,17 @@ def cmd_new_from_table(argv: list[str]) -> int:
     def number_of(ref: str) -> int:
         return int(ref[1:]) if ref.startswith('#') else created[ref]
 
+    check_ids = {r['id'] for r in check_rows}
     for r in fileable:
+        if r['id'] in check_ids:
+            # 親の feature の番号が、この行を指す blocked by の行き先になる（この回に起こす feature は本文に入れてある）
+            created[r['id']] = number_of(r['parent'])
+            continue
         for note in _unresolved_notes(r['reqs'], header.get('domain', ''), slug, lines):
             print(f'警告: {r["id"]}: {note}')
         card = None
         if r['kind'] == FEATURE_KIND:
-            # 子は、この回に起こす行と起票済みの行（[要判断] などで飛ばす行は数えない）
+            # 子は、この回に起こす行（issue の行もチェックリストの行も）と起票済みの行（[要判断] などで飛ばす行は数えない）
             kids = [x for x in fileable if x['parent'] == r['id']] + [
                 x for x in rows if x.get('id') in existing and (x.get('kind') or '') == TASK_KIND
                 and re.fullmatch(rf'(?:feature\s+)?{re.escape(r["id"])}', (x.get('親') or '').strip())]
@@ -3271,13 +3467,24 @@ def cmd_new_from_table(argv: list[str]) -> int:
             # 先の wave の注意は stall が空のときだけ足すので、stall があれば板を引かない
             waves_open = [] if stall else table_unresolved_waves(parent, wave_cache)
             card = table_feature_card(r, header, slug, lines, len(kids), stall, waves_open)
+        parent_number = number_of(r['parent'])
+        blocked_by = [n for n in dict.fromkeys(number_of(b) for b in r['blockers']) if n != parent_number]
         created[r['id']] = new_issue({
-            'title': r['title'], 'kind': r['kind'], 'parent': number_of(r['parent']),
-            'blocked_by': [number_of(b) for b in r['blockers']],
-            'body': table_issue_body(r, slug, src_pr, header.get('domain', ''), lines, card=card),
+            'title': r['title'], 'kind': r['kind'], 'parent': parent_number,
+            'blocked_by': blocked_by,
+            'body': table_issue_body(r, slug, src_pr, header.get('domain', ''), lines, card=card,
+                                     checklist=checklist_of.get(r['id'], [])),
         })
         if card:
             print(f"  #{created[r['id']]} のカードの <…> を埋めて `hirai-task card {created[r['id']]} --sync`")
+    # 既にある feature の本文へ足す（この回に起こした feature は、起こすときの本文に入れてある）
+    for parent_ref, group in checklist_of.items():
+        if not parent_ref.startswith('#'):
+            continue
+        number = int(parent_ref[1:])
+        adds = [{'id': c['id'], 'title': c['title'], 'reads': bundle_of(c)} for c in group]
+        added = add_checklist_rows(number, adds)
+        print(f'  #{number} のチェックリストに {len(added)} 行足した（{",".join(added) or "既にある行のみ"}）')
     return 0
 
 
@@ -3398,6 +3605,10 @@ def coverage_findings(
         src = _SRC_RE.match(m['mark'].get('src', ''))
         if src and m['mark'].get('id'):
             by_slug.setdefault(src.group('slug'), {})[m['mark']['id']] = m['number']
+            # feature の本文のチェックリストの行（rows=）は、その feature の番号で起票済みと数える（HM-R4.4）
+            for row_id in (r.strip() for r in m['mark'].get('rows', '').split(',')):
+                if row_id:
+                    by_slug[src.group('slug')].setdefault(row_id, m['number'])
     result: dict[str, list] = {'missing': [], 'unreadable': [], 'stale': [], 'expired': [], 'unknown': [], 'rev_stale': []}
     for slug, lines in sorted(drafts.items()):
         header = _draft_header(lines)
@@ -4426,7 +4637,7 @@ class ClosedDoneResult(NamedTuple):
     rate_limited: bool  # rate limit で残りを打ち切った（この回の align は一覧だけにする）
 
 
-def _write_one_closed_done(project_number: int, number: int) -> tuple[str, str, str]:
+def _write_one_closed_done(project_number: int, number: int, *, allow_feature: bool = False) -> tuple[str, str, str]:
     """1 件へ Status=完了 だけを書き、(書かなかった理由, 書く前の Status, 題) を返す（書けたら理由は空）。
     item id と選択肢 id を先に引き、そのあとで state・種別・Status・題を読み直して、書く相手でなければ書かない
     （板を読んだあとに reopen された・人が動かした）。読み直しと書き込みの間に検索を挟まない（item_id= を渡す）。"""
@@ -4436,7 +4647,7 @@ def _write_one_closed_done(project_number: int, number: int) -> tuple[str, str, 
     status, title = now['fields'].get('Status', ''), now['title']
     if now['state'] != 'CLOSED':
         return ('今は open のため（reopen された）' if now['state'] == 'OPEN' else f"今は {now['state'] or '不明'} のため"), status, title
-    blocker = closed_done_blocker(title, now['fields'].get(KIND_FIELD, ''), status)
+    blocker = closed_done_blocker(title, now['fields'].get(KIND_FIELD, ''), status, allow_feature=allow_feature)
     if blocker:
         return f'今は {blocker} のため', status, title
     answer = write_single_select_rest(project_number, number, 'Status', DONE_STATUS, item_id=item_id)
@@ -4445,7 +4656,9 @@ def _write_one_closed_done(project_number: int, number: int) -> tuple[str, str, 
     return '', status, title
 
 
-def _apply_closed_done(project_number: int, rows: list[dict], cursor: 'ClosedDoneCursor') -> tuple[list[int], list[dict], str]:
+def _apply_closed_done(
+    project_number: int, rows: list[dict], cursor: 'ClosedDoneCursor', *, allow_feature: bool = False,
+) -> tuple[list[int], list[dict], str]:
     """rows へ 1 件ずつ 完了 を書き、(書けた番号, 試さなかった行, 打ち切った理由) を返す。1 件ごとに 1 行を出し、
     試す位置を控える（時間切れで止められても、何を書いたかが残り、次は続きから試す）。1 件落ちても理由を残して
     ほかを続けるが、rate limit・権限の 403 なら残りを打ち切る。想定外の形の応答も 1 件の失敗として扱う（today の
@@ -4463,7 +4676,7 @@ def _apply_closed_done(project_number: int, rows: list[dict], cursor: 'ClosedDon
         number = row['number']
         cursor.save(number)
         try:
-            reason, before, title = _write_one_closed_done(project_number, number)
+            reason, before, title = _write_one_closed_done(project_number, number, allow_feature=allow_feature)
         except GhError as exc:
             _say(f'  {DONE_STATUS}にできなかった: #{number}（{_short_reason(exc)}）')
             stop = gh_stop_reason(exc)
@@ -5101,6 +5314,37 @@ def _print_removable_worktrees() -> None:
         print(f'消してよい worktree: {len(ok)} 本（うち退避が要る {evac} 本。`hirai-worktrees list` で見る）')
 
 
+class _NoCursor:
+    """_apply_closed_done の「試した位置」の控え。after-merge は today の順番を動かさないので何も控えない。"""
+
+    def save(self, last: int) -> None:
+        return None
+
+
+def _done_closed_features(
+    project_number: int, items: list[dict], closing_numbers: list[int], write_allowed: bool,
+) -> list[dict]:
+    """その PR が `Closes` で閉じた feature（PR と承認の単位が feature。HM-R4.5）の Status を 完了 にし、
+    書いた分を反映した items を返す。まだ閉じていない feature は、閉じてからやり直す案内を出すだけ
+    （Closes の issue は merge の約 1 分半後に閉じる）。書く相手は today の完了の書き込みと同じ条件
+    （進行中・レビュー中・空のまま閉じた行。書く直前に読み直す）。"""
+    features = [
+        i for i in items
+        if i.get('number') in closing_numbers and i.get('kind') == FEATURE_KIND and _same_repo(i, REPO)
+    ]
+    for i in features:
+        if i.get('state') != 'CLOSED':
+            print(f"feature #{i['number']} はまだ閉じていない（merge の約 1 分半後に閉じる）。閉じてから after-merge をやり直すと {DONE_STATUS} にする")
+    rows = [
+        i for i in features
+        if is_closed_not_done(i) and not closed_done_blocker(i.get('title') or '', FEATURE_KIND, i.get('status') or '', allow_feature=True)
+    ]
+    if not rows or not write_allowed:
+        return items
+    fixed, _untried, _stop = _apply_closed_done(project_number, rows, _NoCursor(), allow_feature=True)
+    return with_done_status(items, fixed)
+
+
 def cmd_after_merge(pr_number: int) -> int:
     """その PR が閉じた task について、close-parents を親→祖父→…と、閉じられる分だけ
     連鎖して辿ってから unblocked を呼ぶ。"""
@@ -5140,6 +5384,7 @@ def cmd_after_merge(pr_number: int) -> int:
         print(f'閉じる親 {len(all_candidates)} 件')
         for c in all_candidates:
             print(f"  #{c['number']:<4}（{c['kind']}・子 {c['children_total']} 件）")
+    items = _done_closed_features(project_number, items, closing_numbers, write_allowed)
     cmd_unblocked(items=items)
     for i in items:
         if i.get('number') in closing_numbers and i.get('state') == 'CLOSED':
