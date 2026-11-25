@@ -132,9 +132,24 @@ Claude Code で次の 2 行を順に実行します。
 - 「入れる範囲」を選ぶ画面での並び順と、はじめから選ばれている選択肢。3 つの選択肢があることと[それぞれの意味](https://code.claude.com/docs/en/discover-plugins.md#install-plugins)は公式ドキュメントに、記録される場所はターミナルから `--scope` を指定して実際に入れた結果で確かめています
 - フォルダを信頼するか尋ねる画面が出る条件。このプラグインが配る安全設定は「禁止」と「確認」だけで、公式ドキュメントによればこの 2 つは信頼の確認を待たずに効きます
 
-## やることの形と Orca の設定（`.claude/mode.yml`）
+## やることの形と Orca の設定（`.claude/settings.json` の `env`）
 
-3.0.0 は、効かせる機能を `.claude/mode.yml` の 3 項目で選びます。**自動では見分けません**（会話の開始時の 1 行目に、版と今の値が出ます。例: `hirai-lite v<版>・tasks: ledger・worktree: off・notify: off`）。変えるときは `/hirai-lite:config`（項目 8）。
+効かせる機能は、各リポの `.claude/settings.json` の `env` の 3 項目で選びます。**自動では見分けません**（会話の開始時の 1 行目に、版と今の値が出ます。例: `hirai-lite v<版>・tasks: ledger・worktree: off・notify: off`）。変えるときは `/hirai-lite:config`（項目 8。`env` の 1 つのキーだけを書きます）。プラグインがプロジェクトの `settings.json` から読めるのは `env` だけです（[公式: settings の env](https://code.claude.com/docs/en/settings-reference.md#env)）。
+
+```json
+{
+  "env": {
+    "HIRAI_METHOD_TASKS": "github-project",
+    "HIRAI_METHOD_WORKTREE": "block",
+    "HIRAI_METHOD_NOTIFY": "orca"
+  }
+}
+```
+
+- **読む順（上が先）**: ① シェルの `HC_TASKS`・`HC_WORKTREE`・`HC_NOTIFY`（一時の上書き。`HC_NOTIFY=off claude` がコーディネーターの開き方） → ② 環境変数 `HIRAI_METHOD_*`（Claude Code の中では `settings.local.json` > `settings.json` の `env` が重なって届きます。**同じ名前ならシェルの値より settings の値が勝つ**ので〔Claude Code 2.1.312 で実測〕、一時の上書きは別の名前の `HC_*` にしてあります） → ③ Claude Code の外（端末・CI）では、本体の checkout の `settings.local.json` → toplevel の `settings.local.json` → toplevel の `settings.json` → `~/.claude/settings.json` の `env` を直に読む（python3 が要ります。Claude Code の中は `CLAUDECODE=1` で、②が写しているので読みません） → ④ `.claude/mode.yml` の `tasks:`・`worktree:`・`notify:`（4.x の間だけ読む移行用） → ⑤ 既定（`ledger`・`off`・`off`）。未知の値は既定に倒します
+- **自分だけ変える**: `.claude/settings.local.json`（git に入りません）の `env` に同じ名前で書きます。チームの `settings.json` より先に効きます
+- **mode.yml からの移行**: `mode.yml` にだけ値がある間は、会話の開始時に 1 行（`/hirai-lite:config` の項目 8 へ移せます）が出ます。`/hirai-lite:update` が `env` へ移し、`mode.yml` の行を消します
+- `settings.json` の `env` は、書いたあとに開いた会話から効きます（開いている会話は変わりません）
 
 | 項目 | 値（既定が先頭） | 効くこと |
 |---|---|---|
@@ -152,7 +167,7 @@ GitHub Project でやることを回すリポだけが入れます。
 
 - 依存で、土台の hirai-lite 3.0.0 以上も一緒に入ります（土台が入っていないリポでは、足すプラグインだけを入れても土台が入ります）。**1.x が入っている範囲では、先に `/plugin marketplace update hirai-lite` → 端末で `claude plugin update hirai-lite@hirai-lite --scope <入れた範囲>`（画面なら `/plugin` → Installed → Update now） で土台を 3.0.0 に上げてから足すプラグインを入れます**（1.16.0 のまま入れると、依存の版で断られます。断られたあとも足すプラグインの行は残りますが、読み込まれないだけで会話は壊れません。土台を 3.0.0 に上げて開き直すと、入れ直さなくても読み込まれます。取り消すときは `claude plugin uninstall hirai-project-method@hirai-lite --scope <範囲>` で行も消えます）。**2.x（`hirai-lite-v2`）が入っている範囲では、足すプラグインだけを先に入れません**（3.0.0 は入りますが、開始時の表示とコマンドは 2.9.0 のもので、`/hirai-lite:board` と `/hirai-project-method:board` が両方並びます）。下の「1.x・2.x から 3.0.0 へ移る」の表の順（disable まで）を先に行います。土台だけを切ることはできません。先に足すプラグインを切ります（使い捨ての HOME で `claude plugin disable hirai-lite@hirai-lite` が「still required by hirai-project-method」で断られることを確かめた）
 - 中身: `hirai-task`（`bin/`）・`/hirai-project-method:board`・`/hirai-project-method:project-setup`・skill `github-project`
-- `mode.yml` に `tasks: github-project` を書いたあとで使えます
+- `.claude/settings.json` の `env` に `HIRAI_METHOD_TASKS=github-project` を書いたあとで使えます
 
 ### Orca で並行に進める（選べる機能）
 
@@ -173,9 +188,9 @@ GitHub Project でやることを回すリポだけが入れます。
   - `cd <別のリポ> && git commit` は `cd` を追わず、**会話の cwd のリポ**で判定します。別のリポへ commit するときは `git -C <dir> commit` を使ってください（拒否の文言にも 1 行出します）
   - `git -C` の引数に変数やコマンド置換（`$DIR`・`$(...)`）を含む形は、値を解決できないので**通します**
   - **読み切れないコマンドは、止める側に倒さず通します**（`_meta.md` 条 5 の例外は編集と commit だけ）。通る例: 二重引用符の中のバッククォートの `git commit`（`echo "`git commit -m x`"`）、`bash -c $'git commit -m x'`、`git -C "$DIR" commit`（`-C` の先が変数）、`$GIT commit`（コマンド名が変数）、heredoc や pipe で bash に渡す `git commit`（`bash <<'EOF'`）、別の道具（スクリプト）が中で打つ `git commit`。`eval "git commit …"`・`bash -c 'git commit …'`・`$(…)` の中の `git commit` は中身を調べて止めます
-  - **見張り（`worktree-guard.sh`）の制限は 30 秒**です（`hooks/hooks.json` の `timeout`。Claude Code の既定は 600 秒）。超えると Claude Code が hook を打ち切って出力を捨て、**打ち切られた操作は通ります**（`PreToolUse` の時間切れは止めません。[hooks の「Timeouts」](https://code.claude.com/docs/en/hooks#timeouts)）。普段は 0.1 秒ほどで終わりますが、負荷の平均が 269（16 コア）の機械で 6.3 秒かかり、3.0.0 の 5 秒では Write が止まらずに通りました（2026-11-24）。**環境変数 `HC_WORKTREE`・ホームの `mode.yml`・対象の dir とその祖先の `mode.yml` のどこにも `block` が無ければ、`git` もコマンドの読み取り（`awk`）も呼ばずに抜けます**（`git -C`・`--git-dir`・`--work-tree` のあるコマンドだけは、対象を知るために読み取ってから、`git` の前に抜けます。`core.worktree` でよその dir を作業ツリーにしたリポと、submodule の git dir〔`.git/modules/<名>`〕の中からの操作では、その先の `mode.yml` を見ません）。会話の開始の 1 行（`session-start.sh`）の制限も 30 秒です。時間切れを止める側に倒す形（`onFailure: "block"`・Claude Code 2.1.295 以上）は入れていません
+  - **見張り（`worktree-guard.sh`）の制限は 30 秒**です（`hooks/hooks.json` の `timeout`。Claude Code の既定は 600 秒）。超えると Claude Code が hook を打ち切って出力を捨て、**打ち切られた操作は通ります**（`PreToolUse` の時間切れは止めません。[hooks の「Timeouts」](https://code.claude.com/docs/en/hooks#timeouts)）。普段は 0.1 秒ほどで終わりますが、負荷の平均が 269（16 コア）の機械で 6.3 秒かかり、3.0.0 の 5 秒では Write が止まらずに通りました（2026-11-24）。**環境変数 `HC_WORKTREE`・`HIRAI_METHOD_WORKTREE`・ホームと対象の dir とその祖先の `settings.json`・`settings.local.json`・`mode.yml` のどこにも `block` の字が無ければ、`python3` も `git` もコマンドの読み取り（`awk`）も呼ばずに抜けます**（`git -C`・`--git-dir`・`--work-tree` のあるコマンドだけは、対象を知るために読み取ってから、`git` の前に抜けます。`core.worktree` でよその dir を作業ツリーにしたリポと、submodule の git dir〔`.git/modules/<名>`〕の中からの操作では、その先の `mode.yml` を見ません）。会話の開始の 1 行（`session-start.sh`）の制限も 30 秒です。時間切れを止める側に倒す形（`onFailure: "block"`・Claude Code 2.1.295 以上）は入れていません
   - 二重引用符の中に別々の commit を入れた `"$( )"` が約 2,500 個を超えると、読むのに 30 秒を超えることがあります（16 コア・負荷の平均 9〜20 の機械の実測で 1,000 個 7〜12 秒・2,500 個 20 秒。引用符の外の `$( )` は 1,000 個でも 0.1 秒）。二重引用符の中で、算術として閉じない `$((` を入れ子にした形も同じです（22 段で 9 秒。1 段ごとに約 2 倍になり、24 段で 30 秒を超えます）。超えたら上のとおり止まりません
-  - 外側のリポの `.tmp/` と `.claude/state/` の下は、その写し自身の `mode.yml` が `worktree: block` でも止めません（そこに作った別の clone・worktree の編集と commit は、その clone の toplevel が対象です）
+  - 外側のリポの `.tmp/` と `.claude/state/` の下は、その写し自身の settings が `worktree: block` でも止めません（そこに作った別の clone・worktree の編集と commit は、その clone の toplevel が対象です）
 
 ### PR の本文と画面のキャプチャ
 
@@ -183,7 +198,7 @@ PR の本文の型は、導入先に PR の雛形か本文を見る検査があ�
 
 ## やること管理（GitHub Project）・コンソール・スマートフォン
 
-この節は**足すプラグイン `hirai-project-method` を入れたリポ（`.claude/mode.yml` が `tasks: github-project`）だけ**の話です。やることを GitHub の issue と Project（wave → feature → task、Status 8 値）で持ち、読み書きは足すプラグインの `hirai-task` が行います（足すプラグインを入れると `bin/` が PATH に入ります）。台帳の形（既定）のリポは読まなくて構いません。
+この節は**足すプラグイン `hirai-project-method` を入れたリポ（`HIRAI_METHOD_TASKS=github-project`）だけ**の話です。やることを GitHub の issue と Project（wave → feature → task、Status 8 値）で持ち、読み書きは足すプラグインの `hirai-task` が行います（足すプラグインを入れると `bin/` が PATH に入ります）。台帳の形（既定）のリポは読まなくて構いません。
 
 ### 新しいプロジェクトで立ち上げる（`/hirai-project-method:project-setup`、v2.7.0）
 
