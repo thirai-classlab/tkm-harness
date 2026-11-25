@@ -85,10 +85,11 @@ merged_into:
 - TKM-R9.2 Given `TKM_HARNESS_LOAD_ON_START=off`（settings.json の env） When 会話を開く Then 入れない（既定は入れる。プラグインの設定項目 `userConfig` は project の settings.json に置けないので env で持つ）
 - TKM-R9.3 after-merge と assign・start・done の出力の最後の表（`print_load_after`）は今のまま。担当の知らせ・ユーザーの発言のたびには入れない（PostToolUse の `coordinator-load.sh` は今のまま）
 - TKM-R9.4 委譲の手順の文書に「`orca orchestration worker-start` のすぐあとに `hirai-task assign <issue> <担当> [順]` を打つ」「worker-start の作業ツリーに `orca worktree set --display-name <短い題> --issue <番号>` を付ける」「担当は状況が変わったら `orca worktree set --worktree current --comment <いまやっていること>` を打つ」を足す
-- TKM-R9.5 コーディネーターの判定（`hirai-task is-coordinator`）は Orca の CLI で取る（テックリード 2026-11-26 03:4x「OrcaCLIからとれへん？」）: 上書き `TKM_HARNESS_ROLE=coordinator|worker` > `HC_NOTIFY=off`（今までの印）> `orca orchestration run-current --json` が Run を返す端末（2 秒で切る）。null・orca が無い・時間切れ・`TKM_HARNESS_TASKS` が github-project でない・`TKM_HARNESS_NOTIFY` が orca でない は偽。真の会話では `hirai-notify` を送らない（自分の Run に「Rejected escalation」が届かない）
-- TKM-R9.6 Given 本体の checkout（linked worktree でない）の Orca の会話で run-current が null When 会話を開く Then 「コーディネーターなら `orca orchestration run-use --id <Run>` で結び付けると進みの表が入る」の 1 行を出す（Run の候補は `run-list` の新しい順の 1 本）
+- TKM-R9.5 コーディネーターの判定（`hirai-task is-coordinator`）は「親がいるか」で取る（テックリード 2026-11-26 03:4x「OrcaCLIからとれへん？」・03:5x「自分の親がいる場合は出さないでいけません?」）: 上書き `TKM_HARNESS_ROLE=coordinator|worker` > `HC_NOTIFY=off`（今までの印）> その会話の端末（`ORCA_TERMINAL_HANDLE`）が `orca orchestration worker-list --json` の `agentTerminalHandle` に載っているか。載っている = 親（立てたコーディネーター）がいる担当 → 表を入れない・知らせは親へ送る。載っていない = 親がいない → 表を入れる・`hirai-notify` は送らない。`TKM_HARNESS_TASKS` が github-project でないリポでは表を入れない
+- TKM-R9.6 判定できないとき（推し）: Orca が無い（`ORCA_TERMINAL_HANDLE` か `orca` が無い）は「親なし」と同じ（担当と分ける相手がいない。知らせは Orca が無ければもともと送れない）。Orca があって worker-list が時間切れ（2 秒）・exit が 0 でない・JSON が読めないときは、表は入れず（1 行で「判定できない」と出す）、`hirai-notify` は今までどおり送る。どちらも担当の会話を誤ってコーディネーター扱いしない側に倒す（担当の完了の知らせが落ちるほうが、表が 1 回出ないより重い）
+- TKM-R9.7 担当を `worker-start` 以外（`orca worktree create --agent` など）で立てた会話は worker-list に載らず、「親なし」と見なされる。そうして立てた会話では `TKM_HARNESS_ROLE=worker` を付ける。Orca の作業ツリーの親（`parentWorktreeId`）は、`worker-start --worktree new-top-level` で立てると null なので今は使えない
 
-実測（2026-11-26 03:2x）: 担当の端末で `orca orchestration run-current --json` は `{"run": null}`（0.14 秒）。担当の端末から `--from <コーディネーターの端末>` を付けても null で、結び付けは引数の handle ではなく打った pane で決まる。Run の `coordinator_handle` は古い端末（term_70efac0c…）のままなのに、コーディネーターの今の端末では Run が返る（コーディネーターの実測）。新しい pane で開いたコーディネーターで返るかは未検証（担当の pane から `run-use` を打つと Run を取ってしまうので試さない）。返らないときのために TKM-R9.6 を置く
+実測（2026-11-26 03:2x〜03:5x）: 担当の端末（この会話）は `worker-list --json --limit 100` の 1 頁目に載っている（True・0.17 秒。頁は続きがあり、全部で 100 件を超える）。コーディネーターの端末（term_1e00721c…）は載っていない（False）。`--terminal-state active` で絞ると 1 件しか出ず担当の端末も載らないので、絞りには使えない（頁を送って探す）。先に考えた `run-current` は担当の端末で `{"run": null}`（0.14 秒）だが、Run の `coordinator_handle` が古い端末のままで結び付けの元が分からないので使わない
 
 ## 3. 公式で確かめたこと・実測
 
