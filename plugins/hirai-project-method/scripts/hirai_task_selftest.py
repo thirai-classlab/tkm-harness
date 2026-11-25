@@ -2584,6 +2584,182 @@ def _expect_exit(fn, expected_code: int) -> None:
     raise AssertionError('落ちるべきなのに通った')
 
 
+def _progress_checks(t, tmp_dir: str) -> None:
+    """board --progress（hirai_progress.py）の検査。Orca・git・gh は偽の応答で、実物の形だけをまねた数件（中身は実物と無関係）。"""
+    import hirai_progress as hp
+    load = gh_task._load_module()
+    tz = datetime.timezone.utc
+
+    def tree(path, name, *, issue=None, pr=None, comment='', mode='fixed', main=False, branch='refs/heads/x', project='github:o/r'):
+        return {'path': path, 'displayName': name, 'displayNameMode': mode, 'linkedIssue': issue, 'linkedPR': pr, 'comment': comment,
+                'isMainWorktree': main, 'isArchived': False, 'branch': branch, 'projectId': project}
+
+    def worker(dispatch, task, path, status='dispatched', handle='term_a'):
+        return {'dispatchId': dispatch, 'taskId': task, 'dispatchStatus': status, 'agentTerminalHandle': handle,
+                'resource': {'worktreeId': f'id1::{path}'}}
+
+    def msg(seq, kind, subject='', payload=None, from_handle='term_a'):
+        return {'sequence': seq, 'type': kind, 'subject': subject, 'from_handle': from_handle,
+                'payload': json.dumps(payload) if payload is not None else None, 'created_at': '2026-11-25T15:28:21Z'}
+
+    trees = [
+        tree('/w/main', 'main', main=True),
+        tree('/w/a', '#201 認証の画面を作る長い題で三十字を超える文字を足しておく', issue='201', pr=301, comment='CI の結果待ち'),
+        tree('/w/b', '#202・#203 BE の項目'),
+        tree('/w/c', 'branch-c', mode='automatic'),
+        tree('/w/d', '#205 完了済みの担当'),
+        tree('/w/e', 'no-number', mode='automatic'),
+        tree('/w/z', '#299 別のリポ', project='github:other/repo'),
+        tree('/w/f', '#210 割り当て済み'),
+        tree('/w/211-foo', 'branch-f', mode='automatic'),
+    ]
+    workers = [worker('d1', 'k1', '/w/a'), worker('d2', 'k2', '/w/b', handle='term_b'), worker('d3', 'k3', '/w/c', handle='term_c'),
+               worker('d4', 'k4', '/w/d', status='completed', handle='term_d')]
+    tasks = [{'id': 'k3', 'display_name': '作業', 'task_title': '作業', 'spec': '\n# 指示書: #204 別の題\n本文に #999 がある'},
+             {'id': 'k2', 'display_name': '#202 題', 'task_title': '#202 題', 'spec': ''}]
+    inbox = [msg(1, 'heartbeat', 'alive', {'dispatchId': 'd2', 'phase': 'ci'}, 'term_b'),
+             msg(2, 'status', '結果待ち', None, 'term_b'), msg(3, 'question', '方式はどちら', {'dispatchId': 'd3'}, 'term_c'),
+             msg(4, 'worker_done', '終わった', {'dispatchId': 'd4'}, 'term_d')]
+    state = {'orca': True}
+
+    def runner(argv):
+        if not state['orca']:
+            raise FileNotFoundError('orca')
+        sub = ' '.join(argv[1:3])
+        body = {'worktree list': {'worktrees': trees}, 'orchestration worker-list': {'workers': workers},
+                'orchestration task-list': {'tasks': tasks}, 'orchestration inbox': {'messages': inbox}}[sub]
+        return 0, json.dumps({'ok': True, 'result': body})
+
+    def git(argv):
+        return (0, '1795620000\tテストを足した') if argv[2] in ('/w/b', '/w/c') else (1, '')
+
+    def issue(n, status, *, state='OPEN', title=None):
+        return {'number': n, 'kind': 'task', 'state': state, 'status': status, 'title': title or f'task {n}', 'parent_number': 2}
+
+    view = {'repo': 'o/r', 'issues': [
+        {'number': 1, 'kind': 'wave', 'state': 'OPEN', 'status': '', 'title': '1. 土台', 'parent_number': None},
+        {'number': 2, 'kind': 'feature', 'state': 'OPEN', 'status': '着手可', 'title': '機能', 'parent_number': 1},
+        issue(201, '進行中'), issue(202, '進行中'), issue(203, '進行中'), issue(204, '進行中'),
+        issue(205, '進行中'), issue(206, '着手可'), issue(207, '着手可'), issue(208, '着手可', title='[User] 人の作業'),
+        issue(209, '進行中'), issue(210, '着手可'), issue(211, '着手可'), issue(212, '着手可')],
+        'ready': [206, 207, 208, 210, 211, 212], 'not_ready': {}, 'wave_blockers': {}, 'fetched_at': '', 'how': 'test'}
+    prs = {'open': [{'number': 301, 'draft': False, 'conflict': False, 'author': 'me', 'closes': [201], 'checks': 'FAILURE', 'head': '201-x'},
+                    {'number': 309, 'draft': True, 'conflict': False, 'author': 'me', 'closes': [], 'checks': '', 'head': '209-from-branch'},
+                    {'number': 312, 'draft': True, 'conflict': False, 'author': 'me', 'closes': [212], 'checks': '', 'head': 'zz'}],
+           'merged': [{'number': 305, 'draft': False, 'conflict': False, 'author': 'me', 'closes': [205], 'checks': 'SUCCESS', 'head': '205-y'}],
+           'me': 'me', 'assignees': {'209': ['alice']}}
+    settings = {'deadline_label': '期限', 'deadline_date': '', 'deadline_open': None, 'mainline': '', 'mainline_label': '本線'}
+
+    def model(orca_on=True):
+        state['orca'] = orca_on
+        orca = hp.collect('o/r', runner, git, tz)
+        return hp.build(load, json.loads(json.dumps(view)), json.loads(json.dumps(prs)), dict(settings), orca)
+
+    def rows_of(m):
+        return {n: r for r in m['rows'] for g in r['groups'] for n in g['numbers']}
+
+    def _numbers_from_title_only() -> None:
+        # (a) 割り当ての題の 1 行目の番号だけを取る。spec の本文の #999 は拾わない
+        m = model()
+        assert 204 in rows_of(m) and 999 not in rows_of(m), rows_of(m).keys()
+        assert hp.orca_json(['worktree', 'list'], runner)['worktrees'], 'orca の読み取りが空'
+    t('progress: 担当の番号は題の 1 行目からだけ取る（spec の本文の別の番号は拾わない）', _numbers_from_title_only)
+
+    def _owner_columns() -> None:
+        m = model()
+        owners = {n: r['owner'] for n, r in rows_of(m).items()}
+        assert owners[201].startswith('認証の画面') and len(owners[201]) <= 30, owners[201]   # 表示名（番号を外して 30 字まで）
+        assert owners[202] == owners[203] == 'BE の項目', owners                              # 表示名の頭の #202・#203
+        assert owners[204] == '別の題', owners                                                # 表示名に番号が無いときだけ割り当ての題
+        assert 'e' not in owners and 299 not in owners, '番号の無い作業ツリー・別のリポの作業ツリーを出した'
+    t('progress: 担当は作業ツリーの表示名（linkedIssue が先・無ければ頭の番号・それも無ければ割り当ての題）', _owner_columns)
+
+    def _now_column() -> None:
+        rows = rows_of(model())
+        assert rows[201]['now'] == 'CI の結果待ち', rows[201]['now']                          # comment が第一
+        assert rows[202]['now'].startswith('ci（15:28 時点）、結果待ち、最後の commit '), rows[202]['now']
+        assert 'テストを足した' in rows[202]['now'], rows[202]['now']
+        assert rows[204]['now'].startswith('質問: 方式はどちら'), rows[204]['now']
+        assert rows[205]['now'].startswith('完了報告済み'), rows[205]
+    t('progress: いまやっていること は comment が第一・無ければ phase・件名・commit から 1 行に組む（空の項目は書かない）', _now_column)
+
+    def _reported() -> None:
+        # (b) 完了を報告して作業ツリーが残る担当（#205 は merge 済みで issue が開いている = 90%）も出る
+        rows = rows_of(model())
+        assert 205 in rows and rows[205]['now'].startswith('完了報告済み'), rows.get(205)
+    t('progress: 完了を報告したが作業ツリーが残る担当（merge 待ち）も出す', _reported)
+
+    def _upcoming() -> None:
+        m = model()
+        assert [u['number'] for u in m['upcoming']] == [206, 207], m['upcoming']              # [User]・割り当て済み・作業ツリーの名前に番号がある・PR が閉じる task は出さない
+        out = hp.render(load, m)
+        assert 'これから立てる' in out and '#206' in out and '#208' not in out, out
+    t('progress: 着手可で作業ツリーも割り当ても無い task を「これから立てる」に出す', _upcoming)
+
+    def _render_shape() -> None:
+        out = hp.render(load, model())
+        assert out.startswith('0 / 12 完了（0%）。'), out.splitlines()[0]
+        assert '| セクション | 進み | セクション | 進み |' in out, out
+        assert '| 担当 | セクション | 順番 | 進捗 | いまやっていること |' in out, out
+    t('progress: 表は全体の 1 行・セクションの表・5 列の進行中の表', _render_shape)
+
+    def _fallback() -> None:
+        m = model(orca_on=False)
+        assert m['source'] == 'fallback'
+        owners = {n: r['owner'] for n, r in rows_of(m).items()}
+        assert owners.get(201) == '201-x', owners                                               # PR の head の branch 名の頭の番号
+        assert owners.get(209) == '209-from-branch', owners
+        assert 'Orca から引けなかった' in hp.render(load, m)
+        rc = hp.orca_json(['worktree', 'list'], lambda argv: (1, '{}'))
+        assert rc is None
+        assert hp.orca_json(['worktree', 'list'], lambda argv: (0, 'not json')) is None
+        view2 = json.loads(json.dumps(view))
+        prs2 = {**json.loads(json.dumps(prs)), 'open': []}
+        assert hp.fallback_assign(view2, prs2) == {209: {'owner': 'alice', 'order': None}}, '番号の無い PR のとき Assignees に落ちない'
+    t('progress: Orca が無いとき PR の branch 名の頭の番号 → Assignees の順で担当を引く', _fallback)
+
+    def _json_shape() -> None:
+        m = json.loads(json.dumps(model()))
+        for key in ('total', 'done', 'held', 'sections', 'rows', 'stray', 'upcoming', 'settings', 'source'):
+            assert key in m, key
+    t('progress: --json は全体・セクション・進行中の行・担当の居ないもの・これから立てるを機械の形で出す', _json_shape)
+
+    def _env_settings() -> None:
+        saved = {k: os.environ.get(k) for k in ('TKM_HARNESS_LOAD_DEADLINE', 'TKM_HARNESS_LOAD_MAINLINE', 'TKM_HARNESS_LOAD_MAINLINE_LABEL')}
+        orig = gh_task._mode_setting
+        gh_task._mode_setting = lambda key, home=True: {'load_mainline': '土台', 'load_mainline_label': 'mode 側'}.get(key, '')
+        try:
+            os.environ['TKM_HARNESS_LOAD_MAINLINE'] = '環境'
+            os.environ['TKM_HARNESS_LOAD_MAINLINE_LABEL'] = '本命'
+            os.environ.pop('TKM_HARNESS_LOAD_DEADLINE', None)
+            s = gh_task._load_settings(None, network=False)
+            assert s['mainline'] == '環境' and s['mainline_label'] == '本命', s
+            os.environ.pop('TKM_HARNESS_LOAD_MAINLINE')
+            os.environ.pop('TKM_HARNESS_LOAD_MAINLINE_LABEL')
+            s = gh_task._load_settings(None, network=False)
+            assert s['mainline'] == '土台' and s['mainline_label'] == 'mode 側', s
+        finally:
+            gh_task._mode_setting = orig
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    t('progress: 期限・本線の設定は環境変数 TKM_HARNESS_LOAD_* が先・無ければ mode.yml', _env_settings)
+
+    def _args() -> None:
+        opts = gh_task.parse_board_args(['--progress', '--json'])
+        assert opts['progress'] and opts['json']
+        for bad in (['--json'], ['--progress', '--text'], ['--progress', '--out', 'x']):
+            try:
+                gh_task.parse_board_args(bad)
+            except (SystemExit, gh_task.GhError):
+                continue
+            raise AssertionError(f'通ってはいけない引数が通った: {bad}')
+    t('progress: 引数 --progress・--json の組み合わせの誤りは断る', _args)
+
+
+
 def main() -> int:
     fail = 0
     results: list[str] = []
@@ -2612,6 +2788,11 @@ def main() -> int:
         results.append(f'  FAIL {label}（落ちるべきなのに通った）')
 
     print('gh_task_selftest.py')
+
+    if os.environ.get('HIRAI_SELFTEST_ONLY') == 'progress':  # 手早く回すための絞り込み（smoke は絞らない）
+        _progress_checks(t, tempfile.mkdtemp())
+        print('\n'.join(results))
+        return 1 if fail else 0
 
     orig_run_gh = gh_task.run_gh
     # HIRAI_TASK_PROJECT がシェルに残っていると discover の 3 case が空振りで PASS/FAIL する
@@ -10266,6 +10447,7 @@ def main() -> int:
         _board_checks(t, cache_tmp_dir)
         _card_checks(t, cache_tmp_dir)
         _load_checks(t, cache_tmp_dir)
+        _progress_checks(t, cache_tmp_dir)
     finally:
         gh_task.run_gh = orig_run_gh
         gh_task.PROJECT_NUMBER_OVERRIDE = orig_override
