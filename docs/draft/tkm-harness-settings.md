@@ -37,6 +37,7 @@ merged_into:
 - 「プロジェクトもsetting.jsonで指定できたほうが良いです。」
 - heyapro-app の `scripts/gh-task.sh` の扱い（A 今のまま／B 薄い入口にして残す／C なくす）に「B」
 - 「`hirai-task assign` が feature を受け付けない」穴に「#2052に含めて対応して下さい。」
+- 振り出しのあとに進みの表が出なかった件（AI が出力を切り、出し忘れた）に「仕組みで解決しておいて下さい。」
 
 ## 2. 確かめた事実（Claude Code 2.1.312）
 
@@ -48,6 +49,8 @@ merged_into:
 | F4 | 会話の途中で settings の file を保存すると、動いている会話の env に入る。変数を消しても、動いている会話からは消えない | https://code.claude.com/docs/en/env-vars.md 「A running session applies new and changed values to its environment when you save the file」「Removing a variable from the file doesn't unset it in a running session」 | 会話の途中で settings.local.json の A を書き換え・D を足す → 5 秒後の Bash と PreToolUse の hook に新しい A と D が届いた |
 | F5 | git の worktree では、本体の checkout の settings.local.json も読む。本体の local ＞ worktree の local ＞ settings.json | （文書に記述なし） | 本体だけに local → worktree の会話に local の値。両方に local（同じ変数 A・worktree だけの E）→ A=本体の local・E=worktree の local |
 | F6 | statusLine のコマンドに env が届くか | 文書に記述なし（未検証） | 画面下は `claude -p` で動かないので未測定。statusline は F7 の file 読みを持つので、届かなくても値は出る |
+| F7 | hook の JSON の `systemMessage` は人の画面に出て、AI の context には入らない | https://code.claude.com/docs/en/hooks.md の「JSON output」の表「`systemMessage` … Warning message shown to the user. In Agent SDK and `--output-format stream-json` output, it can arrive as an `SDKInformationalMessage`」・「To surface a message to the user on any platform, return `systemMessage` in JSON output.」 | PostToolUse(Bash) の hook が 1 つの JSON に `systemMessage` と `hookSpecificOutput.additionalContext` を両方出す形で、(a) 対話の画面（Orca の端末で `claude` を開いて読んだ）: Bash の結果の下に `PostToolUse:Bash says: <1 行目>` と続く行がそのまま出た（Markdown の表としては描かれず文字のまま）。(b) `claude -p --output-format stream-json --verbose`: `{"type":"system","subtype":"informational","level":"notice","content":"PostToolUse:Bash says: …"}` で流れ、各行の頭に `PostToolUse:Bash says: ` が付いた。AI は systemMessage の印を見ていない |
+| F8 | PostToolUse の `additionalContext` は AI の context に入り、画面には出ない。上限は欄ごとに 10,000 字（超えると file に退避され、先頭 2,000 字だけ） | hooks.md の「Add context for Claude」「The `additionalContext` field passes a string from your hook into Claude's context window. … it doesn't appear as a chat message in the interface.」「PreToolUse, PostToolUse, … : next to the tool result」・「JSON output」の「capped at 10,000 characters」 | 上の (b) で AI は additionalContext の印だけを見た（「CTX-MARKER が見えた」と答えた） |
 
 F4 から、`/tkm-harness:config` で settings の file に書いた値は、開き直さなくても同じ会話の次の Bash・hook から効く（4.0.0 の「開き直すまで古い」は誤り）。消したときだけ、開き直すまで古い値が残る。
 
@@ -90,6 +93,20 @@ F4 から、`/tkm-harness:config` で settings の file に書いた値は、開
 
 - TKS-R4.1 Given 種別=feature の open の issue When `hirai-task assign <feature> <担当> [順]` Then 手元の控えに書く（wave は今までどおり断る）
 - TKS-R4.2 Given 控えに feature がある When assign のあとの進みの表（load）Then その担当の行に feature が出て、段は task と同じ決め方（その feature を Closes する PR と issue の実物）で決まる
+
+### 要件 TKS-R5: 進みの表は、振り出しと完了のあとに仕組みで出る（テックリード 2026-11-26「仕組みで解決しておいて下さい。」）
+
+- TKS-R5.1 Given コーディネーターの会話（`hirai-task is-coordinator` が exit 0。親がいない・tasks が github-project） When Bash で振り出し（`orca orchestration worker-start`・`orca worktree set … --issue`・`hirai-task assign`・`hirai-task start`）か完了（`hirai-task done`・`hirai-task after-merge`・`gh pr merge`）を打った Then PostToolUse の hook が `hirai-task load --cached`（GitHub を叩かない）を回し、表を `systemMessage`（人に見える）と `additionalContext`（AI に入る）の両方で出す。AI が出力を `tail` で切っても、表を貼り忘れても、人の画面に表が出る
+  - hirai-task は導入先の入口（`bash scripts/gh-task.sh start 12` のように hirai-task へ引数を渡す script）からも呼ばれるので、コマンドの中の `hirai-task <サブコマンド>` と `gh-task.sh <サブコマンド>` の両方を見る
+- TKS-R5.2 Given 担当の会話（親がいる）・判定できない会話・GitHub Project で回さないリポ・対象でないコマンド When Bash Then 1 バイトも出さない。`load --cached` が失敗・時間切れ・空なら 1 バイトも出さない（常に exit 0）
+- TKS-R5.3 既存の「知らせの受領で `load --changed` を促す 1 行」（`orca orchestration check` に msg_ があるとき）とは重ならない: 1 回の Bash で出す JSON は 1 つ。両方に当たる複合のコマンドは表を出す側だけ
+- TKS-R5.4 hook は増やさない（数の予算の上限 6。今の `hooks/coordinator-load.sh` を広げる）。hook の時間切れ（hooks.json の 10 秒）より前に終わる（load は 8 秒で切る）。各欄は 10,000 字の内に収め、超えるなら末尾を切って「（続きは hirai-task load）」の 1 行にする
+
+### 要件 TKS-R6: 表の担当は Orca の作業ツリーから取る
+
+- TKS-R6.1 Given issue を紐づけた Orca の作業ツリー（`orca worktree list --json` の `linkedIssue`。main と archived を除き、`projectId` が `github:<リポ>` のもの） When `hirai-task load`（`--cached` も） Then その作業ツリーの表示名（`displayName`）を担当にして、その issue の行を出す。`hirai-task assign` の控えは補い（Orca に紐づきの無い番号の担当と、順番）。Orca が無い・exit が 0 でない・JSON が読めない・3 秒で返らないときは控えだけ（今と同じ）
+- TKS-R6.2 Given 担当が feature に直接付いている（Orca の linkedIssue が feature・控えが feature） When load Then その feature の行が出る。段は、その feature を `Closes` する PR があれば task と同じ決め方、無ければ Status（承認待ち・着手可 → 0、進行中 → 20、レビュー中 → 60、完了か閉じた → 100）。セクションは、その feature の親の wave の名前（今は「—」になる）
+- TKS-R6.3 全体の %（sections の total・done）は今のまま task だけで数える（feature を足して二重に数えない）
 
 ## 4. 採らなかった案
 
