@@ -1,35 +1,46 @@
 #!/usr/bin/env bash
-# PostToolUse(Bash) の hook: コーディネーターの会話が `orca orchestration check` で担当からの知らせを受けたとき、
-# 「hirai-task load --changed を打つ」の 1 行を会話の材料に足す。表を出すかは、その load が前回と比べて決める
-# （段・担当・順番が動いていなければ 1 行も出ない）。
-#
-# 止めない: 操作の可否を変えず、常に exit 0。失敗・対象外・知らせが無いときは 1 バイトも出さない（_meta.md 条 5 の context を注ぐだけの hook）。
-# GitHub を叩かない・控えも読まない: PR の段は取り直さないと分からず、古い控えの表を「動いた」と見せないため。
-# コーディネーターか（親がいない会話か・tasks が github-project か）の判定は `hirai-task is-coordinator` が持つ
-# （上書き TKM_HARNESS_ROLE > HC_NOTIFY=off > Orca が無い > worker-list に端末が載っていない）。
-# 担当の会話（親がいる）・親の有無を判定できない会話・GitHub Project で回さないリポでは出ない。
+# PostToolUse(Bash) の hook。コーディネーターの会話にだけ、次の 2 つを足す（どちらか 1 回に JSON は 1 つ。両方に当たれば表のほう）。
+#  1. 振り出し（orca orchestration worker-start・orca worktree set --issue・hirai-task / gh-task.sh の assign・start）か
+#     完了（hirai-task / gh-task.sh の done・after-merge・gh pr merge）のあと: `hirai-task load --cached` の表を、
+#     systemMessage（人の画面に出る。F7）と additionalContext（AI に入る。F8）の両方に出す。AI が出力を切っても貼り忘れても人の画面に表が出る。
+#  2. `orca orchestration check` で担当からの知らせを受けたとき: 「hirai-task load --changed を打つ」の 1 行を additionalContext に足す。
+# 止めない: 操作の可否を変えず、常に exit 0。対象外・load の失敗・空・時間切れ（8 秒）は 1 バイトも出さない（_meta.md 条 5 の context を注ぐだけの hook）。
+# GitHub を叩かない: 表は控え（--cached）から。各欄は 10,000 字の内に収め、超えたら末尾を切って「（続きは hirai-task load）」の 1 行にする。
+# コーディネーターか（親がいない会話か・tasks が github-project か）の判定は `hirai-task is-coordinator` が持つ。担当の会話・判定できない会話・台帳のリポでは出ない。
+# 失効: Claude Code が hook の出力を人の画面と AI の両方へ出す口を別に持ち、表を会話の外で見せられるようになったとき。
 set -uo pipefail
 
 # 入力は先に読み切る（読まずに終わると、呼ぶ側の書き込みが途中で切れる）。そのあとで安い分かれ道を見る
 input="$(cat 2>/dev/null)" || exit 0
-case "$input" in *orchestration*) ;; *) exit 0 ;; esac   # 安い分かれ道: orca orchestration に触れない呼び出しは python も hirai-task も起こさない
+case "$input" in *orchestration*|*worktree*|*hirai-task*|*gh-task*|*merge*) ;; *) exit 0 ;; esac   # python も hirai-task も起こさない
 command -v python3 >/dev/null 2>&1 || exit 0
 
-# 1 行目 = 知らせを受けたか、2 行目 = cwd。知らせ = `orca orchestration check` の出力に message の id（msg_…）があるか、
-# コマンドが `--ack`（受けた知らせの受領）を付けているとき（出力を要約する打ち方でも、受領は知らせがあったときだけ打つ）
+# 1 行目 = table（振り出し・完了）/ notice（知らせを受けた）/ 0、2 行目 = cwd
 hit="$(printf '%s' "$input" | python3 -I -c '
 import json, re, sys
+START = r"orca\s+orchestration\s+worker-start|orca\s+worktree\s+set\b.*--issue\b|(hirai-task|gh-task\.sh)\s+(assign|start|done|after-merge)\b|gh\s+pr\s+merge\b"
 try:
     d = json.load(sys.stdin)
     cmd = (d.get("tool_input") or {}).get("command") or ""
-    out = json.dumps(d.get("tool_response"), ensure_ascii=False)
-    got = d.get("tool_name") == "Bash" and re.search(r"(^|[;&|\s])orca\s+orchestration\s+check(\s|$)", cmd) and (re.search(r"msg_[0-9a-z]", out) or re.search(r"\s--ack\b", cmd))
-    print("1" if got else "0")
+    kind = "0"
+    if d.get("tool_name") == "Bash":
+        for seg in re.split(r"&&|\|\||[;|\n]", cmd):
+            s = seg.strip()
+            if re.match(r"(echo|printf)\s", s) or re.search(r"(\s|^)(--help|-h)(\s|$)", s):
+                continue
+            if re.search(START, s):
+                kind = "table"
+        if kind == "0":
+            out = json.dumps(d.get("tool_response"), ensure_ascii=False)
+            if re.search(r"(^|[;&|\s])orca\s+orchestration\s+check(\s|$)", cmd) and (re.search(r"msg_[0-9a-z]", out) or re.search(r"\s--ack\b", cmd)):
+                kind = "notice"
+    print(kind)
     print(d.get("cwd") or "")
 except Exception:
     print("0")
 ' 2>/dev/null)" || exit 0
-[ "${hit%%$'\n'*}" = "1" ] || exit 0
+kind="${hit%%$'\n'*}"
+case "$kind" in table|notice) ;; *) exit 0 ;; esac
 cwd="${hit#*$'\n'}"
 [ -n "$cwd" ] && [ -d "$cwd" ] && CDPATH= builtin cd -- "$cwd" >/dev/null 2>&1
 
@@ -37,8 +48,26 @@ task="${CLAUDE_PLUGIN_ROOT:-$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]
 [ -x "$task" ] || exit 0
 "$task" is-coordinator >/dev/null 2>&1 || exit 0
 python3 -I -c '
-import json
-text = "担当からの知らせを受けました。`hirai-task load --changed` を打ち、出力があればそのまま貼ります（段・担当・順番が動いていなければ何も出ません）。"
-print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}, ensure_ascii=False))
-' 2>/dev/null || true
+import json, subprocess, sys
+kind, task = sys.argv[1], sys.argv[2]
+LIMIT, TAIL = 10000, "（続きは hirai-task load）"
+def emit(ctx, message=None):
+    out = {"systemMessage": message} if message else {}
+    out["hookSpecificOutput"] = {"hookEventName": "PostToolUse", "additionalContext": ctx}
+    print(json.dumps(out, ensure_ascii=False))
+def cut(text):
+    return text if len(text) <= LIMIT else text[: LIMIT - len(TAIL) - 1].rstrip() + "\n" + TAIL
+if kind == "notice":
+    emit("担当からの知らせを受けました。`hirai-task load --changed` を打ち、出力があればそのまま貼ります（段・担当・順番が動いていなければ何も出ません）。")
+    sys.exit(0)
+try:
+    r = subprocess.run([task, "load", "--cached"], capture_output=True, text=True, timeout=8)
+except Exception:
+    sys.exit(0)
+table = r.stdout.strip()
+if r.returncode != 0 or not table:
+    sys.exit(0)
+head = "この表は人の画面にも出ています（hook）。同じ表を貼り直さず、必要なら要点だけ述べます。\n"
+emit(cut(head + table), cut(table))
+' "$kind" "$task" 2>/dev/null || true
 exit 0

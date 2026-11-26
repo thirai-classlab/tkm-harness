@@ -45,7 +45,7 @@ description: GitHub Project でやること（wave・feature・task の issue �
 
 ### 会話の始まりに表が入る（コーディネーターの会話）
 
-親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
+親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほか、コーディネーターの会話では、振り出し（`orca orchestration worker-start`・`orca worktree set --issue`・`hirai-task` / `gh-task.sh` の `assign`・`start`）と完了（`done`・`after-merge`・`gh pr merge`）のあとに、hook が `hirai-task load --cached` の表を人の画面（systemMessage）と AI の context の両方へ出す（AI が出力を切っても人の画面に出る。同じ表を貼り直さない。GitHub は叩かず、load が失敗・空・8 秒で返らないときは出ない）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
 
 ### 担当を Orca で立てるとき（表の「担当」と「いまやっていること」の出どころ）
 

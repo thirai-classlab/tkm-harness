@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tkm-harness のタスク管理の機能 (hirai-task・ghp-path.sh・coordinator-load.sh・進みの表の入れ方) の自己検証 smoke (11 case)。1 件でも FAIL なら exit 1。
+# tkm-harness のタスク管理の機能 (hirai-task・ghp-path.sh・coordinator-load.sh・進みの表の入れ方) の自己検証 smoke (12 case)。1 件でも FAIL なら exit 1。
 # プラグイン全体の確かめは tests/smoke.sh。
 #
 #   ROOT = このスクリプトの 1 つ上 (プラグインのルート。1 つのプラグインなので土台も同じ)
@@ -114,14 +114,14 @@ case_6() {
   pass 6 "ghp-path.sh は bash 3.2 の書き方で構文が通る"
 }
 
-# case 7: コーディネーターの hook（止めない・60 行以内・GitHub も控えも読まない・知らせを受けたときだけ 1 行を足す）
+# case 7: コーディネーターの hook（止めない・100 行以内・知らせを受けたときの 1 行。表の出し方は case 12）
 case_7() {
   local h="$ROOT/hooks/coordinator-load.sh" cfg="$ROOT/hooks/hooks.json" s out rc lines bad=""
   bash -n "$h" || { fail 7 "coordinator-load.sh の構文" "bash -n が落ちた"; return; }
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=d["hooks"]; assert len(e["PostToolUse"])==1 and e["PostToolUse"][0]["matcher"]=="Bash" and "coordinator-load.sh" in e["PostToolUse"][0]["hooks"][0]["command"]' "$cfg" 2>/dev/null \
     || { fail 7 "hooks.json の PostToolUse は Bash の coordinator-load.sh の 1 本" "形が違う"; return; }
   lines="$(wc -l < "$h" | tr -d ' ')"
-  [ "$lines" -le 60 ] || { fail 7 "hook は 60 行以内" "$lines 行"; return; }
+  [ "$lines" -le 100 ] || { fail 7 "hook は 100 行以内" "$lines 行"; return; }
   s="$(mk)"; mkdir -p "$s/hooks" "$s/bin" "$s/repo" "$s/fake"
   cp "$h" "$s/hooks/"
   printf '%s\n' '#!/usr/bin/env bash' 'echo "$@" >> "$FAKE_LOG"' 'pwd -P >> "$FAKE_LOG"' 'exit "${FAKE_RC:-0}"' > "$s/bin/hirai-task"
@@ -435,5 +435,103 @@ case_11() {
   pass 11 "settings の env の TKM_HARNESS_NOTIFY=orca で notify-attention が送り、開始時の 1 行目が notify: orca になる（設定が無ければ off。壊した写しで FAIL）"
 }
 
-for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11}; do "case_$n"; done
+# case 12: 振り出し・完了のあとに進みの表を出す hook (TKS-R5)。偽の hirai-task で is-coordinator と load --cached の答えを決める
+# 要件 → 検査: R5.1 = 10 通りの振り出し・完了で 1 つの JSON に systemMessage と additionalContext の両方（load は --cached だけ・gh を叩かない）
+#   R5.2 = 対象外のコマンド・担当（1）・判定できない（3）・load の失敗/空/時間切れで 1 バイトも出ず exit 0 / R5.3 = 知らせの 1 行は今までどおり・両方に当たれば表だけ
+#   R5.4 = 10,000 字を超える表は末尾が 1 行に切られる・hooks.json は 1 本のまま / 壊した写し 3 つで FAIL
+mk12() { # mk12 <dir> <hook の写し>: 偽の hirai-task と偽の gh を置いた土台を作る
+  mkdir -p "$1/hooks" "$1/bin" "$1/repo" "$1/fake"; cp "$2" "$1/hooks/coordinator-load.sh"
+  cat > "$1/bin/hirai-task" <<'FAKE'
+#!/usr/bin/env bash
+echo "$@" >> "$FAKE_LOG"
+case "$1" in
+  is-coordinator) exit "${FAKE_COORD:-0}" ;;
+  load)
+    case "${FAKE_LOAD:-ok}" in
+      ok) printf '%s\n' '全体 40% (2/5)' '| 担当 | 進捗 |' '| a | 60% |' ;;
+      fail) echo 'エラー' >&2; exit 1 ;;
+      empty) : ;;
+      sleep) exec sleep 9 ;;
+      big) python3 -c 'print("あ" * 12000)' ;;
+    esac ;;
+esac
+exit 0
+FAKE
+  printf '%s\n' '#!/usr/bin/env bash' 'echo GH >> "$FAKE_LOG"; exit 1' > "$1/fake/gh"
+  chmod +x "$1/bin/hirai-task" "$1/fake/gh"
+}
+run12() { # run12 <土台> <is-coordinator の exit> <load の型> <command> [tool_response]  → out・rc・$1/log
+  : > "$1/log"
+  out="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"tool_response":{"stdout":sys.argv[3]},"cwd":sys.argv[2]}))' "$4" "$1/repo" "${5:-ok}" \
+    | env -i PATH="$1/fake:$PATH" HOME="$1" FAKE_COORD="$2" FAKE_LOAD="$3" FAKE_LOG="$1/log" CLAUDE_PLUGIN_ROOT="$1" bash "$1/hooks/coordinator-load.sh" 2>"$1/err")"; rc=$?
+}
+check12() { # check12 <土台> → 壊れている所を文字で返す（空なら全部通った）
+  local s="$1" bad="" c
+  local starts=(
+    "orca orchestration worker-start --agent claude --spec x"
+    "orca worktree set --worktree id:1 --issue 12"
+    "hirai-task assign 12 w1"
+    "hirai-task start 12"
+    "bash scripts/gh-task.sh assign 12 w1"
+    "bash scripts/gh-task.sh start 12 | tail -3"
+    "hirai-task done 12"
+    "cd x && hirai-task after-merge 5"
+    "bash scripts/gh-task.sh done 12; echo ok"
+    "gh pr merge 5 --squash"
+  )
+  for c in "${starts[@]}"; do
+    run12 "$s" 0 ok "$c"
+    { [ "$rc" = 0 ] && printf '%s' "$out" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert set(d)=={"systemMessage","hookSpecificOutput"}, list(d)
+h=d["hookSpecificOutput"]; assert h["hookEventName"]=="PostToolUse" and set(h)=={"hookEventName","additionalContext"}, h
+assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalContext"] and "人の画面にも出ています" in h["additionalContext"] and "人の画面にも出ています" not in d["systemMessage"]
+' 2>/dev/null; } || bad="$bad [$c] で表が両方に出ない(rc=$rc);"
+    grep -qx 'load --cached' "$s/log" && ! grep -q 'GH\|--refresh' "$s/log" || bad="$bad [$c] で load --cached だけを呼んでいない($(tr '\n' ' ' < "$s/log"));"
+  done
+  for c in "hirai-task ready" "hirai-task show 1" "git status" "echo hirai-task start 1" "hirai-task start --help" "hirai-task done -h" "gh pr view 5" "orca worktree set --worktree id:1 --display-name x" "orca worktree list"; do
+    run12 "$s" 0 ok "$c"; { [ -z "$out" ] && [ "$rc" = 0 ] && [ ! -s "$s/log" ]; } || bad="$bad 対象外 [$c] で出たか呼んだ;"
+  done
+  run12 "$s" 1 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ] && ! grep -q '^load' "$s/log"; } || bad="$bad 担当の会話（is-coordinator=1）で出たか load を呼んだ;"
+  run12 "$s" 3 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad 判定できない（3）で出た;"
+  for c in fail empty; do run12 "$s" 0 "$c" "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が $c なのに出たか exit が 0 でない;"; done
+  run12 "$s" 0 sleep "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が時間切れなのに出たか exit が 0 でない;"
+  run12 "$s" 0 big "hirai-task start 1"
+  printf '%s' "$out" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for v in (d["systemMessage"], d["hookSpecificOutput"]["additionalContext"]):
+    assert len(v)<=10000 and v.endswith("（続きは hirai-task load）") and v.count("\n")>=1, (len(v), v[-30:])
+' 2>/dev/null || bad="$bad 10,000 字を超える表が切られない;"
+  run12 "$s" 0 ok "orca orchestration check --wait" '{"messages":[{"id":"msg_ab12"}]}'
+  printf '%s' "$out" | grep -q 'load --changed' && ! printf '%s' "$out" | grep -q systemMessage && ! grep -q '^load' "$s/log" || bad="$bad 知らせの 1 行が今までどおりでない($out);"
+  run12 "$s" 0 ok "hirai-task start 1 && orca orchestration check --wait" '{"messages":[{"id":"msg_ab12"}]}'
+  [ "$(printf '%s' "$out" | wc -l | tr -d ' ')" = 0 ] && printf '%s' "$out" | grep -q '| a | 60% |' && ! printf '%s' "$out" | grep -q 'load --changed' || bad="$bad 両方に当たったとき表だけでない;"
+  printf '%s' "$bad"
+}
+case_12() {
+  local h="$ROOT/hooks/coordinator-load.sh" s d bad v
+  bash -n "$h" || { fail 12 "coordinator-load.sh の構文" "bash -n が落ちた"; return; }
+  s="$(mk)"; mk12 "$s" "$h"
+  bad="$(check12 "$s")"
+  [ -z "$bad" ] || { fail 12 "進みの表の hook" "$bad"; return; }
+  # 壊した写し 3 つ: 振り出しの判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない
+  for v in 1 2 3 4; do
+    d="$(mk)"; mk12 "$d" "$h"
+    case "$v" in
+      1) sed 's/|gh\\s+pr\\s+merge\\b//' "$h" > "$d/hooks/coordinator-load.sh" ;;
+      2) sed 's/emit(cut(head + table), cut(table))/emit(cut(head + table))/' "$h" > "$d/hooks/coordinator-load.sh" ;;
+      3) sed 's/^"\$task" is-coordinator .*$/true/' "$h" > "$d/hooks/coordinator-load.sh" ;;
+      4) sed 's/return text if len(text) <= LIMIT else .*$/return text/' "$h" > "$d/hooks/coordinator-load.sh" ;;
+    esac
+    cmp -s "$h" "$d/hooks/coordinator-load.sh" && { fail 12 "壊した写し $v を作れた" "sed が当たらず元と同じ"; return; }
+    [ -n "$(check12 "$d")" ] || { fail 12 "壊した写し $v で検査が FAIL する" "壊したのに通った"; return; }
+  done
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["hooks"]; assert len(d["PostToolUse"])==1 and d["PostToolUse"][0]["hooks"][0]["timeout"]==10' "$ROOT/hooks/hooks.json" 2>/dev/null \
+    || { fail 12 "hooks.json の PostToolUse は 1 本・timeout 10 秒（load の 8 秒より長い）" "形が違う"; return; }
+  pass 12 "振り出し・完了の 10 通りで表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外・担当・判定不能・load 失敗/空/時間切れでは出ず、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 4 つで FAIL）"
+}
+
+for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11 12}; do "case_$n"; done
 [ "$FAILED" -eq 0 ] && echo "ALL PASS" || { echo "FAILED"; exit 1; }
