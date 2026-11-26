@@ -16,7 +16,7 @@ GitHub Project のタスク管理の機能（`hirai-task`・`/tkm-harness:board`
 fork がそのまま自分の owner で配れるようにするためです（`tests/smoke.sh` case 9 が見ます）。
 
 利用者が `/plugin marketplace update tkm-harness` → 端末で `claude plugin update tkm-harness@tkm-harness --scope <入れた範囲>`（画面なら `/plugin` → Installed → Update now） を実行すると受け取るのは
-**その時点の `main`** です。旧 `hirai-lite`（`hirai-method-lite` リポ）は凍結し、新しい版を出しません。
+**その時点の `main`** です。旧 `hirai-lite`（`hirai-method-lite` リポ）は触らず、新しい版を出しません（テックリード 2026-11-26 10:4x「tkm-ハーネスのみで良いです。」）。
 
 タグは版ごとに `tkm-harness--v<版>` で付けます。
 

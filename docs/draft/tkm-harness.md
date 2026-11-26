@@ -24,9 +24,9 @@ merged_into:
 
 **目的**: プラグインを 1 行で入れられ、2 つの版のずれ（hirai-task の探し方・依存の版）が無くなる。fork してそのまま使える
 
-**位置**: ハーネスの改善。tkm-harness・hirai-method-lite・heyapro-app の 3 本の PR
+**位置**: ハーネスの改善。tkm-harness と heyapro-app の 2 本の PR（hirai-method-lite は触らない）
 
-**承認すると**: 入れ方が `tkm-harness@tkm-harness`、command が `/tkm-harness:…` になる。hirai-method-lite は凍結し、入れている別のプロジェクトは何も変わらない。戻せる
+**承認すると**: 入れ方が `tkm-harness@tkm-harness`、command が `/tkm-harness:…` になる。hirai-method-lite は触らず、入れている別のプロジェクトは何も変わらない。戻せる
 
 **しないと**:
 - 足す部品は土台の版に依存し（`plugins/hirai-project-method/.claude-plugin/plugin.json` の `dependencies`）、hirai-task の探し方が 3 か所に分かれている（`scripts/tasks-path.sh:401`・`scripts/update-check.sh:62`・heyapro-app の `scripts/gh-task.sh:97`）
@@ -69,7 +69,7 @@ merged_into:
 - TKM-R5.2 更新の知らせが読む最新の版の URL は、`~/.claude/plugins/known_marketplaces.json` の配布元 tkm-harness の `source.repo`（github の形）から作る。取れなければ通信しない（fork を入れた人は fork の版を見る）
 
 ### 要件 TKM-R6: hirai-lite を入れている別のプロジェクトは何も変わらない
-- TKM-R6.1 hirai-method-lite（配布元 hirai-lite）は中身を凍結する。README の先頭に tkm-harness へ移る案内を足すだけ。版は上げない
+- TKM-R6.1 hirai-method-lite（配布元 hirai-lite）は触らない（テックリード 2026-11-26 10:4x「tkm-ハーネスのみで良いです。」）。PR を出さず、README の案内も足さない。新しい版は出さない
 - TKM-R6.2 hirai-method-lite の配布の一覧の hirai-lite-v2 の行は**残す**（2026-11-26 の実測: 外すと、入れたままの 2.x は `Plugin "hirai-lite-v2" not found in marketplace` で読み込みに失敗し、hook・command が消える。公式 https://code.claude.com/docs/en/plugins/host-marketplace.md#uninstall-removed-plugins-from-users-machines も同じ）。外すのは、入れている所を tkm-harness か hirai-lite 3.x へ移したあと（要判断・テックリード）
 
 ### 要件 TKM-R7: 責務分離を README と heyapro-app の docs/harness に書く
@@ -160,11 +160,9 @@ fork（例 classlab-inc/tkm-harness）へ替えるときは `extraKnownMarketpla
   3. `claude plugin uninstall hirai-project-method@hirai-lite --scope project --keep-data`
   4. `claude plugin uninstall hirai-lite@hirai-lite --scope project --keep-data`
 
-### 4.5 hirai-method-lite 側（凍結と案内）
+### 4.5 hirai-method-lite 側
 
-- README の先頭に「tkm-harness へ移りました。移し方は 4.4 の 4 行（範囲は入れた範囲）」の節を足す
-- 配布の一覧から `hirai-lite-v2` の行を外す
-- 中身（command・hook・script）は変えない。版も上げない（入れている 44 か所に更新が届かない）
+触らない（テックリード 2026-11-26 10:4x「tkm-ハーネスのみで良いです。」）。配布の一覧の hirai-lite-v2 の行も残す（外すと、2.x を入れたままの所〔この機械では movie の 2 か所〕が「Plugin not found」で読み込めなくなる。レビューで使い捨ての HOME に当てて確かめた）。v2 の退役（TKM-R6.2）は、tkm-harness の配布の一覧に v2 の行が無いことで満たす
 
 ## 5. 要判断
 
@@ -172,7 +170,7 @@ fork（例 classlab-inc/tkm-harness）へ替えるときは `extraKnownMarketpla
 |---|---|---|
 | 1 | 版の番号 | **4.0.0**（テックリード「版任せます」→ 推しの 4.0.0。hirai-lite 3.x の続きと分かり、`/update` の移し方の手順が版の大小で読める） |
 | 2 | 配布元とリポの名前 | **tkm-harness**（新しいリポ thirai-classlab/tkm-harness。プラグインの名前も tkm-harness） |
-| 3 | 別のプロジェクトの移し方 | **凍結**（hirai-method-lite は README の案内だけ。44 か所は触らない） |
+| 3 | 別のプロジェクトの移し方 | **hirai-method-lite は触らない**（テックリード 2026-11-26 10:4x「tkm-ハーネスのみで良いです。」。44 か所は今のまま。移るときは README の「hirai-lite から移る」の 4 行） |
 
 ## 6. 進め方
 
