@@ -394,7 +394,7 @@ case_10() {
   [ -z "$bad" ] || { fail 10 "hirai-notify の note・comment・親の判定" "$bad"; return; }
   d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c"
   for m in a b c; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
-  sed 's|^  \[ "\$role" != "coordinator" \] \|\| exit 0|  true|' "$ROOT/bin/hirai-notify" > "$d/a/bin/hirai-notify"
+  sed 's|^  if \[ "\$role" = "coordinator" \]; then|  if false; then|' "$ROOT/bin/hirai-notify" > "$d/a/bin/hirai-notify"
   sed 's|^  worktree_comment "完了報告済み"|  true|' "$ROOT/bin/hirai-notify" > "$d/b/bin/hirai-notify"
   sed 's|^NOTE_MAX_CHARS=60|NOTE_MAX_CHARS=600|' "$ROOT/bin/hirai-notify" > "$d/c/bin/hirai-notify"
   chmod +x "$d"/*/bin/hirai-notify
