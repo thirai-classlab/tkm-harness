@@ -6129,11 +6129,18 @@ def _apply_overlay(view: dict, fetched_epoch: float) -> None:
                 i['state'] = e['state']
 
 
+def _orca_assignments(progress) -> dict:
+    """Orca の作業ツリー（issue を紐づけたもの）の表示名 {番号: {owner, order}}。引けなければ空（控えだけで表を出す）。"""
+    return progress.worktree_assign(REPO)
+
+
 def _model_of(load, snap: dict, how: str, *, prs: dict | None, network: bool):
     """板（snap）から表の材料を組む。start・done の変更を重ね、PR と Assignees を引く（network のとき）。"""
     view = board_view(snap, how)
     _apply_overlay(view, snap['fetched_epoch'])
-    assign = _load_assignments()
+    progress = _load_progress_module()
+    known = {i['number'] for i in view['issues'] if i.get('kind') != 'wave'}
+    assign = progress.merge_assign(_orca_assignments(progress), _load_assignments(), known)  # 担当は Orca・順番は控え（TKS-R6.1）
     if network:
         prs = fetch_load_prs(_assignee_candidates(view['issues'], assign))
         settings = _load_settings(prs, network=True)

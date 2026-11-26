@@ -43,6 +43,7 @@ import sys
 # 以降の import（自己検査・bin/hirai-task の読み込み）にも効かせるため import の直後に置く。
 sys.dont_write_bytecode = True
 import tempfile
+import time
 import urllib.parse
 from contextlib import redirect_stdout
 from importlib import machinery, util
@@ -1340,6 +1341,8 @@ def _load_checks(t, tmp_dir: str) -> None:
     modes: dict[str, str] = {}
     gh_task._mode_setting = lambda key, home=True: modes.get(key, '')
     gh_task.is_coordinator = lambda: False
+    real_orca_assignments = gh_task._orca_assignments
+    gh_task._orca_assignments = lambda progress: {}  # このマシンの Orca を読まない（TKS-R6 の検査だけが偽の orca を PATH に置いて戻す）
     load = gh_task._load_module()
 
     def write_assign(rows) -> None:
@@ -2056,6 +2059,122 @@ def _load_checks(t, tmp_dir: str) -> None:
             assert 20 not in stage_map(model_of(rows=rows, prs=prs)), '割り振りを外しても feature が残る'
         t('TKS-R4.2 load: 控えに載った feature が担当の行に出て、段は PR の実物で決まり、全体の数は task だけで数える', _assign_feature_in_load)
 
+        # ── TKS-R6: 担当を Orca の作業ツリーから取り、feature の行と進捗を出す ──
+        orca_dir = tempfile.mkdtemp(dir=tmp_dir)
+        orca_json_file = os.path.join(orca_dir, 'trees.json')
+        with open(os.path.join(orca_dir, 'orca'), 'w', encoding='utf-8') as f:
+            f.write('#!/bin/sh\ncase "${FAKE_ORCA_MODE:-ok}" in\n  exit1) exit 1 ;;\n  badjson) echo not-json ;;\n  sleep) sleep 30 ;;\n'
+                    '  *) cat "$FAKE_ORCA_JSON" ;;\nesac\n')
+        os.chmod(os.path.join(orca_dir, 'orca'), 0o755)
+
+        def tree(name, issue, *, path=None, project='github:example-org/example-repo', main=False, archived=False) -> dict:
+            return {'path': path or f'/w/{name}', 'displayName': name, 'linkedIssue': issue, 'isMainWorktree': main,
+                    'isArchived': archived, 'projectId': project, 'branch': 'x'}
+
+        def with_orca(trees, mode='ok', *, present=True):
+            """load が引く orca を偽物にして model_of する（終わると PATH・環境変数・読み口を戻す）。"""
+            class Ctx:
+                def __enter__(self_):
+                    with open(orca_json_file, 'w', encoding='utf-8') as f:
+                        json.dump({'ok': True, 'result': {'worktrees': trees}}, f)
+                    self_.saved = {k: os.environ.get(k) for k in ('PATH', 'FAKE_ORCA_MODE', 'FAKE_ORCA_JSON')}
+                    os.environ.update({'PATH': (orca_dir + ':' if present else '') + '/usr/bin:/bin',  # 本物の orca の場所は入れない
+                                       'FAKE_ORCA_MODE': mode, 'FAKE_ORCA_JSON': orca_json_file})
+                    self_.prev = gh_task._orca_assignments
+                    gh_task._orca_assignments = real_orca_assignments
+
+                def __exit__(self_, *exc):
+                    gh_task._orca_assignments = self_.prev
+                    for k, v in self_.saved.items():
+                        if v is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = v
+            return Ctx()
+
+        def owners_of(model: dict) -> dict:
+            return {t_['number']: p['owner'] for p in model['people'] for t_ in p['tasks']}
+
+        def _orca_owners() -> None:
+            baseline = owners_of(model_of())
+            trees = [tree('セッション甲', 40), tree('セッション乙', '41'), tree('単独', {'number': 49}),
+                     tree('別リポ', 43, project='github:other/repo'), tree('終わった', 44, archived=True),
+                     tree('本体', 45, main=True), tree('番号なし', None), tree('wave', 1)]
+            with with_orca(trees):
+                model = model_of()
+            owners = owners_of(model)
+            assert owners[40] == 'セッション甲' and owners[41] == 'セッション乙', f'担当が Orca の表示名にならない: {owners}'
+            assert owners[49] == '単独', f'控えに無い番号（Orca だけ）が出ない: {owners}'
+            assert owners[42] == baseline[42] == '甲', f'Orca に紐づきの無い番号の担当が控えのまま残らない: {owners}'
+            assert owners[43] == baseline[43] and owners[44] == baseline[44] and owners[45] == baseline[45], \
+                f'別のリポ・archived・main の作業ツリーを読んだ: {owners}'
+            assert 1 not in owners and 'wave' not in owners.values(), f'wave に紐づく作業ツリーが行になった: {owners}'
+            mine = [p for p in model['people'] if p['owner'] == 'セッション甲'][0]
+            assert [t_['number'] for t_ in mine['tasks']] == [40], mine
+            order = {p['owner']: [t_['number'] for t_ in p['tasks']] for p in model['people']}
+            assert order['セッション乙'] == [41], order
+        t('TKS-R6.1 load: 担当は Orca の作業ツリーの表示名・控えだけの番号は残り・別のリポ/archived/main/番号なし/wave は読まない', _orca_owners)
+
+        def _orca_order_from_saved() -> None:
+            rows = _load_rows()
+            # 控えは 甲: 40(順 1)・41(順 2)・42(順 3)。40 と 41 を Orca が同じ名前で取る
+            with with_orca([tree('甲の作業ツリー', 41), tree('甲の作業ツリー2', 40)]):
+                model = model_of(rows=rows)
+            mine = [p for p in model['people'] if p['owner'] == '甲の作業ツリー2']
+            assert mine and [t_['number'] for t_ in mine[0]['tasks']] == [40], model['people']
+            first = [p for p in model['people'] if p['owner'] == '甲の作業ツリー'][0]
+            assert [t_['number'] for t_ in first['tasks']] == [41], first
+            people = [p['owner'] for p in model['people']]
+            assert people.index('甲の作業ツリー2') < people.index('甲の作業ツリー'), f'順番が控え（40 が 1・41 が 2）でない: {people}'
+        t('TKS-R6.1 load: 同じ番号が Orca と控えの両方にあれば、担当は Orca・順番は控え', _orca_order_from_saved)
+
+        def _orca_fallback_to_saved() -> None:
+            baseline = owners_of(model_of())
+            trees = [tree('セッション甲', 40)]
+            for label, mode, present in (('orca が無い', 'ok', False), ('exit 1', 'exit1', True), ('壊れた JSON', 'badjson', True)):
+                with with_orca(trees, mode, present=present):
+                    assert owners_of(model_of()) == baseline, f'{label}のとき控えだけの表にならない'
+            started = time.monotonic()
+            with with_orca(trees, 'sleep'):
+                owners = owners_of(model_of())
+            spent = time.monotonic() - started
+            assert owners == baseline and spent < 8, f'時間切れで load が止まった/控えに落ちない（{spent:.1f} 秒）'
+        t('TKS-R6.1 load: orca が無い・exit 1・壊れた JSON・眠る（3 秒で切る）ときは控えだけの表で、load は止まらない', _orca_fallback_to_saved)
+
+        def _feature_rows_from_orca() -> None:
+            base = model_of()
+            base_total = (base['total'], base['done'], base['held'], [s['total'] for s in base['sections']])
+            expected = {'承認待ち': 0, '着手可': 0, '進行中': 20, 'レビュー中': 60, '完了': 100}
+            for status, pct in expected.items():
+                rows = _load_rows()
+                rows[3]['status'] = status  # feature #20
+                with with_orca([tree('F の担当', 20)]):
+                    model = model_of(rows=rows)
+                if pct == 100:  # 完了の feature だけが担当の行なら、行ごと畳まれる（古い担当の行を出さない）
+                    assert 20 not in stage_map(model), f'完了の feature の行が残った: {stage_map(model).get(20)}'
+                    continue
+                mine = [p for p in model['people'] if p['owner'] == 'F の担当']
+                assert mine and mine[0]['tasks'][0]['number'] == 20, f'{status}: feature の行が出ない: {model["people"]}'
+                row = mine[0]['tasks'][0]
+                assert row['pct'] == pct and status in row['note'], f'{status}: 段が違う: {row}'
+                assert row['section'] == '営業の登録', f'セクションが親の wave の名前でない: {row["section"]!r}'
+                assert (model['total'], model['done'], model['held'], [s['total'] for s in model['sections']]) == base_total, \
+                    f'{status}: feature を足して全体の数がずれた'
+            rows = _load_rows()
+            rows[3]['status'], rows[3]['state'] = '完了', 'CLOSED'
+            with with_orca([tree('F の担当', 20), tree('F の続き', 40)]):
+                model = model_of(rows=rows)
+            assert stage_map(model)[40][0] == 0 and 20 not in stage_map(model), '閉じた feature の行の扱いが違う'
+            prs = _load_default_prs()
+            prs['open'].append(_load_pr(171, [20], draft=True))
+            rows = _load_rows()
+            rows[3]['status'] = '進行中'
+            with with_orca([tree('F の担当', 20)]):
+                model = model_of(rows=rows, prs=prs)
+            row = [p for p in model['people'] if p['owner'] == 'F の担当'][0]['tasks'][0]
+            assert row['pct'] == 50 and row['pr'] == 171, f'feature を Closes する PR があるのに Status の段になった: {row}'
+        t('TKS-R6.2・R6.3 load: Orca の linkedIssue が feature なら行が出て、PR があれば PR の段・無ければ Status の段（5 通り）・セクションは親の wave・全体の数は task だけ', _feature_rows_from_orca)
+
         def _ensure_edges() -> None:
             def run(assignees, *, user='me', prs=None, post_add=None, prs_fail=False, fail_user=False):
                 state = {'a': [{'login': x} for x in assignees]}
@@ -2378,6 +2497,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             setattr(gh_task, n, v)
         gh_task.run_gh, gh_task.PROJECT_NUMBER_OVERRIDE, gh_task._mode_setting = orig_run, orig_override, orig_mode
         gh_task.is_coordinator, gh_task.ensure_assignee, gh_task._local_state_dir = entry_coord, entry_ensure, orig_local
+        gh_task._orca_assignments = real_orca_assignments
 
 
 def _card_field_defs(*, with_card_fields: bool = True) -> list[dict]:

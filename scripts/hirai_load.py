@@ -29,6 +29,8 @@ NO_OWNER_STATUSES = ('進行中', 'レビュー中')
 HELD_STATUS = '保留'
 CLOSED_SHOWN = 3  # 担当の行に出す、閉じた task の数（割り振りの順番の前のものから畳む）
 DONE_STATUS = '完了'
+# feature の段（PR が無いとき）: 承認待ち・着手可 → 0、進行中 → 20、レビュー中 → 60、完了 → 100
+FEATURE_STATUS_PCT = {'承認待ち': 0, '着手可': 0, '進行中': 20, 'レビュー中': 60, DONE_STATUS: 100}
 CI_GREEN = ('SUCCESS',)
 CI_RED = ('FAILURE', 'ERROR')
 
@@ -76,6 +78,8 @@ def stage_of(number: int, ctx: dict) -> tuple[int, str, str]:
         nums = '・'.join(f'#{n}' for n in ctx['merged_of'][number])
         return 90, f'PR {nums} merge 済み（issue が開いている）', ''
     status = task.get('status') or ''
+    if task.get('kind') == 'feature':  # feature は PR が無ければ Status で決める（TKS-R6.2）
+        return FEATURE_STATUS_PCT.get(status, 0), (f'Status {status}' if status else 'Status 未設定'), ''
     if status == DONE_STATUS:
         return 90, 'Status 完了（issue が開いている）', ''
     if status in NO_OWNER_STATUSES:
