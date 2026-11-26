@@ -12,7 +12,7 @@
 # プラグインの bin は無い）。
 
 # --- GHP (GitHub Project) の形 -------------------------------------------------
-# どの形で動くか (台帳か GitHub Project か) は、土台の `.claude/mode.yml` の `tasks:` が決める
+# どの形で動くか (台帳か GitHub Project か) は、土台の `.claude/settings.json` の `env`（`TKM_HARNESS_TASKS`。4.x の間は mode.yml の `tasks:` も読む） が決める
 # (土台の harness_tasks_form)。ここは自動では見分けない。この関数群が控えに書く form
 # ("ghp" / "none" / "ambiguous") は、リポに紐づいた Project が項目「種別」を持つかの実測で、
 # `hirai-task line` が件数を出してよいかの判定にだけ使う。紐づく Project が 2 件以上あるときは、

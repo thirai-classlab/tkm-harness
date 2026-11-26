@@ -9,7 +9,7 @@
 # context を注ぐだけの reminder は対象外 (条 5 に明記してある)。
 #
 #   発火条件: 進め方 (mode) が loop のときだけ。normal では 1 バイトも出さず exit 0
-#   進め方の解決: scripts/tasks-path.sh の harness_mode (env HC_MODE > プロジェクト > ホーム > normal)
+#   進め方の解決: scripts/tasks-path.sh の harness_mode (HC_MODE > env TKM_HARNESS_MODE > settings の file の env > mode.yml [予備] > normal)
 #                 ここで独自に解決しない (セッション冒頭・画面下部と食い違わせない)
 #   無効化: HC_LOOP_REMINDER=off
 #

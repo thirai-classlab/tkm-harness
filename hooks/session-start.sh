@@ -33,7 +33,7 @@ if command -v harness_root >/dev/null 2>&1; then
   root="$(harness_root "$root")"
 fi
 
-# --- mode: 解決順は harness_mode (env HC_MODE > プロジェクト > ホーム > normal) ---
+# --- mode: 解決順は harness_mode (HC_MODE > env TKM_HARNESS_MODE > settings の file の env > mode.yml [予備] > normal) ---
 # 画面下部 (scripts/statusline.sh) と /config も同じ関数を通す。ここで独自に解決しない。
 # 表示は「正式名（短い解説）」(normal（確認あり）/ loop（自動で進む）)。未知の値はそのまま出す。
 if command -v harness_mode >/dev/null 2>&1; then
@@ -48,7 +48,7 @@ case "$mode" in
   *)      mode_line="$mode" ;;
 esac
 
-# --- タスク管理の形: .claude/mode.yml の tasks: が決める (自動では見分けない) ---
+# --- タスク管理の形: .claude/settings.json の env TKM_HARNESS_TASKS が決める (4.x の間は mode.yml の tasks: も読む。自動では見分けない) ---
 # ledger (既定) は台帳の件数 (1.x と同じ。通信しない)。github-project のときだけ、
 # hirai-task を、プラグインの絶対 path で呼ぶ (session-start は GitHub の関数を直接呼ばない)。
 tasks_form="ledger"
@@ -139,10 +139,10 @@ if command -v harness_worktree >/dev/null 2>&1; then
   cfg_worktree="$(harness_worktree "$root" 2>/dev/null || true)"
   cfg_notify="$(harness_notify "$root" 2>/dev/null || true)"
 fi
-# mode.yml にだけ在る項目があれば、settings.json の env への移し方を 1 行で言う (HM-R2.4)
+# mode.yml にだけ在る項目があれば、settings の env への移し方を 1 行で言う (HM-R2.4・TKS-R3.2。mode は settings.local.json へ・ほかは settings.json へ)
 migrate_line=""
 if command -v harness_setting_from_yml_only >/dev/null 2>&1 && [ -n "$(harness_setting_from_yml_only "$root" 2>/dev/null || true)" ]; then
-  migrate_line="[harness] mode.yml の tasks:・worktree:・notify: は settings.json の env（TKM_HARNESS_TASKS など）へ移せます（/tkm-harness:config の項目 8）"
+  migrate_line="[harness] mode.yml にだけある設定（$(harness_setting_from_yml_only "$root" 2>/dev/null | sed 's/ /・/g')）は settings の env（TKM_HARNESS_MODE など）へ移せます。mode は .claude/settings.local.json・ほかは .claude/settings.json（/tkm-harness:update）"
 fi
 settings_line="tkm-harness ${plugin_version:+v${plugin_version}・}tasks: ${tasks_form}・worktree: ${cfg_worktree:-off}・notify: ${cfg_notify:-off}"
 

@@ -11,7 +11,7 @@ disable-model-invocation: true
 **表記のきまり。** 設定の名前と値は **`<正式名>（<短い解説>）`** の形で出す (正式名だけだと意味が伝わらず、解説だけだと設定ファイルの中身と結び付かない)。`mode（進め方）` / `normal（確認あり）` / `loop（自動で進む）` / `ultracode（深く考えて自動で手分けする。利用量が増える）` / `statusLine（画面下部の情報表示）`。同じ 1 通のなかで 2 回目からは正式名だけでよい。
 
 ## 読み取り (ここでは 1 バイトも書き換えない)
-置き場所は人によって 2 通りある (このプロジェクトの `.claude/` と全プロジェクト共通の `~/.claude/`)。**解決を自分で組み立てず**、セッション冒頭・画面下部と同じ共通ライブラリに任せる。
+設定は `.claude/settings.json` の `env` に集まる（mode だけは各自の `.claude/settings.local.json`。効く順は README「設定の置き場と効く順」）。**解決を自分で組み立てず**、セッション冒頭・画面下部と同じ共通ライブラリに任せる。
 ```bash
 P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
@@ -26,6 +26,7 @@ else
   echo "設定一式の置き場: $D / やること一覧: $(harness_tasks_file "$PWD" || echo '(まだありません)')"
 fi
 echo "tasks: $tform / worktree: $(harness_worktree "$PWD") / notify: $(harness_notify "$PWD")"
+echo "project: $(harness_setting project "$PWD" | grep . || echo '自動で探す') / repo: $(harness_setting repo "$PWD" | grep . || echo 'git remote')"
 grep -q '"ultracode"[[:space:]]*:[[:space:]]*true' "$D/settings.json" 2>/dev/null && echo "ultracode: 有効" || echo "ultracode: 無効"
 grep -q '"statusLine"' "$D/settings.json" 2>/dev/null && echo "statusLine（画面下部の情報表示）: 有効" || echo "statusLine（画面下部の情報表示）: 無効"
 for f in CLAUDE.md "$HOME/.claude/CLAUDE.md" "$R"/*.md; do
@@ -49,9 +50,9 @@ print("" if not m else ("on" if m.get("autoUpdate") else "off"))' "$f" 2>/dev/nu
   [ -n "$v" ] && { auf="$f"; [ "$v" = on ] && au="有効"; break; }
 done
 echo "プラグイン本体の自動更新: $au${auf:+ / 設定ファイル: $auf}"
-# 7-b 更新後の入れ替え（ハーネス側）。既定は無効。mode（進め方）と同じ mode.yml に載る。
+# 7-b 更新後の入れ替え（ハーネス側）。既定は無効。.claude/settings.json の env TKM_HARNESS_AUTO_SYNC が決める。
 as="$(harness_auto_sync "$PWD")"; case "$as" in on|true|yes) as="有効" ;; *) as="無効" ;; esac
-echo "更新後の入れ替え: $as / 設定ファイル: $(harness_mode_write_file "$PWD")"
+echo "更新後の入れ替え: $as / 設定ファイル: $(harness_top "$PWD")/.claude/settings.json"
 ```
 
 ## 引数なし — 一覧を出す
@@ -71,6 +72,7 @@ echo "更新後の入れ替え: $as / 設定ファイル: $(harness_mode_write_f
                        どちらも既定は無効です（更新は動きの変更なので、黙って変えません）
 8. 形と Orca           やること管理 → 台帳（tasks: ledger）
                        Orca の worktree → 見張らない（worktree: off）／ 知らせ → 送らない（notify: off）
+                       GitHub Project → 自動で探す（project）／ リポ → git remote（repo）
 
 番号か項目名を言ってもらえれば変更します（例:「1 を loop に」）。
 ```
@@ -79,25 +81,24 @@ echo "更新後の入れ替え: $as / 設定ファイル: $(harness_mode_write_f
 - 3 は警告を超えていたら 1 行足す: `警告線を超えています。ルールを 1 件減らすことを勧めます`
 - 4 は置き場が `~/.claude` なら `全プロジェクト共通（~/.claude/）`。台帳が無ければ `やること一覧 → まだありません`。`tasks: github-project` なら 2 行目を `やること管理 → GitHub Project（hirai-task: あり／なし）` に差し替える
 - 6 は一度も調べていなければ `有効（まだ一度も確認していません）`
+- 8 の project は番号（`TKM_HARNESS_PROJECT`）が入っていればその番号、無ければ `自動で探す`。repo は `<owner>/<name>`（`TKM_HARNESS_REPO`）が入っていればそれ、無ければ `git remote`
 - 8 は `tasks` が `github-project` なら `GitHub Project（タスク管理の機能）`、`worktree` が `warn` なら `Orca の worktree でない会話に警告を出す`、`block` なら `Orca の worktree でない会話の、Edit・Write・NotebookEdit と git commit を止める（MCP の書き込みの道具と Bash でのファイルの書き換えは止めない）`、`notify` が `orca` なら `Orca のコーディネーターへ知らせる`
 - 7 はどちらか一方でも有効なら、その行を `有効` に差し替えて 2 行目を `プラグイン本体が新しくなると自動で入れ替わります` にする
 
 ## 変更する
-変えられるのは 1・2・5・6・7・8 の 6 つ。**3 と 4 は表示のみ**（3 は `/tkm-harness:add-rule`、4 は `/tkm-harness:init` の担当）。どれも「これから変わるファイル」を 1 行見せてから実行し、終わったら結果を 1 行で報告する。
+変えられるのは 1・2・5・6・7・8 の 6 つ（8 は tasks・worktree・notify・project・repo）。**3 と 4 は表示のみ**（3 は `/tkm-harness:add-rule`、4 は `/tkm-harness:init` の担当）。どれも「これから変わるファイル」を 1 行見せてから実行し、終わったら結果を 1 行で報告する。
 
 ### 1. mode（進め方）
-`/tkm-harness:config mode loop` のように引数で直接指定してもよい（`進め方 確認あり` / `進め方 自動` のような日本語でも受け付ける）。書き込み先は**すでに在る側**で、両方に無いときだけこのプロジェクト側に作る（共通側に置いている人のプロジェクトへ新しく作ると、共通側を黙って覆い隠す）。
+`/tkm-harness:config mode loop` のように引数で直接指定してもよい（`進め方 確認あり` / `進め方 自動` のような日本語でも受け付ける）。mode は**各自の好み**なので、リポに入る `settings.json` には書かず、Claude Code が最初に読む **`.claude/settings.local.json`**（git に入らない）の `env.TKM_HARNESS_MODE` に 1 つだけ書く。git の worktree の会話からは**本体の checkout の** `.claude/settings.local.json` に書く（Claude Code は本体の settings.local.json も読むため、本体と全部の作業ツリーに効く）。`mode.yml` の `mode:` の行は消さない（移行用の予備。チームの mode.yml を消すと settings.local.json を持たない人が normal に戻るため）。
 ```bash
 P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
-f="$(harness_mode_write_file "$PWD")"; echo "変えるファイル: $f"
-harness_yml_set "$f" mode normal   # 自動で進めるときは loop
-grep -c '^mode: \(normal\|loop\)$' "$f"
+f="$(harness_settings_set mode normal "$PWD")" && echo "変えたファイル: $f"   # 自動で進めるときは loop
+harness_mode "$PWD" | cat   # HC_MODE を打ったシェルでは、その値が先に出る
+y="$(harness_yml_value "$PWD" mode)"; [ -z "$y" ] || [ "$y" = "$(harness_mode "$PWD")" ] || echo "mode.yml の mode: は $y のまま（settings が先に効きます）"
 ```
 
-`harness_yml_set` は **その 1 行だけ**を書き換える（`mode.yml` には 7 の `auto_sync` も載るので、丸ごと書き直すともう片方が消える）。
-
-報告書式: `normal（確認あり）にしました → <パス>。重要な分かれ道でひとこと確認してから進みます` ／ `loop（自動で進む）にしました → <パス>。確認を求めず最後まで進みます。止めたいときは「stop」`。書き込み先が `~/.claude/mode.yml` だったときだけ 1 行足す: `この設定はすべてのプロジェクトに効きます`
+報告書式: `normal（確認あり）にしました → <パス>。重要な分かれ道でひとこと確認してから進みます` ／ `loop（自動で進む）にしました → <パス>。確認を求めず最後まで進みます。止めたいときは「stop」`。書き込み先が `~/.claude/` の下だったときだけ 1 行足す: `この設定はすべてのプロジェクトに効きます`（mode はふつうホームに書かないので出ない）。worktree の会話から本体の checkout の settings.local.json に書いたときは 1 行足す: `本体と全部の作業ツリーに効きます`。`mode.yml` の値が違って残っているときは、上の最後の行を 1 行で知らせる。保存すると同じ会話の次の Bash・hook から新しい値が効く（開き直しは要らない）。
 
 **`loop`（自動で進む）の間の振る舞い。** 作り方の選び方・branch 名・commit の件名・ビルドが通るまでの試行錯誤は聞かずに決める。止まるのは 3 つだけ（「stop」と言われた / やることが終わった / 続けられないエラー）。ただし新しい設計を足すとき・決めた内容から外れるとき・元に戻せない操作（`main` への push / PR の取り込み / 本番反映 / DB の作り替え / 秘密情報）は自動でも必ず確認を取る。作業を任せた相手を待つ間は別の作業を進め、会話の使用量が 50% に達したら `/tkm-harness:state save` を実行する。
 
@@ -158,18 +159,17 @@ python3 -m json.tool "$f" >/dev/null && echo "OK $f"
 ```bash
 P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
-f="$(harness_mode_write_file "$PWD")"; echo "変えるファイル: $f"
-harness_yml_set "$f" auto_sync on   # 止めるときは off
-harness_auto_sync "$PWD"
+f="$(harness_settings_set auto_sync on "$PWD")" && echo "変えたファイル: $f"   # 止めるときは off
+harness_auto_sync "$PWD" | cat   # HC_AUTO_SYNC を打ったシェルでは、その値が先に出る
 ```
 
-報告書式: `更新後の入れ替えを有効にしました → <パス>。プラグインが新しくなった回に、画面下部などのスクリプトを自動で最新にします（元の内容は .bak に残します）` ／ 無効にしたときは `更新後の入れ替えを無効にしました → <パス>。これまでどおり /tkm-harness:update で手動更新してください`。書き込み先が `~/.claude/mode.yml` だったときだけ 1 行足す: `この設定はすべてのプロジェクトに効きます`
+報告書式: `更新後の入れ替えを有効にしました → <パス>。プラグインが新しくなった回に、画面下部などのスクリプトを自動で最新にします（元の内容は .bak に残します）` ／ 無効にしたときは `更新後の入れ替えを無効にしました → <パス>。これまでどおり /tkm-harness:update で手動更新してください`。書き込み先は常にプロジェクトの `.claude/settings.json`（`env.TKM_HARNESS_AUTO_SYNC`）。保存すると同じ会話の次の Bash・hook から効く。
 
-### 8. 形と Orca（tasks / worktree / notify）
-3 つとも**プロジェクトの `.claude/settings.json` の `env`** の 1 つの名前で決まる: `TKM_HARNESS_TASKS`・`TKM_HARNESS_WORKTREE`・`TKM_HARNESS_NOTIFY`（プラグインがプロジェクトの settings から読めるのは `env` だけ。https://code.claude.com/docs/en/settings-reference.md#env）。`harness_settings_set <項目> <値>` が**その 1 つのキーだけ**を書く（python3 で JSON を読み、ほかのキーは触らず、indent 2・ensure_ascii False で書き戻す。JSON として読めない file は上書きせず rc 1）。書き込み先は**常にプロジェクト（git の toplevel）の `.claude/settings.json`**。ホームの `~/.claude/settings.json` には書かない（他のリポにも効いてしまうため）。書いたら、同じ項目の行がプロジェクトの `.claude/mode.yml` にあれば同じ関数が直す（`worktree` は行を消し、`tasks`・`notify` は値をそろえて行を残す。`hirai-task` の `is_coordinator` が今も mode.yml だけを読むため。`local` のときは触らない。4.x の間だけ mode.yml も読むが、settings が先）。**自分だけ変えたいときは `.claude/settings.local.json`（git に入らない）に書ける**: `harness_settings_set <項目> <値> "$PWD" local`。読む順は 環境変数 `HC_*`（一時の上書き）→ `TKM_HARNESS_*`（Claude Code の中では settings.local.json > settings.json が重なって届く）→ Claude Code の外では settings の file を直に読む → mode.yml → 既定。値は `tasks`: `ledger`（既定）／ `github-project`、`worktree`: `off`（既定）／ `warn` ／ `block`、`notify`: `off`（既定）／ `orca`。
+### 8. 形と Orca（tasks / worktree / notify）と GitHub Project の番号・リポ（project / repo）
+5 つとも**プロジェクトの `.claude/settings.json` の `env`** の 1 つの名前で決まる: `TKM_HARNESS_TASKS`・`TKM_HARNESS_WORKTREE`・`TKM_HARNESS_NOTIFY`・`TKM_HARNESS_PROJECT`（GitHub Project の番号。正の整数。無ければ `hirai-task` がリポに紐づいた Project を探す）・`TKM_HARNESS_REPO`（`<owner>/<name>`。無ければ `git remote get-url origin`）。project・repo は `harness_settings_set project <番号>`・`harness_settings_set repo <owner/name>` で書く（正の整数・`<owner>/<name>` でなければ rc 2 で書かない）（プラグインがプロジェクトの settings から読めるのは `env` だけ。https://code.claude.com/docs/en/settings-reference.md#env）。`harness_settings_set <項目> <値>` が**その 1 つのキーだけ**を書く（python3 で JSON を読み、ほかのキーは触らず、indent 2・ensure_ascii False で書き戻す。JSON として読めない file は上書きせず rc 1）。書き込み先は**常にプロジェクト（git の toplevel）の `.claude/settings.json`**。ホームの `~/.claude/settings.json` には書かない（他のリポにも効いてしまうため）。書いたら、同じ項目の行がプロジェクトの `.claude/mode.yml` にあれば同じ関数が直す（`worktree` は行を消し、`tasks`・`notify` は値をそろえて行を残す。`hirai-task` の `is_coordinator` が今も mode.yml だけを読むため。`local` のときは触らない。4.x の間だけ mode.yml も読むが、settings が先）。**自分だけ変えたいときは `.claude/settings.local.json`（git に入らない）に書ける**: `harness_settings_set <項目> <値> "$PWD" local`。読む順は 環境変数 `HC_*`（一時の上書き。project・repo は `HIRAI_TASK_PROJECT`・`HIRAI_TASK_REPO`）→ `TKM_HARNESS_*`（Claude Code の中では settings.local.json > settings.json が重なって届く）→ Claude Code の外では settings の file を直に読む → mode.yml → 既定。値は `tasks`: `ledger`（既定）／ `github-project`、`worktree`: `off`（既定）／ `warn` ／ `block`、`notify`: `off`（既定）／ `orca`。
 `tasks: github-project` にするときは、追加で入れるものはない（タスク管理の機能は tkm-harness の中にある）。`/tkm-harness:start-task` などが `hirai-task` を呼ぶ形に変わる。
 `worktree: block` は、Orca の worktree でない会話からの、Edit・Write・NotebookEdit と `git commit` を止める（MCP の書き込みの道具と Bash でのファイルの書き換えは止めない。読み取り・リポの外・git に入らない場所への書き込み・`git switch` も止めない）。**止める設定なので、有効にする前に承認カードで確認を取る**（2 と同じ型。「しないと」は並行の会話が同じ作業ツリーを触る事故が残ること）。`warn` と `off`、`notify` の切り替えに確認は要らない。
-**この会話は、開き直すまで環境変数が古いままだが、`TKM_HARNESS_*` が空の項目は settings の file を直に読むので、書いた値が効く**（`TKM_HARNESS_*` が開く前から入っている項目は古い値のまま。開き直してもらう）。
+**保存すると、同じ会話の次の Bash・hook から新しい値が効く**（Claude Code は会話の途中で settings の file を保存すると、動いている会話の環境変数に入れる。設計メモ F4）。**消したときだけ**、開き直すまで古い値が会話に残る（変数を消しても動いている会話からは消えないため。値を戻したいときは消さず、既定の値を書く）。
 ```bash
 P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
@@ -180,7 +180,7 @@ harness_worktree "$PWD" | cat   # HC_WORKTREE を打ったシェルでは、そ�
 
 ## 判定できる終了条件
 
-- 引数なしのとき、8 項目すべてに実測値が入っている。
+- 引数なしのとき、8 項目すべてに実測値が入っている（8 の project・repo は値か「自動で探す」「git remote」）。
 - 7 の 2 つの値が、`extraKnownMarketplaces.tkm-harness.autoUpdate`（無ければ無効）と `harness_auto_sync "$PWD"` の実測値と一致している。
 - 1・2・5 の表示が `<正式名>（<解説>）` の形になっている（`normal` / `loop` / `ultracode` / `statusLine` の文字が出ている）。
 - 変更したときは、変更したファイルのパスが報告に入っており、`mode` なら `harness_mode "$PWD"` が指定した値と一致する。
