@@ -1613,36 +1613,76 @@ def _load_checks(t, tmp_dir: str) -> None:
 
         def _coordinator() -> None:
             os_environ = dict(os.environ)
-            orig_git = gh_task._git_dir
+            orig_lookup, orig_cache, orig_which = gh_task._lookup_orca_role, gh_task._read_role_cache, gh_task.shutil.which
+            orig_write, orig_cache_file = gh_task._safe_write, gh_task._role_cache_file
             gh_task.is_coordinator = orig_coord
             gh_task._mode_setting = lambda key, home=True: {'tasks': 'github-project', 'notify': 'orca'}.get(key, '')
-            gh_task._git_dir = lambda flag: '/r/.git'
-            def check(env: dict, want: bool, why: str, git=lambda flag: '/r/.git', mode=None) -> None:
+            gh_task._read_role_cache = lambda handle: ''
+            gh_task._safe_write = lambda path, text: None
+            gh_task.shutil.which = lambda name, *a, **k: '/fake/orca' if name == 'orca' else orig_which(name, *a, **k)
+            def check(env: dict, want, why: str, found='coordinator', mode=None, orca=True) -> None:
                 os.environ.clear(); os.environ.update(env)
-                gh_task._git_dir = git
+                gh_task._lookup_orca_role = lambda handle: found
+                gh_task.shutil.which = lambda name, *a, **k: ('/fake/orca' if orca else None) if name == 'orca' else orig_which(name, *a, **k)
                 if mode is not None:
                     gh_task._mode_setting = lambda key, home=True: mode.get(key, '')
                 try:
-                    got = gh_task.is_coordinator()
+                    got = gh_task.coordinator_state()
                 finally:
                     gh_task._mode_setting = lambda key, home=True: {'tasks': 'github-project', 'notify': 'orca'}.get(key, '')
-                assert got is want, f'{why}: {got}'
+                assert got == want, f'{why}: {got}'
             try:
-                full = {'HC_NOTIFY': 'off', 'ORCA_TERMINAL_HANDLE': 'term_1'}
-                check(full, True, 'コーディネーター')
-                check({'ORCA_TERMINAL_HANDLE': 'term_1'}, False, '担当（HC_NOTIFY なし）')
-                check({'HC_NOTIFY': 'orca', 'ORCA_TERMINAL_HANDLE': 'term_1'}, False, 'HC_NOTIFY=orca')
-                check({'HC_NOTIFY': 'off'}, False, 'Orca の端末でない')
-                check(full, False, 'linked worktree の担当', git=lambda flag: '/r/.git' if flag == '--git-common-dir' else '/r/.git/worktrees/x')
-                check(full, False, 'notify: off のリポ', mode={'tasks': 'github-project', 'notify': 'off'})
-                check(full, False, 'GitHub Project でないリポ', mode={'tasks': '', 'notify': 'orca'})
-                check(full, False, 'git の外', git=lambda flag: None)
+                term = {'ORCA_TERMINAL_HANDLE': 'term_1'}
+                check({'HC_NOTIFY': 'off', **term}, 'coordinator', 'HC_NOTIFY=off は親なし（worker-list を引かない）', found='worker')
+                check(term, 'coordinator', 'worker-list に載っていない = 親なし')
+                check(term, 'worker', 'worker-list に載っている = 親がいる担当', found='worker')
+                check(term, 'unknown', '判定できない', found='unknown')
+                check({}, 'coordinator', '端末の印が無い = 親なし')
+                check(term, 'coordinator', 'orca が無い = 親なし', found='worker', orca=False)
+                check({**term, 'TKM_HARNESS_ROLE': 'worker'}, 'worker', '上書き worker は HC_NOTIFY・worker-list に勝つ', found='coordinator')
+                check({'HC_NOTIFY': 'off', **term, 'TKM_HARNESS_ROLE': 'worker'}, 'worker', '上書き worker は HC_NOTIFY=off に勝つ')
+                check({**term, 'TKM_HARNESS_ROLE': 'coordinator'}, 'coordinator', '上書き coordinator は worker-list に勝つ', found='worker')
+                check({**term, 'TKM_HARNESS_ROLE': 'bogus'}, 'worker', '知らない上書きの値は無視して worker-list を見る', found='worker')
+                check(term, 'other', 'GitHub Project でないリポは表の側が偽', mode={'tasks': '', 'notify': 'orca'})
+                check(term, 'coordinator', 'notify: off のリポでも親がいなければ表を入れる（notify の条件は外した）', mode={'tasks': 'github-project', 'notify': 'off'})
+                os.environ.clear(); os.environ.update(term)
+                gh_task._lookup_orca_role = lambda handle: 'coordinator'
+                assert gh_task.is_coordinator() is True
+                gh_task._lookup_orca_role = lambda handle: 'unknown'
+                assert gh_task.is_coordinator() is False
             finally:
                 os.environ.clear(); os.environ.update(os_environ)
-                gh_task._git_dir = orig_git
+                gh_task._lookup_orca_role, gh_task._read_role_cache, gh_task.shutil.which = orig_lookup, orig_cache, orig_which
+                gh_task._safe_write, gh_task._role_cache_file = orig_write, orig_cache_file
                 gh_task.is_coordinator = lambda: False
                 gh_task._mode_setting = lambda key, home=True: modes.get(key, '')
-        t('is_coordinator: 担当（linked worktree・HC_NOTIFY なし）・Orca の端末でない会話・GitHub Project でないリポでは出さない', _coordinator)
+        t('is_coordinator: 親がいる担当・判定できない会話・GitHub Project でないリポでは出さず、上書き > HC_NOTIFY=off > Orca なし > worker-list の順', _coordinator)
+
+        def _harness_setting_order() -> None:
+            os_environ, orig_files, orig_mode = dict(os.environ), gh_task._settings_files, gh_task._mode_setting
+            with tempfile.TemporaryDirectory() as d:
+                local, shared = os.path.join(d, 'l.json'), os.path.join(d, 's.json')
+                gh_task._settings_files = lambda: [local, shared]
+                gh_task._mode_setting = lambda key, home=True: 'ledger'
+                def put(path, value):
+                    with open(path, 'w', encoding='utf-8') as f:
+                        json.dump({'env': {'TKM_HARNESS_TASKS': value}}, f)
+                try:
+                    for k in ('HC_TASKS', 'TKM_HARNESS_TASKS'):
+                        os.environ.pop(k, None)
+                    assert gh_task._harness_setting('tasks') == 'ledger', 'file も環境変数も無ければ mode.yml'
+                    put(shared, 'github-project')
+                    assert gh_task._harness_setting('tasks') == 'github-project', 'settings.json の env は mode.yml に勝つ'
+                    put(local, 'ledger-local')
+                    assert gh_task._harness_setting('tasks') == 'ledger-local', 'settings.local.json は settings.json に勝つ'
+                    os.environ['TKM_HARNESS_TASKS'] = 'from-env'
+                    assert gh_task._harness_setting('tasks') == 'from-env', '環境変数は file に勝つ'
+                    os.environ['HC_TASKS'] = 'from-hc'
+                    assert gh_task._harness_setting('tasks') == 'from-hc', 'HC_* は環境変数に勝つ'
+                finally:
+                    os.environ.clear(); os.environ.update(os_environ)
+                    gh_task._settings_files, gh_task._mode_setting = orig_files, orig_mode
+        t('_harness_setting: HC_* > 環境変数 TKM_HARNESS_* > settings.local.json > settings.json > mode.yml の順（土台の harness_setting と同じ）', _harness_setting_order)
 
         def _after_table() -> None:
             def as_coordinator(on: bool) -> None:
@@ -1777,11 +1817,18 @@ def _load_checks(t, tmp_dir: str) -> None:
                 fresh()
                 rc, out = _run_main(['load', '--if-coordinator'])
                 assert (rc, out, calls) == (3, '', []), f'コーディネーターでないのに動いた: {rc} {out!r} {calls}'
-                rc, _ = _run_main(['is-coordinator'])
-                assert rc == 1, rc
+                orig_state, orig_role = gh_task.coordinator_state, gh_task.orca_role
+                try:
+                    for state, want in (('worker', 1), ('other', 1), ('coordinator', 0), ('unknown', 3)):
+                        gh_task.coordinator_state = lambda state=state: state
+                        rc, _ = _run_main(['is-coordinator'])
+                        assert rc == want, f'{state}: {rc}'
+                    gh_task.orca_role = lambda: 'worker'
+                    rc, out = _run_main(['is-coordinator', '--role'])
+                    assert (rc, out.strip()) == (0, 'worker'), (rc, out)
+                finally:
+                    gh_task.coordinator_state, gh_task.orca_role = orig_state, orig_role
                 gh_task.is_coordinator = lambda: True
-                rc, _ = _run_main(['is-coordinator'])
-                assert rc == 0, rc
                 rc, _ = _run_main(['is-coordinator', 'x'])
                 assert rc == 2, rc
                 rc, out = _run_main(['load'])
@@ -1869,10 +1916,10 @@ def _load_checks(t, tmp_dir: str) -> None:
                 rc, out = _run_main(['load', '--cached'])
                 assert (rc, out) == (3, ''), f'{label}: {rc} {out[:60]!r}'
             json.dump(good, open(gh_task.LOAD_PR_CACHE, 'w', encoding='utf-8'))
-            for minutes, want in ((9, False), (10, True)):
+            for minutes in (9, 10):  # --cached は新しくても古さを言う（控えだけで描くので、何分前かを毎回添える）
                 json.dump({**good, 'fetched_epoch': good['fetched_epoch'] - minutes * 60 - 1}, open(gh_task.LOAD_PR_CACHE, 'w', encoding='utf-8'))
                 rc, out = _run_main(['load', '--cached'])
-                assert rc == 0 and (('（控え:' in out) is want), f'PR の控えが {minutes} 分前: {out[-60:]!r}'
+                assert rc == 0 and f'（控え: {minutes} 分前）' in out, f'PR の控えが {minutes} 分前: {out[-60:]!r}'
             os.remove(gh_task.LOAD_PR_CACHE)
             open(gh_task.BOARD_CACHE, 'w').write('{not json')
             rc, out = _run_main(['load', '--cached'])
@@ -2220,15 +2267,17 @@ def _load_checks(t, tmp_dir: str) -> None:
                 # mode.yml が読めないときは、コーディネーターでないとみなす（落ちない）
                 gh_task.is_coordinator = orig_coord
                 env = dict(os.environ)
+                for name in [n for n in os.environ if n.startswith(('TKM_HARNESS_', 'HC_'))]:
+                    del os.environ[name]
                 os.environ.update({'HC_NOTIFY': 'off', 'ORCA_TERMINAL_HANDLE': 't'})
-                orig_mode_setting = gh_task._mode_setting
+                orig_mode_setting, orig_files = gh_task._mode_setting, gh_task._settings_files
                 def unreadable(key, home=True):
                     raise RuntimeError('読めない')
-                gh_task._mode_setting = unreadable
+                gh_task._mode_setting, gh_task._settings_files = unreadable, lambda: []
                 try:
-                    assert gh_task.is_coordinator() is False
+                    assert gh_task.is_coordinator() is False, 'mode.yml が読めないのに表を入れる'
                 finally:
-                    gh_task._mode_setting = orig_mode_setting
+                    gh_task._mode_setting, gh_task._settings_files = orig_mode_setting, orig_files
                     os.environ.clear(); os.environ.update(env)
             finally:
                 gh_task.is_coordinator = lambda: False

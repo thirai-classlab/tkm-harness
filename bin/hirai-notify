@@ -4,10 +4,15 @@
 #   hirai-notify question <file> <要約> [--dispatch-id <id>] [--to <run:id>]
 #   hirai-notify done|stopped <file> <要約> [--dispatch-id <id> [--task-id <id>]] [--to <run:id>]
 #   hirai-notify waiting <要約> [--subject <件名>] [--dispatch-id <id>] [--to <run:id>]
+#   hirai-notify note [<文>]
 #
 #   question : 決めてもらうことができた。<file> は単独で読める問い（決めること・案・帰結・推し）。
 #   done     : 終わった。<file> は報告。
 #   stopped  : 続けられないエラーで止まった。<file> は報告。
+#   note     : `hirai-notify note [<文>]` いまやっていることを、この作業ツリーの Orca の comment に書く（コーディネーターの進みの表の
+#              「いまやっていること」になる。60 字で切る・文が空なら消す）。担当は、していることが変わったら打つ。送る操作ではない
+#              （宛先は要らず、`orca worktree set --worktree path:<この作業ツリーの toplevel> --comment <文>`）。Orca が無い・notify が off なら何もせず exit 0。
+#              done を送れたら comment は「完了報告済み」に書き換わる。
 #   waiting  : 権限の確認の画面などで止まっている（ファイル無し。hooks/notify-attention.sh が送る）。
 #              件名は --subject（既定「権限の確認で止まっています」）・本文は <導入先の root>｜<要約>。
 #              種類は、宛先（--to・環境変数・控え）へ送るとき question、Dispatch の id を渡すときと宛先を省くとき escalation。
@@ -36,6 +41,9 @@
 #     更新から 24 時間を過ぎたら使わない。done を送れたら消す）
 #   > どれも無く ORCA_TERMINAL_HANDLE があれば --to を省いて送る（Orca の active Dispatch では宛先省略が Run の受け口。届かなければ orca の stderr）。
 #
+# 親（立てたコーディネーター）がいない会話では送らず exit 0（`hirai-task is-coordinator --role` が coordinator のとき。端末の handle が
+# `orca orchestration worker-list` に載っていない会話・`TKM_HARNESS_ROLE=coordinator`）。親がいる（worker）・判定できない（unknown）ときは送る。
+# 端末の handle（ORCA_TERMINAL_HANDLE）も `TKM_HARNESS_ROLE` も無い会話では判定せず、今までどおり宛先の決まり（下）で送る。
 # `.claude/settings.json` の env `TKM_HARNESS_NOTIFY`（既定 off）が orca でなければ何もせず exit 0。シェルの HC_NOTIFY が優先（4.x の間は mode.yml の notify: も読む）。
 # <file> は絶対 path に直して送る（無ければ exit 2）。--to と --dispatch-id の両方が引数にあれば --dispatch-id。引数は環境変数より先。
 # 送れなかったときは理由を stderr に出して exit 1（黙って捨てない）。
@@ -46,10 +54,28 @@ usage() {
   echo "usage: hirai-notify question <file> <要約> [--dispatch-id <id>] [--to <run:id>]" >&2
   echo "       hirai-notify done|stopped <file> <要約> [--dispatch-id <id> [--task-id <id>]] [--to <run:id>]" >&2
   echo "       hirai-notify waiting <要約> [--subject <件名>] [--dispatch-id <id>] [--to <run:id>]" >&2
+  echo "       hirai-notify note [<文>]" >&2
+}
+
+# note_cut <文> -> 60 字までに切る（バイトでなく文字で。python3 が無ければ bash の切り方）
+NOTE_MAX_CHARS=60
+note_cut() {
+  local out=""
+  if command -v python3 >/dev/null 2>&1; then
+    out="$(python3 -I -c 'import sys; print(" ".join(sys.argv[1].split())[:int(sys.argv[2])], end="")' "$1" "$NOTE_MAX_CHARS" 2>/dev/null)" || out=""
+    printf '%s' "$out"
+  else
+    out="${1//$'\n'/ }"; printf '%s' "${out:0:$NOTE_MAX_CHARS}"
+  fi
 }
 
 kind="${1:-}"; file=""; summary=""
 case "$kind" in
+  note)
+    [ $# -le 2 ] || { usage; exit 2; }
+    summary="${2:-}"
+    case "$summary" in --*) usage; exit 2 ;; esac
+    shift $# ;;
   question|done|stopped)
     file="${2:-}"; summary="${3:-}"
     [ -n "$file" ] && [ -n "$summary" ] || { usage; exit 2; }
@@ -113,6 +139,17 @@ top_of() {
   printf '%s' "${t:-$1}"
 }
 
+# worktree_comment <文> -> この作業ツリーの Orca の comment を書く（空なら消す）。失敗しても黙って戻る（知らせる操作の結果を変えない）
+worktree_comment() {
+  orca worktree set --worktree "path:$(top_of "$PWD")" --comment "$1" >/dev/null 2>&1 </dev/null || true
+}
+
+if [ "$kind" = "note" ]; then
+  command -v orca >/dev/null 2>&1 || exit 0
+  worktree_comment "$(note_cut "$summary")"
+  exit 0
+fi
+
 # 宛先がまだ無いとき: 導入先の .claude/state/coordinator の 1 行目 > ORCA_TERMINAL_HANDLE があれば宛先を省いて送る
 omit_to=0
 coordinator_file=""
@@ -136,6 +173,12 @@ fi
 if ! command -v orca >/dev/null 2>&1; then
   echo "hirai-notify: orca コマンドが PATH に無い" >&2
   exit 1
+fi
+
+# 親がいない会話（コーディネーター）は送らない。親がいる・判定できないときは送る。端末の handle も TKM_HARNESS_ROLE も無い会話は判定しない
+if [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || [ -n "${TKM_HARNESS_ROLE:-}" ]; then
+  role="$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/hirai-task" is-coordinator --role 2>/dev/null </dev/null)" || role=""
+  [ "$role" != "coordinator" ] || exit 0
 fi
 
 # <file> は絶対 path にして渡す（コーディネーターは別の dir から読む）。無ければ引数の取り違えとして止める
@@ -281,5 +324,6 @@ if [ "$rc" -eq 0 ] && [ "$kind" = "done" ]; then
   [ -z "$coordinator_file" ] || rm -f "$coordinator_file" 2>/dev/null
   croot_done="$(top_of "$PWD")"
   rm -f "$croot_done/.claude/state/coordinator" 2>/dev/null
+  worktree_comment "完了報告済み"
 fi
 exit "$rc"

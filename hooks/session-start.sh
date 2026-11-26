@@ -146,6 +146,7 @@ if command -v harness_setting_from_yml_only >/dev/null 2>&1 && [ -n "$(harness_s
 fi
 settings_line="tkm-harness ${plugin_version:+v${plugin_version}・}tasks: ${tasks_form}・worktree: ${cfg_worktree:-off}・notify: ${cfg_notify:-off}"
 
+emit_session_lines() {
 # 5 行以内を守るため、効いている設定は進め方の行の後ろに足す (行を増やさない)
 echo "[harness] 進め方: ${mode_line} ／ ${settings_line}"
 echo "[harness] ${task_line}"
@@ -171,6 +172,68 @@ if [ -f "$plugin_root/scripts/orca-context.sh" ]; then
   if [ -n "$orca_out" ]; then
     printf '%s\n' "$orca_out" | awk 'NR==1{printf "%s", $0; next} {sub(/^\[harness\] /, ""); printf " ／ %s", $0} END{printf "\n"}'
   fi
+fi
+}
+
+# --- 進みの表 (TKM-R9.1): 親がいない会話 (コーディネーター) の会話の始まり・/clear・圧縮のあとにだけ、控えの表を丸ごと additionalContext で入れる ---
+# GitHub は叩かない (--cached は控えだけ)。担当の会話・GitHub Project で回さないリポ・hirai-task が無いときは何も足さない。
+# TKM_HARNESS_LOAD_ON_START=off (settings.json の env) なら入れない (TKM-R9.2)。
+LOAD_LIMIT_SEC="${HARNESS_LOAD_LIMIT_SEC:-10}"   # load の呼び出しの上限 (秒)。試験だけが短くする
+case "$LOAD_LIMIT_SEC" in ''|*[!0-9]*) LOAD_LIMIT_SEC=10 ;; esac
+# run_limited <秒> <コマンド...> -> 標準出力をそのまま出す。時間切れは process group ごと止めて exit 124。それ以外はコマンドの exit
+run_limited() {
+  python3 -I -c '
+import os, signal, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+try:
+    out, _ = p.communicate(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    p.communicate()
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(p.returncode)
+' "$@"
+}
+# session_load_context <hirai-task の絶対 path> <root> -> 入れる文 (入れないときは空)
+session_load_context() {
+  local task="$1" lroot="$2" rc=0 out=""
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ "$(harness_setting load_on_start "$lroot" 2>/dev/null || true)" != "off" ] || return 0
+  HIRAI_TASK_ROOT="$lroot" run_limited "$LOAD_LIMIT_SEC" "$task" is-coordinator >/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    3) printf '%s\n' "[harness] 進みの表: この会話に親（立てたコーディネーター）がいるか判定できなかったので入れていません（担当なら何もしない・コーディネーターなら \`hirai-task load\` で出す）"; return 0 ;;
+    124) printf '%s\n' "[harness] 進みの表: 親の有無の判定が ${LOAD_LIMIT_SEC} 秒で終わらなかったので入れていません（\`hirai-task load\` で出せる）"; return 0 ;;
+    *) return 0 ;;
+  esac
+  rc=0
+  out="$(HIRAI_TASK_ROOT="$lroot" run_limited "$LOAD_LIMIT_SEC" "$task" load --cached)" || rc=$?
+  case "$rc" in
+    0) printf '%s\n%s\n' "[harness] 進みの表（\`hirai-task load --cached\`。GitHub は叩いていません）" "$out" ;;
+    3) printf '%s\n' "[harness] 進みの表の控えがありません（\`hirai-task load\` で作る）" ;;
+    124) printf '%s\n' "[harness] 進みの表: ${LOAD_LIMIT_SEC} 秒で出せなかったので入れていません（\`hirai-task load\` で出せる）" ;;
+    *) printf '%s\n' "[harness] 進みの表を出せませんでした（\`hirai-task load --cached\` が exit ${rc}。\`hirai-task load\` で出す）" ;;
+  esac
+}
+load_ctx=""
+if [ "$tasks_form" = "github-project" ] && [ -n "${pm_task:-}" ] && command -v harness_setting >/dev/null 2>&1; then
+  load_ctx="$(session_load_context "$pm_task" "$root" 2>/dev/null || true)"
+fi
+
+session_lines="$(emit_session_lines)"
+if [ -z "$load_ctx" ]; then
+  printf '%s\n' "$session_lines"
+else
+  # 開始時の行と表を、1 つの additionalContext にする (標準出力は JSON か平文のどちらか 1 つ)
+  { printf '%s\n\n' "$session_lines"; printf '%s' "$load_ctx"; } | python3 -I -c '
+import json, sys
+text = sys.stdin.read().rstrip("\n")
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False))
+' 2>/dev/null || printf '%s\n' "$session_lines"
 fi
 
 exit 0

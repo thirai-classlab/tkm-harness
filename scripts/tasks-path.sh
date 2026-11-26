@@ -302,7 +302,7 @@ _harness_setting_files() {
 _harness_file_setting() {
   local up files="" f
   command -v python3 >/dev/null 2>&1 || return 0
-  case "${1:-}" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; *) return 0 ;; esac
+  case "${1:-}" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; load_on_start) up=LOAD_ON_START ;; *) return 0 ;; esac
   while IFS= read -r f; do [ -f "$f" ] && files="${files}${f}"$'\n'; done <<EOF_F
 $(_harness_setting_files "${2:-}" "${3:-}")
 EOF_F
@@ -321,11 +321,11 @@ for p in sys.stdin.read().split("\n"):
         break' "TKM_HARNESS_$up" 2>/dev/null
 }
 
-# harness_setting <tasks|worktree|notify> [root] [files] -> 上の優先 1〜4 で決めた値をそのまま stdout (無ければ空。既定と未知の値の扱いは呼ぶ側)。常に rc 0。
+# harness_setting <tasks|worktree|notify|load_on_start> [root] [files] -> 上の優先 1〜4 で決めた値をそのまま stdout (無ければ空。既定と未知の値の扱いは呼ぶ側)。常に rc 0。
 # 3 つ目の引数 files は「この root は会話のリポでない」の印 (worktree-guard が別のリポの対象を決めるとき): 2 を使わず 3 を読む。
 harness_setting() {
   local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" up hc env v
-  case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; *) return 0 ;; esac
+  case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; load_on_start) up=LOAD_ON_START ;; *) return 0 ;; esac
   hc="HC_$up"; env="TKM_HARNESS_$up"
   v="${!hc:-}"; v="${v%$'\n'}"
   if [ -z "$v" ] && [ "${3:-}" != "files" ]; then v="${!env:-}"; v="${v%$'\n'}"; fi

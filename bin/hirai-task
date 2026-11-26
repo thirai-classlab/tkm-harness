@@ -6,7 +6,7 @@ hirai-task — リポに紐づいた GitHub Project のタスクを読み書き�
   読む側: ready / pending / blocked / show <issue> / memos / unblocked / coverage / impact <draft>
   書く側: new / add / set / start / review / done / reopen（approve は廃止）/ design-merge <draft>（file だけ書く）
   会話の最初と merge の直後: comments / close-parents / align / today / after-merge
-  進みと割り振り: load（全体の %・担当ごとの順番と進捗率の表。--json・--changed・--cached・--refresh・--if-coordinator）／ is-coordinator ／ assign <issue> <作業のセッション> [順]・--clear（手元の控え）。start・assign は Assignees が空なら自分を入れる
+  進みと割り振り: load（全体の %・担当ごとの順番と進捗率の表。--json・--changed・--cached・--refresh・--if-coordinator）／ is-coordinator [--role]（親がいない会話か。exit 0 表を入れる・1 入れない・3 判定できない） ／ assign <issue> <作業のセッション> [順]・--clear（手元の控え）。start・assign は Assignees が空なら自分を入れる
   全体像: board（HTML・--text の木・--summary の要約。--publish <issue> で要約を issue の目印の間に書く）
   立ち上げ: setup（GitHub Project の作成・紐づけ・項目・ビュー。既定は計画だけで、--apply で書く。scripts/hirai_project_setup.py）
   カード: card <issue> [--sync]（承認・判断・人の作業のカードを読んで形を確かめ、承認カードを項目「ひとこと」「推奨」に写す）／ card --lint（読むだけ）
@@ -261,11 +261,13 @@ board（全体像のコンソール）:
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -5861,6 +5863,41 @@ def _mode_setting(key: str, *, home: bool = True) -> str:
     return ''
 
 
+def _settings_files() -> list[str]:
+    """機能の切り替え（tasks・worktree・notify）を書く settings の file（土台の _harness_setting_files と同じ順）:
+    本体の checkout の settings.local.json → このリポの settings.local.json → settings.json → ~/.claude/settings.json。"""
+    top = _root()
+    files = []
+    common = _git_dir('--git-common-dir')
+    if common and os.path.basename(common) == '.git':
+        files.append(os.path.join(os.path.dirname(common), '.claude', 'settings.local.json'))
+    files += [os.path.join(top, '.claude', 'settings.local.json'), os.path.join(top, '.claude', 'settings.json')]
+    home = os.path.expanduser('~')
+    if home and home != '~':
+        files.append(os.path.join(home, '.claude', 'settings.json'))
+    return files
+
+
+def _harness_setting(key: str) -> str:
+    """機能の切り替え 1 項目を、土台の harness_setting と同じ順に引く:
+    HC_<KEY> > 環境変数 TKM_HARNESS_<KEY> > settings の file の env > mode.yml（4.x の間だけ）。無ければ空。
+    mode.yml が読めないときは RuntimeError。"""
+    up = key.upper()
+    for name in ('HC_' + up, 'TKM_HARNESS_' + up):
+        value = os.environ.get(name, '').strip()
+        if value:
+            return value
+    for path in _settings_files():
+        try:
+            with open(path, encoding='utf-8') as f:
+                value = ((json.load(f) or {}).get('env') or {}).get('TKM_HARNESS_' + up)
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return _mode_setting(key)
+
+
 def _load_module():
     scripts_dir = os.path.join(_plugin_root(), 'scripts')
     if not os.path.isfile(os.path.join(scripts_dir, 'hirai_load.py')):
@@ -6126,8 +6163,9 @@ def parse_load_args(tail: list[str]) -> dict:
     return opts
 
 
-def _age_note(model: dict) -> str:
-    return f"（控え: {model['age_minutes']} 分前）" if model['age_minutes'] >= BOARD_CACHE_SECONDS // 60 else ''
+def _age_note(model: dict, *, always: bool = False) -> str:
+    """控えの古さの 1 行。10 分より古いときだけ出す（always は新しくても出す。--cached は控えだけで描くので、古さを毎回言う）。"""
+    return f"（控え: {model['age_minutes']} 分前）" if always or model['age_minutes'] >= BOARD_CACHE_SECONDS // 60 else ''
 
 
 def cmd_load(opts: dict) -> int:
@@ -6149,26 +6187,124 @@ def cmd_load(opts: dict) -> int:
         print(json.dumps(model, ensure_ascii=False, indent=2))
         return 0
     print(load.render(model), end='')
-    note = _age_note(model)
+    note = _age_note(model, always=opts['cached'])
     if note:
         print(note)
     _save_load_state(model)
     return 0
 
 
-def is_coordinator() -> bool:
-    """コーディネーターの会話か。`HC_NOTIFY=off` で開いた（土台の hirai-notify と同じ印）・`notify: orca` と
-    `tasks: github-project` のリポ・Orca の端末・linked worktree でない、の全部がそろうときだけ真。
-    担当の会話（linked worktree）・Orca の無い人（端末の印が無い）・GitHub Project で回さないリポでは偽。"""
-    if os.environ.get('HC_NOTIFY', '').strip() != 'off' or not os.environ.get('ORCA_TERMINAL_HANDLE', '').strip():
-        return False
+ROLE_LIMIT_SECONDS = 2      # worker-list を引く時間の全体の上限（超えたら「判定できない」）
+ROLE_CACHE_SECONDS = 600    # 判定の結果（端末の handle ごと）を控える長さ
+ROLE_PAGE_LIMIT = 30        # worker-list の頁の上限（100 件ずつ）
+
+
+def _orca_json(args: list[str], seconds: float) -> dict | None:
+    """`orca <args> --json` の result。引けない（exit が 0 でない・JSON が読めない・ok でない・時間切れ）ときは None。
+    時間切れは process group ごと止める（偽物でも本物でも、孫が出力の口を持ち続けて待たされない）。"""
+    if seconds <= 0:
+        return None
     try:
-        if _mode_setting('tasks') != 'github-project' or _mode_setting('notify') != 'orca':
-            return False
+        proc = subprocess.Popen(['orca', *args, '--json'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, _ = proc.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or payload.get('ok') is False or not isinstance(payload.get('result'), dict):
+        return None
+    return payload['result']
+
+
+def _role_cache_file(handle: str) -> str:
+    return os.path.join(_shared_state_dir(), 'role-' + hashlib.sha1(handle.encode('utf-8')).hexdigest()[:16] + '.json')
+
+
+def _read_role_cache(handle: str) -> str:
+    try:
+        with open(_role_cache_file(handle), encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('handle') == handle and data.get('role') in ('coordinator', 'worker') \
+                and 0 <= time.time() - float(data.get('at')) < ROLE_CACHE_SECONDS:
+            return data['role']
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return ''
+
+
+def _lookup_orca_role(handle: str) -> str:
+    """この端末が worker-list（`--terminal-state` で絞らない。active で絞ると担当が載らない）の agentTerminalHandle に
+    載っているか。載っている = 親（立てたコーディネーター）がいる担当 = worker・最後の頁まで無い = coordinator・
+    引けない = unknown。頁は page.nextCursor で送り、全体で ROLE_LIMIT_SECONDS 秒まで。"""
+    end = time.monotonic() + ROLE_LIMIT_SECONDS
+    cursor = ''
+    for _ in range(ROLE_PAGE_LIMIT):
+        args = ['orchestration', 'worker-list', '--limit', '100'] + (['--cursor', cursor] if cursor else [])
+        result = _orca_json(args, end - time.monotonic())
+        workers = (result or {}).get('workers')
+        if not isinstance(workers, list):
+            return 'unknown'
+        if any(isinstance(w, dict) and w.get('agentTerminalHandle') == handle for w in workers):
+            return 'worker'
+        page = result.get('page') if isinstance(result.get('page'), dict) else {}
+        cursor = page.get('nextCursor') or ''
+        if not page.get('hasMore') or not isinstance(cursor, str) or not cursor:
+            return 'coordinator'
+    return 'unknown'
+
+
+def orca_role() -> str:
+    """この会話に親（立てたコーディネーター）がいるか。coordinator（親なし）・worker（親あり）・unknown（判定できない）。
+    順: TKM_HARNESS_ROLE=coordinator|worker > HC_NOTIFY=off（コーディネーターの印）> Orca が無い（親なし）> worker-list。"""
+    forced = os.environ.get('TKM_HARNESS_ROLE', '').strip().lower()
+    if forced in ('coordinator', 'worker'):
+        return forced
+    if os.environ.get('HC_NOTIFY', '').strip() == 'off':
+        return 'coordinator'
+    handle = os.environ.get('ORCA_TERMINAL_HANDLE', '').strip()
+    if not handle or shutil.which('orca') is None:
+        return 'coordinator'
+    cached = _read_role_cache(handle) if _git_dir('--git-common-dir') else ''
+    if cached:
+        return cached
+    role = _lookup_orca_role(handle)
+    if role != 'unknown' and _git_dir('--git-common-dir'):  # git の外では控えない（作業 dir に控えの dir を作らない）
+        try:
+            _safe_write(_role_cache_file(handle), json.dumps({'handle': handle, 'role': role, 'at': time.time()}))
+        except Exception:  # noqa: BLE001 - 控えが書けなくても判定は返す
+            pass
+    return role
+
+
+def coordinator_state() -> str:
+    """表を入れる会話か: coordinator（入れる）・worker（親がいる担当）・other（GitHub Project で回さないリポ）・
+    unknown（親の有無を判定できない）。"""
+    role = orca_role()
+    if role != 'coordinator':
+        return role
+    try:
+        return 'coordinator' if _harness_setting('tasks') == 'github-project' else 'other'
     except RuntimeError:
-        return False
-    git_dir, common_dir = _git_dir('--git-dir'), _git_dir('--git-common-dir')
-    return bool(git_dir and common_dir and git_dir == common_dir)
+        return 'other'
+
+
+def is_coordinator() -> bool:
+    """コーディネーターの会話か。親（立てたコーディネーター）がいない会話で、`tasks` が github-project のリポのときだけ真。
+    担当の会話・GitHub Project で回さないリポ・親の有無を判定できないときは偽。"""
+    return coordinator_state() == 'coordinator'
 
 
 class _PostStep:
@@ -6636,7 +6772,7 @@ def main(argv: list[str]) -> int:
         '           coverage | impact <draft の path> | design-merge <draft の path>\n'
         '           comments | close-parents [--json] | align [--json] | unblocked | memos\n'
         '           today | after-merge <PR番号>\n'
-        '           load [--json] [--changed] [--cached | --refresh] [--if-coordinator] | is-coordinator\n'
+        '           load [--json] [--changed] [--cached | --refresh] [--if-coordinator] | is-coordinator [--role]\n'
         '           assign <issue> <担当> [順] | assign <issue> --clear\n'
         '           board [--text [--wave N|--feature N|--task N] | [--summary] [--publish <issue>]]'
         ' [--out <path>] [--refresh | --from <json>]\n'
@@ -6657,10 +6793,14 @@ def main(argv: list[str]) -> int:
         return cmd_board(parse_board_args(tail))
     if sub == 'load':  # 引数は gh より先に確かめる。
         return cmd_load(parse_load_args(tail))
-    if sub == 'is-coordinator':  # hook が呼ぶ。コーディネーターの会話なら exit 0、ちがえば 1（何も出さない・gh を呼ばない）
+    if sub == 'is-coordinator':  # hook が呼ぶ。コーディネーターの会話なら exit 0、ちがえば 1、親の有無を判定できなければ 3（何も出さない・gh を呼ばない）
+        if tail == ['--role']:  # 親がいるかだけ（tasks の形を見ない）: coordinator・worker・unknown を 1 語で出す（hirai-notify が呼ぶ）
+            print(orca_role())
+            return 0
         if tail:
-            die('使い方: hirai-task is-coordinator', 2)
-        return 0 if is_coordinator() else 1
+            die('使い方: hirai-task is-coordinator [--role]', 2)
+        state = coordinator_state()
+        return 0 if state == 'coordinator' else (LOAD_EXIT_UNCHANGED if state == 'unknown' else 1)
     if sub == 'setup':  # 既定は計画だけ。--apply で書く。repo・Project の判定と前提の検査はモジュールが持つ。
         return _load_setup_module().main(tail)
     if not REPO:

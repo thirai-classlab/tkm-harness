@@ -1640,7 +1640,9 @@ EOF6
   gelapsed=$(( $(date +%s) - gstart ))
   printf '%s' "$gout" | grep -qF 'Project: あなたの番 6（承認 3・裁定 1・取り込み 2）／進行中 5／待ち解け —' \
     || bad5="$bad5 [ghp] session-start が Project の行を出さない: $gout"
-  [ "$gelapsed" -le 1 ] || bad5="$bad5 [ghp] session-start が取り直しを ${gelapsed} 秒待った"
+  # 取り直し (--refresh) は 3 秒眠る偽物。待てば 3 秒以上かかる。コーディネーターの判定と控えの表 (is-coordinator・load --cached の 2 回の起動。TKM-R9.1) が
+  # 加わったので、秒単位の測りで 2 秒までは待ちと見なさない
+  [ "$gelapsed" -le 2 ] || bad5="$bad5 [ghp] session-start が取り直しを ${gelapsed} 秒待った"
   [ "$(printf '%s\n' "$gout" | grep -c . || true)" -le 5 ] || bad5="$bad5 [ghp] session-start が 5 行を超えた"
   printf '%s' "$gout" | grep -qF 'tasks: github-project' || bad5="$bad5 [ghp] 設定行に tasks: github-project が無い"
   : > "$ghplog"
