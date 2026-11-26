@@ -1,4 +1,4 @@
-<!-- approval-template: v2.8.0（承認カード）。/hirai-lite:update はこの行で型の版を見分ける -->
+<!-- approval-template: v2.8.0（承認カード）。/tkm-harness:update はこの行で型の版を見分ける -->
 # 承認カード（承認・判断・人の作業を頼むときの型）
 
 **人に何かを頼むすべての場面で使う型。** 着手の承認、設計の承認、ルールの追加、費用や動きが変わる設定、元に戻せない操作、仕様やスコープの変更、裁定（どれにするか）、人の手が要る作業。どれも、ここのカードで頼む（v2.8.0。それまでの「判断材料 5 項目」を置き換えた）。
@@ -138,7 +138,7 @@ issue の本文では `<!-- card:work -->` で囲む。
 
 ### GitHub Project の承認ビューで受ける
 
-`tasks: github-project` のリポだけ。節の本体は足すプラグイン hirai-project-method の `docs/rules-reference/approval-view.md`（`hirai-task card <番号> --sync` で承認ビューの項目に写す）。
+`tasks: github-project` のリポだけ。節の本体はタスク管理の機能 の `docs/rules-reference/approval-view.md`（`hirai-task card <番号> --sync` で承認ビューの項目に写す）。
 
 ### 詳しい版（issue の本文）
 
@@ -158,7 +158,7 @@ issue の本文では `<!-- card:work -->` で囲む。
 判断カードなら、選択肢を `1. A …（推奨）` `2. B …` `3. 修正して提案し直す` と並べる。
 
 - 推奨を必ず 1 つ明記する。**「はい」「OK」を承認と読むのは、推奨が「承認する」のときだけ。** 推奨が「承認しない」「条件つき」や判断カードのときは、番号で答えてもらう。それ以外の返事で迷ったら、聞き直して止まる。
-- 問いが複数あるとき（`/hirai-lite:init` の手順 1 など）は問いごとに番号を振り、「全部推奨でよければ『はい』だけで構いません」と添える。
+- 問いが複数あるとき（`/tkm-harness:init` の手順 1 など）は問いごとに番号を振り、「全部推奨でよければ『はい』だけで構いません」と添える。
 - 誰も答えない実行（`claude -p`・scheduled tasks・無人の実行に `--settings` で `denyInsteadOfPrompting` を渡したとき）では、承認の要る操作をしない。何をしたかったかを 1 行残して止まる。
 
 ---
@@ -260,7 +260,7 @@ issue の本文では `<!-- card:work -->` で囲む。
 | commit の分割 / 元に戻せない操作 | `commit.md` | 手順 3 / 「承認が要る操作」 | 承認 |
 | 費用や動きに影響する設定変更 | `config.md` | 2（ultracode）/ 7（更新の自動化） | 承認 |
 | 参照されていないファイルの削除 | `verify.md` | 6 | 承認 |
-| GitHub Project の作成・項目とビューの追加 | `project-setup.md`（プラグイン hirai-project-method の `/hirai-project-method:project-setup`） | 2 | 承認 |
+| GitHub Project の作成・項目とビューの追加 | `project-setup.md`（tkm-harness の `/tkm-harness:project-setup`） | 2 | 承認 |
 | feature の着手 | （ボードの承認ビュー） | feature の本文の先頭 | 承認 |
 | 人の権限が要る操作を AI が行う | （`[操作]` の issue） | 本文の先頭 | 承認 |
 | 裁定 | （判断待ちの issue） | 本文の先頭 | 判断 |
@@ -271,11 +271,11 @@ issue の本文では `<!-- card:work -->` で囲む。
 - 承認が要らないもの — T2 と `docs/` への追記、ルールの**削除**（`_meta.md` 条 8）、`rules-audit.md` の分類 1・2。
 - 元に戻す方向の変更 — 設定を無効に戻す、費用が減る方向。
 - **user が自分から指示したこと** — 「有効にして」「これを消して」と言われた操作に、改めてカードを出さない。
-- 選択肢の提示であって承認ではないもの — `/hirai-lite:init` の初期設定の 3〜4 問のような「どれにしますか」。
+- 選択肢の提示であって承認ではないもの — `/tkm-harness:init` の初期設定の 3〜4 問のような「どれにしますか」。
 
 ## 関連
 
-- 進め方の用語（段・機能のまとまり・作業・8 つの状態・目印）: `tasks: github-project` のリポだけ。足すプラグイン hirai-project-method の `docs/rules-reference/glossary.md`
-- 層の選び方（T0 / T1 / T2 / T3 のどこに置くか）: `/hirai-lite:context-engineering` skill
-- ルール追加の 6 工程: `commands/add-rule.md`（`/hirai-lite:add-rule`）
+- 進め方の用語（段・機能のまとまり・作業・8 つの状態・目印）: `tasks: github-project` のリポだけ。タスク管理の機能 の `docs/rules-reference/glossary.md`
+- 層の選び方（T0 / T1 / T2 / T3 のどこに置くか）: `/tkm-harness:context-engineering` skill
+- ルール追加の 6 工程: `commands/add-rule.md`（`/tkm-harness:add-rule`）
 - 条文: `rules/_meta.md` 条 8（追加は承認必須）/ 条 9（無い保証を書かない）

@@ -5,13 +5,14 @@
 #
 # 止めない: 操作の可否を変えず、常に exit 0。失敗・対象外・知らせが無いときは 1 バイトも出さない（_meta.md 条 5 の context を注ぐだけの hook）。
 # GitHub を叩かない・控えも読まない: PR の段は取り直さないと分からず、古い控えの表を「動いた」と見せないため。
-# コーディネーターか（HC_NOTIFY=off・Orca の端末・linked worktree でない・tasks: github-project・notify: orca）の判定は
-# `hirai-task is-coordinator` が持つ。担当の会話・Orca の無い人・ほかのリポでは出ない。
+# コーディネーターか（親がいない会話か・tasks が github-project か）の判定は `hirai-task is-coordinator` が持つ
+# （上書き TKM_HARNESS_ROLE > HC_NOTIFY=off > Orca が無い > worker-list に端末が載っていない）。
+# 担当の会話（親がいる）・親の有無を判定できない会話・GitHub Project で回さないリポでは出ない。
 set -uo pipefail
 
 # 入力は先に読み切る（読まずに終わると、呼ぶ側の書き込みが途中で切れる）。そのあとで安い分かれ道を見る
 input="$(cat 2>/dev/null)" || exit 0
-[ "${HC_NOTIFY:-}" = "off" ] && [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || exit 0
+case "$input" in *orchestration*) ;; *) exit 0 ;; esac   # 安い分かれ道: orca orchestration に触れない呼び出しは python も hirai-task も起こさない
 command -v python3 >/dev/null 2>&1 || exit 0
 
 # 1 行目 = 知らせを受けたか、2 行目 = cwd。知らせ = `orca orchestration check` の出力に message の id（msg_…）があるか、

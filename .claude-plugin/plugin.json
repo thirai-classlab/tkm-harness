@@ -1,17 +1,17 @@
 {
-  "name": "hirai-lite",
-  "description": "常時ロードされるコンテキストに予算を置き、ルールの追加を 6 工程パイプラインで通す rules 3 層構造の軽量ハーネス。",
-  "version": "3.3.0",
+  "name": "tkm-harness",
+  "description": "常時ロードされるコンテキストに予算を置き、ルールの追加を 6 工程パイプラインで通す rules 3 層構造の軽量ハーネス。GitHub Project のタスク管理の機能を含む。",
+  "version": "4.0.0",
   "author": {
-    "name": "thirai-classlab"
+    "name": "tkm-harness"
   },
-  "repository": "https://github.com/thirai-classlab/hirai-method-lite",
   "license": "MIT",
   "keywords": [
     "harness",
     "rules",
     "context-budget",
     "task-management",
+    "github-projects",
     "workflow"
   ]
 }

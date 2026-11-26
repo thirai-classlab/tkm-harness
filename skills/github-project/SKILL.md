@@ -28,7 +28,7 @@ description: GitHub Project でやること（wave・feature・task の issue �
 
 ## 進みと割り振りの表（進捗を聞かれたとき）
 
-`hirai-task load` が、GitHub Project の issue・PR・CI の実物から表を出す（読むだけ。`--json` は同じ材料の機械可読）。「どこで何件止まっているか」は `/hirai-project-method:board`（件数と止まり）、`load` は進み（%）と、だれが何をどの順でしているか。
+`hirai-task load` が、GitHub Project の issue・PR・CI の実物から表を出す（読むだけ。`--json` は同じ材料の機械可読）。「どこで何件止まっているか」は `/tkm-harness:board`（件数と止まり）、`load` は進み（%）と、だれが何をどの順でしているか。
 
 - **表はそのまま貼る**: メインエージェントは、`hirai-task load` の出力を言い換えず、数え直さず貼る ／ 例: 「進捗を見せて」に `hirai-task load` の出力だけを返す ／ 失効: なし
 - **表を出すのは 4 つの時機だけ**: メインエージェントは、新しい task を振ったとき（着手を含む）・完了したとき・進捗の確認を頼まれたとき・task に進捗があったとき（段が上がった・止まった）に表を出し、返答のたびには出さない ／ 例: 割り振りは `hirai-task assign 40 sess-a 1` の出力の終わりに出る ／ 失効: なし
@@ -41,7 +41,17 @@ description: GitHub Project でやること（wave・feature・task の issue �
 | 着手した・完了した | `hirai-task start <n>`・`hirai-task done <n>`・`hirai-task after-merge <PR>` |
 | 進捗があった | `hirai-task load --changed`（前回と比べて段・担当・順番・止まりの印が動いたときだけ出し、動いていなければ 1 行も出さず exit 3）。コーディネーターの会話では、前景の `orca orchestration check` で知らせを受けたとき（出力に message の id があるか `--ack` を付けたとき）、hook が「打つ」の 1 行を足す。背景で待って受けたときは出ないので、自分で打つ |
 
-**割り振り・着手・完了のあとの表は、コーディネーターの会話だけに出る。** コーディネーターの会話は、次の全部がそろうとき: `HC_NOTIFY=off` で開いた・Orca の端末・linked worktree でない・`.claude/mode.yml` が `tasks: github-project` と `notify: orca`。板の控えが 1 本も無いときは 1 行の断り、10 分より古い控えで描くときは表の下に「（控え: N 分前）」が出る。`start`・`done`・`reopen`・`review`・`set Status`・`after-merge` で閉じた issue の変更は、板の控えが追いつくまで表に重なる。`--cached` は gh を叩かず、手元の控えだけを読む（板と PR の控えのどちらかが無ければ exit 3・何も出さない）。
+**割り振り・着手・完了のあとの表は、コーディネーターの会話だけに出る。** コーディネーターの会話は、**親（立てたコーディネーター）がいない会話**で、`tasks` が `github-project` のリポのとき。親の有無は `hirai-task is-coordinator` が、上書き `TKM_HARNESS_ROLE=coordinator|worker` > `HC_NOTIFY=off`（コーディネーターの印）> Orca が無い（親なし）> `orca orchestration worker-list` に自分の端末（`ORCA_TERMINAL_HANDLE`）が載っているか（載っていれば親がいる担当・載っていなければ親なし）の順で決める。Orca があって 2 秒で引けない・JSON が読めないときは「判定できない」で、表は入れない（`hirai-notify` は今までどおり送る）。`worker-start` 以外（`orca worktree create --agent` など）で立てた担当は worker-list に載らず「親なし」と見なされるので、その会話では `TKM_HARNESS_ROLE=worker` を付ける。板の控えが 1 本も無いときは 1 行の断り、10 分より古い控えで描くときは（`--cached` は新しくても）表の下に「（控え: N 分前）」が出る。`start`・`done`・`reopen`・`review`・`set Status`・`after-merge` で閉じた issue の変更は、板の控えが追いつくまで表に重なる。`--cached` は gh を叩かず、手元の控えだけを読む（板と PR の控えのどちらかが無ければ exit 3・何も出さない）。
+
+### 会話の始まりに表が入る（コーディネーターの会話）
+
+親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
+
+### 担当を Orca で立てるとき（表の「担当」と「いまやっていること」の出どころ）
+
+- **`worker-start` のすぐあとに `assign` を打つ**: メインエージェント（コーディネーター）は、`orca orchestration worker-start` で担当を立てたら、続けて `hirai-task assign <issue> <担当> [順]` を打つ ／ 例: `hirai-task assign 40 sess-a 1`（打たないと表の担当の列が空になる） ／ 失効: なし
+- **作業ツリーに題と番号を付ける**: メインエージェントは、担当の作業ツリーに `orca worktree set --worktree path:<path> --display-name '<#番号 短い題>' --issue <番号>` を付ける ／ 例: `--display-name '#40 通知の設定画面' --issue 40`（表の担当の名前と番号はここから出る） ／ 失効: なし
+- **していることが変わったら書く**: 担当は、していることが変わったら `hirai-notify note '<いまやっていること>'` を打つ（60 字で切れる。空なら消える。Orca が無い・`notify` が off なら何もしない。`hirai-notify done` を送れたら「完了報告済み」に変わる） ／ 例: `hirai-notify note 'CI の赤を直している'` ／ 失効: なし
 
 ### 表の読み方
 
@@ -71,7 +81,7 @@ load_mainline_label: ベータの本線
 
 ## 関連
 
-- 立ち上げ・Status の動かし方・ビュー: `docs/rules-reference/project-setup.md`（無ければプラグイン同梱の同名ファイル）。新しいリポでは利用者に `/hirai-project-method:project-setup` を打ってもらう（Claude からは呼べない）
-- 全体像と、どこで何件止まっているか: `/hirai-project-method:board`（`hirai-task board`）
+- 立ち上げ・Status の動かし方・ビュー: `docs/rules-reference/project-setup.md`（無ければプラグイン同梱の同名ファイル）。新しいリポでは利用者に `/tkm-harness:project-setup` を打ってもらう（Claude からは呼べない）
+- 全体像と、どこで何件止まっているか: `/tkm-harness:board`（`hirai-task board`）
 - 承認を求めるときの型（承認カード・判断カード・人の作業カード）: `docs/rules-reference/approval-template.md`
 - 進め方の用語: `docs/rules-reference/glossary.md`（案件を知らない人に渡すとき）

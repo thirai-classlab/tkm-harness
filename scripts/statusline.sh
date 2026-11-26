@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # statusLine (2 行)。1 行目 = いまの状態 / 2 行目 = 次にできる操作。
 #   1 行目: <model> | ctx <N>% ・5h <N>% ・7d <N>% | mode: <進め方> | <branch> | やること <N>
-#   2 行目: 設定を確認・変更 → /hirai-lite:config [    <お知らせ>]
+#   2 行目: 設定を確認・変更 → /tkm-harness:config [    <お知らせ>]
 # 進め方は「正式名（短い解説）」で出す (normal（確認あり）/ loop（自動で進む）)。正式名だけでは
 # 意味が伝わらず、解説だけでは設定ファイル (mode.yml) の中身と結び付かないため両方を出す。
 # 2 行目の設定リンクは**常時**出す。お知らせはその後ろに最大 1 件だけ (優先: 更新あり >
@@ -106,8 +106,8 @@ case "$mode" in
   *)      mode_label="$mode";                mode_col="$DIM" ;;
 esac
 
-# 未完了タスク: tasks: (mode.yml) が決める。ledger (既定) は台帳の件数、github-project は
-# 足すプラグインの `hirai-task line` (控えを読むだけ。--refresh を付けないので gh を叩かない。HIRAI_TASK_ROOT で会話のリポを渡す。
+# 未完了タスク: tasks (settings.json の env TKM_HARNESS_TASKS。harness_tasks_form が決める) が決める。ledger (既定) は台帳の件数、github-project は
+# `hirai-task line` (控えを読むだけ。--refresh を付けないので gh を叩かない。HIRAI_TASK_ROOT で会話のリポを渡す。
 # 取り直しは session-start.sh が起こす)。github-project のときだけ見出し語を「あなたの番」に替える —
 # 「やること 6（承認…」だと 6 を Project 番号のように読めるため。
 # この複製は古い tasks-path.sh と組になることがある (harness_tasks_form が無い) — その場合は ledger。
@@ -132,7 +132,7 @@ if [ "$tasks_form" = "github-project" ]; then
     todo_ghp="$(HIRAI_TASK_ROOT="$root" "$pm_task" line 2>/dev/null || true)"
     [ -n "$todo_ghp" ] && todo="$todo_ghp"
   else
-    todo="hirai-project-method が未導入"
+    todo="hirai-task が見つからない（プラグインが壊れている）"
   fi
 elif command -v harness_tasks_file >/dev/null 2>&1; then
   list="$(harness_tasks_file "$opened" 2>/dev/null || true)"
@@ -148,10 +148,10 @@ if [ "${HC_STATUSLINE_NOTICE:-on}" != "off" ]; then
   [ -n "$update_flag_key" ] || update_flag_key="default"
   if [ "${HARNESS_UPDATE_CHECK:-on}" != "off" ] \
     && [ -s "${TMPDIR:-/tmp}/claude-harness-lite/update-available-${update_flag_key}" ]; then
-    notice="更新あり → /hirai-lite:update"
+    notice="更新あり → /tkm-harness:update"
   elif command -v harness_ctx_over_threshold >/dev/null 2>&1 \
     && harness_ctx_over_threshold "${ctx_pct%%.*}"; then
-    notice="きりの良いところで /hirai-lite:state save"
+    notice="きりの良いところで /tkm-harness:state save"
   fi
 fi
 
@@ -162,7 +162,7 @@ line1="${line1}${SEP}${DIM}${branch}${R}"
 line1="${line1}${SEP}$(lbl "$todo_label") ${DIM}${todo}${R}"
 
 # 2 行目 = 次にできる操作。設定リンクは常時、お知らせはその後ろに 1 件だけ。
-line2="${LNK}設定を確認・変更 → /hirai-lite:config${R}"
+line2="${LNK}設定を確認・変更 → /tkm-harness:config${R}"
 [ -n "$notice" ] && line2="${line2}    ${YEL}${notice}${R}"
 
 printf '%s\n%s\n' "$line1" "$line2"

@@ -6,9 +6,9 @@ disable-model-invocation: true
 
 # /project-setup [--title <名前>] [--from-template <owner>/<番号>]
 
-`/hirai-lite:init` のあとに 1 回だけ使う。中身は `hirai-task setup`（`scripts/hirai_project_setup.py`）。**引数なしの `hirai-task setup` は計画を出すだけで、GitHub に何も書かない。** 書き込むのは `--apply` を付けたときだけ。手順の本体と値は `docs/rules-reference/project-setup.md`（無ければプラグイン同梱の同名ファイル）。
+`/tkm-harness:init` のあとに 1 回だけ使う。中身は `hirai-task setup`（`scripts/hirai_project_setup.py`）。**引数なしの `hirai-task setup` は計画を出すだけで、GitHub に何も書かない。** 書き込むのは `--apply` を付けたときだけ。手順の本体と値は `docs/rules-reference/project-setup.md`（無ければプラグイン同梱の同名ファイル）。
 
-`command -v hirai-task` が無ければ「hirai-task が見つからない（PATH に入っていない）」と報告して終了する。
+`command -v hirai-task` が無ければ「hirai-task が見つからない（プラグインが壊れている）」と報告して終了する。
 
 ## 1. 計画を取る（読むだけ）
 
@@ -49,7 +49,7 @@ exit 0 なら、行った件数を 1 行で報告する。exit 1 なら、出力
 
 ## 5. 確かめる
 
-`docs/rules-reference/project-setup.md` の 8 章で確かめる。少なくとも `hirai-task ready` が exit 0 で終わる（空でもよい）ことを実行して見せる。そのあと `/hirai-project-method:board` で全体像が出ることを 1 回見せる。すでに承認待ちの feature があるリポでは `hirai-task card --lint` を回し、カードの無い feature の件数を伝える（カードを書くのは別の作業。書いたら `hirai-task card <番号> --sync`）。
+`docs/rules-reference/project-setup.md` の 8 章で確かめる。少なくとも `hirai-task ready` が exit 0 で終わる（空でもよい）ことを実行して見せる。そのあと `/tkm-harness:board` で全体像が出ることを 1 回見せる。すでに承認待ちの feature があるリポでは `hirai-task card --lint` を回し、カードの無い feature の件数を伝える（カードを書くのは別の作業。書いたら `hirai-task card <番号> --sync`）。
 
 ## 判定できる終了条件
 

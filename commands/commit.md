@@ -21,13 +21,13 @@ git diff --cached --stat
 ```bash
 git add <その単位のファイルを明示列挙>
 git diff --cached --stat          # 意図した file だけが載っていることを確認
-/hirai-lite:verify                 # build / test / lint が exit 0（素の /verify は組み込みのアプリ確認に当たる）
+/tkm-harness:verify                 # build / test / lint が exit 0（素の /verify は組み込みのアプリ確認に当たる）
 git commit -m "<type>: <件名>"
 ```
 
 `git add -A` と `git add .` は使わない。ファイル名を明示して add する。
 
-5. `/hirai-lite:verify` が exit 0 以外を返した単位は commit しない。出力末尾 20 行を提示して停止する。
+5. `/tkm-harness:verify` が exit 0 以外を返した単位は commit しない。出力末尾 20 行を提示して停止する。
 6. 全単位の commit 後に結果を検証する。
 
 ```bash
@@ -66,4 +66,4 @@ feature branch への `git push` と `gh pr create` は実行してよい。こ�
 
 - `git log --oneline -1` が新しい commit を返す。
 - `git status --porcelain` の出力に、意図せず残ったファイルが無い。
-- 各 commit 時点で `/hirai-lite:verify` が exit 0 だった。
+- 各 commit 時点で `/tkm-harness:verify` が exit 0 だった。

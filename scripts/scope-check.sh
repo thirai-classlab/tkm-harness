@@ -24,7 +24,7 @@ if [ -f "$root/docs/tasks/list.md" ] && [ -f "$root/.claude/tasks/list.md" ]; th
   printf '   ・%s\n' "$root/.claude/tasks/list.md"
   printf '   読まれるのは docs/ 側だけです。.claude/ 側に書いても誰も見ません。\n'
   printf '   中身を見比べて、残すほうを docs/tasks/list.md に 1 本化してください。\n'
-  printf '   (/hirai-lite:update の移行手順は、移動先に同名のファイルがあると移さずに両方残します)\n'
+  printf '   (/tkm-harness:update の移行手順は、移動先に同名のファイルがあると移さずに両方残します)\n'
 fi
 
 [ -d "$proj/rules" ] || exit 0

@@ -2,7 +2,8 @@
 # ハーネス更新検知の共通ライブラリ。source して使う (専用 hook は作らない)。
 #
 # 方針: セッション起動を通信で待たせない。表示は前回キャッシュ値、取得は背景 + 24h に 1 回まで。
-#   取得先   : HARNESS_UPDATE_URL (既定は公開リポジトリの VERSION)
+#   取得先   : HARNESS_UPDATE_URL。無ければ known_marketplaces.json の配布元 (HARNESS_MARKETPLACE_NAME、既定 tkm-harness) の source から
+#              raw.githubusercontent.com の main の VERSION を組む (github・git の source だけ。dir・file・読めないときは通信しない)
 #   無効化   : HARNESS_UPDATE_CHECK=off で通信も表示もしない
 #   間隔     : HARNESS_UPDATE_INTERVAL 秒 (既定 86400)
 #   キャッシュ: ${TMPDIR:-/tmp}/claude-harness-lite/update-<key>/ (リポジトリ外・インストール単位)
@@ -12,23 +13,22 @@
 # file-top に set -e / set -o pipefail を書かない。source 元の shell flags を汚染し、
 # パイプ先の早期終了で呼び出し元ごと落ちる事故を防ぐため (関数内で局所化する)。
 
-HARNESS_UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/thirai-classlab/hirai-method-lite/main/VERSION"
-# 足すプラグイン hirai-project-method の最新版 (main の plugins/hirai-project-method/VERSION)。
-# HARNESS_UPDATE_URL だけを差し替えたとき (試験・社内ミラー) は取りに行かない。HARNESS_UPDATE_PM_URL で別に指す。
-HARNESS_UPDATE_PM_URL_DEFAULT="https://raw.githubusercontent.com/thirai-classlab/hirai-method-lite/main/plugins/hirai-project-method/VERSION"
+# 取りに行く先は決め打ちしない (fork が自分の版を見られるようにする・TKM-R5.2)。harness_update_url が決める。
+# 配布元 (marketplace) の名前。fork が別の名前で配るときは環境変数で替える。
+HARNESS_MARKETPLACE_NAME_DEFAULT="tkm-harness"
 
 # このプラグインの配布の entry 名 (marketplace.json の entry 名と同じ値)。変えるときは、この 1 行と
 # commands/*.md の素材行の同じ文字列を合わせる (tests/smoke.sh が素材行と突き合わせる。
 # ズレていても壊れ方は fail-open — 解決できずに空を返すだけで、別の版を掴んだりはしない)。
-# 足すプラグイン hirai-project-method の控えの id は、足すプラグイン側の scripts/ghp-path.sh が持つ。
-# 3.0.0 で退役した旧系列 hirai-lite-v2 の entry は探さない (退役した版の置き場へ落ちない)。
-HARNESS_ENTRY_NAME="hirai-lite"
+# タスク管理の機能の控えの id は scripts/ghp-path.sh が持つ。
+# 旧系列 hirai-lite・hirai-lite-v2 の entry は探さない (別のプラグインの置き場へ落ちない)。
+HARNESS_ENTRY_NAME="tkm-harness"
 
 # --- プラグイン本体の置き場所 --------------------------------------------------
 # $CLAUDE_PLUGIN_ROOT は**空で渡ることがある**。渡らない実行経路があるため、これを直に
 # パスの前に置いた行は「/VERSION」を読みに行って失敗する (v1.14.0 の /update が実環境で
 # 動かなかった原因)。空・不在なら 3 段で探す — 環境変数 → installed_plugins.json の
-# hirai-lite の行のうち版が最新の installPath → キャッシュ (hirai-lite の entry 名で、版が最新のもの)。
+# tkm-harness の行のうち版が最新の installPath → キャッシュ (tkm-harness の entry 名で、版が最新のもの。配布元の段は決め打ちしない)。
 # commands/*.md 冒頭の「素材行」と同じ 3 段で、tests/smoke.sh が「素材行の結果」と
 # 「この関数の結果」の一致を検査する。
 # シェルから使えるのはこの関数だが、**コマンド手順書は素材行のほうを使う** —
@@ -59,7 +59,7 @@ harness_plugin_root() (
     p="$(harness_plugin_root_from_installed "$HARNESS_ENTRY_NAME" 2>/dev/null)"
   fi
   if [ ! -d "$p" ]; then
-    p="$(ls -d "$HOME"/.claude/plugins/cache/hirai-lite/"$HARNESS_ENTRY_NAME"/*/ 2>/dev/null | sort -V | tail -1)"
+    p="$(ls -d "$HOME"/.claude/plugins/cache/*/"$HARNESS_ENTRY_NAME"/*/ 2>/dev/null | sort -V | tail -1)"
     p="${p%/}"
   fi
   printf '%s' "$p"
@@ -128,6 +128,37 @@ harness_cached_version() (
   printf '%s' "$v"
 )
 
+# harness_update_url -> 最新の版を取る URL を stdout。決められなければ空 (通信しない)。
+#   1. HARNESS_UPDATE_URL (試験・社内ミラー)
+#   2. ~/.claude/plugins/known_marketplaces.json の配布元 (HARNESS_MARKETPLACE_NAME) の source
+#        {"source":"github","repo":"<owner>/<repo>"}                       -> raw.githubusercontent.com/<owner>/<repo>/main/VERSION
+#        {"source":"git","url":"https://github.com/<owner>/<repo>(.git)"}  -> 同じ形
+#      それ以外 (手元の dir・file・github 以外の git)・読めないときは空。
+harness_update_url() (
+  set -uo pipefail
+  if [ -n "${HARNESS_UPDATE_URL:-}" ]; then
+    printf '%s' "$HARNESS_UPDATE_URL"
+    return 0
+  fi
+  local f="${HOME:-}/.claude/plugins/known_marketplaces.json"
+  [ -f "$f" ] && command -v python3 >/dev/null 2>&1 || return 0
+  python3 -I -c 'import json,re,sys
+try:
+    src = json.load(open(sys.argv[1])).get(sys.argv[2], {}).get("source", {})
+    kind = src.get("source")
+    if kind == "github":
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", str(src.get("repo", "")))
+    elif kind == "git":
+        m = re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", str(src.get("url", "")))
+    else:
+        m = None
+    if m:
+        print("https://raw.githubusercontent.com/%s/%s/main/VERSION" % (m.group(1), m.group(2)), end="")
+except Exception:
+    pass' "$f" "${HARNESS_MARKETPLACE_NAME:-$HARNESS_MARKETPLACE_NAME_DEFAULT}" 2>/dev/null
+  return 0
+)
+
 # harness_update_fetch_async [root] -> 前回から間隔を過ぎていれば背景で取得を投げる。
 # 常に無出力・rc 0。呼び出し元は curl の完了を待たない (子の fd は全て閉じる)。
 harness_update_fetch_async() (
@@ -146,23 +177,14 @@ harness_update_fetch_async() (
   [ "$(( now - last ))" -ge "$interval" ] 2>/dev/null || return 0
   # 取得の成否に関わらず間隔を守るため、投げる前に時刻を記録する。
   printf '%s' "$now" > "$dir/stamp" 2>/dev/null || return 0
-  url="${HARNESS_UPDATE_URL:-$HARNESS_UPDATE_URL_DEFAULT}"
+  url="$(harness_update_url)"
+  [ -n "$url" ] || return 0
   {
     body="$(curl -fsSL --max-time 2 "$url" 2>/dev/null)"
     v="$(harness_semver_norm "$body")"
     if [ -n "$v" ]; then
       printf '%s' "$v" > "$dir/latest.tmp" 2>/dev/null \
         && mv -f "$dir/latest.tmp" "$dir/latest" 2>/dev/null
-    fi
-    pm_url="${HARNESS_UPDATE_PM_URL:-}"
-    [ -n "$pm_url" ] || [ -n "${HARNESS_UPDATE_URL:-}" ] || pm_url="$HARNESS_UPDATE_PM_URL_DEFAULT"
-    if [ -n "$pm_url" ]; then
-      body="$(curl -fsSL --max-time 2 "$pm_url" 2>/dev/null)"
-      v="$(harness_semver_norm "$body")"
-      if [ -n "$v" ]; then
-        printf '%s' "$v" > "$dir/latest-pm.tmp" 2>/dev/null \
-          && mv -f "$dir/latest-pm.tmp" "$dir/latest-pm" 2>/dev/null
-      fi
     fi
     exit 0
   } >/dev/null 2>&1 </dev/null &
@@ -176,28 +198,9 @@ harness_update_notice() (
   local root="${1:-${CLAUDE_PLUGIN_ROOT:-$PWD}}" cur new
   if cur="$(harness_local_version "$root")" && new="$(harness_cached_version "$root")" \
      && harness_semver_gt "$new" "$cur"; then
-    printf '[harness] 更新あり v%s → v%s (/hirai-lite:update で適用)\n' "$cur" "$new"
+    printf '[harness] 更新あり v%s → v%s (/tkm-harness:update で適用)\n' "$cur" "$new"
   fi
-  harness_update_pm_notice "$root" "${2:-}"
-)
-
-# harness_update_pm_notice [plugin_root] [project_root] -> 足すプラグイン hirai-project-method が入っていて、前回取得した main の版より古いときだけ 1 行。
-# このリポの行が無ければ (installed_plugins.json に行が無い・別のリポの行だけ) 何も出さない。常に rc 0。
-harness_update_pm_notice() (
-  set -uo pipefail
-  harness_update_enabled || return 0
-  local root="${1:-${CLAUDE_PLUGIN_ROOT:-$PWD}}" dir ip cur new
-  # このリポの行だけで比べる (別のリポの行の版で知らせない)。絞りは tasks-path.sh の harness_pm_install_dir の 1 か所。
-  command -v harness_pm_install_dir >/dev/null 2>&1 || . "$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && builtin pwd -P)/tasks-path.sh" 2>/dev/null || return 0
-  command -v harness_pm_install_dir >/dev/null 2>&1 || return 0
-  ip="$(harness_pm_install_dir "${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" 2>/dev/null)" || return 0
-  [ -n "$ip" ] || return 0
-  cur="$(harness_semver_norm "$(head -1 "$ip/VERSION" 2>/dev/null)")"
-  dir="$(harness_update_cache_dir "$root")"
-  [ -f "$dir/latest-pm" ] || return 0
-  new="$(harness_semver_norm "$(head -1 "$dir/latest-pm" 2>/dev/null)")"
-  harness_semver_gt "$new" "$cur" || return 0
-  printf '[harness] 足すプラグイン hirai-project-method の更新あり v%s → v%s (/hirai-lite:update で適用)\n' "$cur" "$new"
+  return 0
 )
 
 # --- 画面下部 (statusline) へ更新の有無を渡すフラグ -------------------------

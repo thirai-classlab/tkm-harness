@@ -111,7 +111,7 @@ merged_into:
 | <id_prefix>-F1 | feature | <stream> | <feature の題> | wave #<番号> | — | | — |
 | <id_prefix>-01 | task | <stream> | <task の題> | <id_prefix>-F1 | — | <id_prefix>-R1 | <判定できる条件> |
 
-表の読まれ方（台帳の形は `/hirai-lite:new-task` が §10 完了条件と §11-3 の表の行から task ファイルを作る。`tasks: github-project` のリポは `hirai-task new --from-table`）: 親は `wave #<番号>` か表の feature の id、止める依存は表の id か `#<番号>`（`—` は無し）。題名の先頭の `[操作]`・`[User]` は目印で、題にそのまま残る。`[要判断]` を含む行は起票されない。
+表の読まれ方（台帳の形は `/tkm-harness:new-task` が §10 完了条件と §11-3 の表の行から task ファイルを作る。`tasks: github-project` のリポは `hirai-task new --from-table`）: 親は `wave #<番号>` か表の feature の id、止める依存は表の id か `#<番号>`（`—` は無し）。題名の先頭の `[操作]`・`[User]` は目印で、題にそのまま残る。`[要判断]` を含む行は起票されない。
 
 ## 12. 履歴
 

@@ -43,21 +43,21 @@ else
 fi
 [ -n "$mode" ] || mode="normal"
 case "$mode" in
-  normal) mode_line="normal（確認あり） — 重要な分かれ道で確認します (自動で進めるなら /hirai-lite:config)" ;;
+  normal) mode_line="normal（確認あり） — 重要な分かれ道で確認します (自動で進めるなら /tkm-harness:config)" ;;
   loop)   mode_line="loop（自動で進む） — 確認を求めず進みます (止めるときは「stop」)" ;;
   *)      mode_line="$mode" ;;
 esac
 
 # --- タスク管理の形: .claude/mode.yml の tasks: が決める (自動では見分けない) ---
-# ledger (既定) は台帳の件数 (1.x と同じ。通信しない)。github-project のときだけ、足すプラグイン
-# hirai-project-method の hirai-task を、installed_plugins.json から引いた絶対 path で呼ぶ (土台は GitHub の関数を直接呼ばない)。
+# ledger (既定) は台帳の件数 (1.x と同じ。通信しない)。github-project のときだけ、
+# hirai-task を、プラグインの絶対 path で呼ぶ (session-start は GitHub の関数を直接呼ばない)。
 tasks_form="ledger"
 if command -v harness_tasks_form >/dev/null 2>&1; then
   tasks_form="$(harness_tasks_form "$root" 2>/dev/null || echo ledger)"
 fi
 if [ "$tasks_form" = "github-project" ]; then
   # hook の PATH にプラグインの bin/ は入らない (Bash ツールだけに入る)。PATH に頼らず
-  # harness_pm_task_bin (installed_plugins.json の user・managed かこのリポ [git-common-dir が同じ] の行の最大版 → PATH。cache へは python3 が無いときだけ) で絶対 path を引く。
+  # harness_pm_task_bin (CLAUDE_PLUGIN_ROOT の bin → installed_plugins.json の user・managed かこのリポ [git-common-dir が同じ] の行の最大版 → PATH。cache へは python3 が無いときだけ) で絶対 path を引く。
   pm_task=""
   if command -v harness_pm_task_bin >/dev/null 2>&1; then
     pm_task="$(harness_pm_task_bin "$root" 2>/dev/null || true)"
@@ -77,7 +77,7 @@ if [ "$tasks_form" = "github-project" ]; then
       task_line="Project: 件数を取得中です (hirai-task today で見られます)"
     fi
   else
-    task_line="tasks: github-project ですが hirai-task が見つかりません → /plugin install hirai-project-method@hirai-lite"
+    task_line="tasks: github-project ですが hirai-task が見つかりません（プラグインが壊れている。/plugin install tkm-harness@tkm-harness で入れ直す）"
   fi
 else
   list=""
@@ -87,7 +87,7 @@ else
   if [ -n "$list" ] && [ -f "$list" ]; then
     task_line="やること: $(harness_open_tasks "$list") 件 ($(d="${list#"$root"/}"; printf '%s' "${d#"$opened"/}"))"
   else
-    task_line="やること一覧はまだありません (/hirai-lite:new-task で作れます)"
+    task_line="やること一覧はまだありません (/tkm-harness:new-task で作れます)"
   fi
 fi
 
@@ -102,7 +102,7 @@ if [ -f "$plugin_root/scripts/update-check.sh" ]; then
     # 同じ理由で外側に >/dev/null 2>&1 を付けない (このすぐ上のコメント参照)。
     harness_update_fetch_async "$plugin_root" || true
     update_line="$(harness_update_notice "$plugin_root" "$root" 2>/dev/null || true)"
-    # 土台と足すプラグインの 2 行は 1 行にまとめる (区切り「 ／ 」・2 つ目の [harness] は落とす)。
+    # 複数行は 1 行にまとめる (区切り「 ／ 」・2 つ目の [harness] は落とす)。
     update_line="$(printf '%s\n' "$update_line" | awk 'NF{ if (n++) { sub(/^\[harness\] /, ""); printf " ／ %s", $0 } else printf "%s", $0 } END{ if (n) printf "\n" }')"
     update_line="${update_line%$'\n'}"
     # 画面下部のお知らせ枠へ結果を渡す (statusline はプラグインのパスを知れないため)。
@@ -133,18 +133,25 @@ done
 # --- 効いている設定: 版と tasks / worktree / notify を 1 行で (何が効いているかを 1 か所で見る) ---
 plugin_version=""
 command -v harness_local_version >/dev/null 2>&1 && plugin_version="$(harness_local_version "$plugin_root" 2>/dev/null || true)"
+# 3 項目の値は harness_setting 系の 1 本から (HC_* > TKM_HARNESS_* > settings の file > mode.yml > 既定)。
 cfg_worktree="${HC_WORKTREE:-}"; cfg_notify="${HC_NOTIFY:-}"
-if command -v harness_yml_value >/dev/null 2>&1; then
-  [ -n "$cfg_worktree" ] || cfg_worktree="$(harness_yml_value "$root" worktree 2>/dev/null || true)"
-  [ -n "$cfg_notify" ] || cfg_notify="$(harness_yml_value "$root" notify 2>/dev/null || true)"
+if command -v harness_worktree >/dev/null 2>&1; then
+  cfg_worktree="$(harness_worktree "$root" 2>/dev/null || true)"
+  cfg_notify="$(harness_notify "$root" 2>/dev/null || true)"
 fi
-settings_line="hirai-lite ${plugin_version:+v${plugin_version}・}tasks: ${tasks_form}・worktree: ${cfg_worktree:-off}・notify: ${cfg_notify:-off}"
+# mode.yml にだけ在る項目があれば、settings.json の env への移し方を 1 行で言う (HM-R2.4)
+migrate_line=""
+if command -v harness_setting_from_yml_only >/dev/null 2>&1 && [ -n "$(harness_setting_from_yml_only "$root" 2>/dev/null || true)" ]; then
+  migrate_line="[harness] mode.yml の tasks:・worktree:・notify: は settings.json の env（TKM_HARNESS_TASKS など）へ移せます（/tkm-harness:config の項目 8）"
+fi
+settings_line="tkm-harness ${plugin_version:+v${plugin_version}・}tasks: ${tasks_form}・worktree: ${cfg_worktree:-off}・notify: ${cfg_notify:-off}"
 
+emit_session_lines() {
 # 5 行以内を守るため、効いている設定は進め方の行の後ろに足す (行を増やさない)
 echo "[harness] 進め方: ${mode_line} ／ ${settings_line}"
 echo "[harness] ${task_line}"
 if [ -n "$state" ]; then
-  echo "[harness] 前回の続き: ${state} (/hirai-lite:state resume で読み込めます)"
+  echo "[harness] 前回の続き: ${state} (/tkm-harness:state resume で読み込めます)"
 else
   echo "[harness] 前回の続き: なし"
 fi
@@ -152,6 +159,10 @@ fi
 extra_line="$update_line"
 if [ -n "$sync_line" ]; then
   if [ -n "$extra_line" ]; then extra_line="${extra_line} ／ ${sync_line#\[harness\] }"; else extra_line="$sync_line"; fi
+fi
+# 移行の案内もここへ足す (開始時の表示は 5 行以内)
+if [ -n "$migrate_line" ]; then
+  if [ -n "$extra_line" ]; then extra_line="${extra_line} ／ ${migrate_line#\[harness\] }"; else extra_line="$migrate_line"; fi
 fi
 [ -n "$extra_line" ] && echo "$extra_line"
 # Orca の worktree の警告・知らせ方 (worktree / notify が off なら何も出ない)。
@@ -161,6 +172,68 @@ if [ -f "$plugin_root/scripts/orca-context.sh" ]; then
   if [ -n "$orca_out" ]; then
     printf '%s\n' "$orca_out" | awk 'NR==1{printf "%s", $0; next} {sub(/^\[harness\] /, ""); printf " ／ %s", $0} END{printf "\n"}'
   fi
+fi
+}
+
+# --- 進みの表 (TKM-R9.1): 親がいない会話 (コーディネーター) の会話の始まり・/clear・圧縮のあとにだけ、控えの表を丸ごと additionalContext で入れる ---
+# GitHub は叩かない (--cached は控えだけ)。担当の会話・GitHub Project で回さないリポ・hirai-task が無いときは何も足さない。
+# TKM_HARNESS_LOAD_ON_START=off (settings.json の env) なら入れない (TKM-R9.2)。
+LOAD_LIMIT_SEC="${HARNESS_LOAD_LIMIT_SEC:-10}"   # load の呼び出しの上限 (秒)。試験だけが短くする
+case "$LOAD_LIMIT_SEC" in ''|*[!0-9]*) LOAD_LIMIT_SEC=10 ;; esac
+# run_limited <秒> <コマンド...> -> 標準出力をそのまま出す。時間切れは process group ごと止めて exit 124。それ以外はコマンドの exit
+run_limited() {
+  python3 -I -c '
+import os, signal, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+try:
+    out, _ = p.communicate(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    p.communicate()
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(p.returncode)
+' "$@"
+}
+# session_load_context <hirai-task の絶対 path> <root> -> 入れる文 (入れないときは空)
+session_load_context() {
+  local task="$1" lroot="$2" rc=0 out=""
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ "$(harness_setting load_on_start "$lroot" 2>/dev/null || true)" != "off" ] || return 0
+  HIRAI_TASK_ROOT="$lroot" run_limited "$LOAD_LIMIT_SEC" "$task" is-coordinator >/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    3) printf '%s\n' "[harness] 進みの表: この会話に親（立てたコーディネーター）がいるか判定できなかったので入れていません（担当なら何もしない・コーディネーターなら \`hirai-task load\` で出す）"; return 0 ;;
+    124) printf '%s\n' "[harness] 進みの表: 親の有無の判定が ${LOAD_LIMIT_SEC} 秒で終わらなかったので入れていません（\`hirai-task load\` で出せる）"; return 0 ;;
+    *) return 0 ;;
+  esac
+  rc=0
+  out="$(HIRAI_TASK_ROOT="$lroot" run_limited "$LOAD_LIMIT_SEC" "$task" load --cached)" || rc=$?
+  case "$rc" in
+    0) printf '%s\n%s\n' "[harness] 進みの表（\`hirai-task load --cached\`。GitHub は叩いていません）" "$out" ;;
+    3) printf '%s\n' "[harness] 進みの表の控えがありません（\`hirai-task load\` で作る）" ;;
+    124) printf '%s\n' "[harness] 進みの表: ${LOAD_LIMIT_SEC} 秒で出せなかったので入れていません（\`hirai-task load\` で出せる）" ;;
+    *) printf '%s\n' "[harness] 進みの表を出せませんでした（\`hirai-task load --cached\` が exit ${rc}。\`hirai-task load\` で出す）" ;;
+  esac
+}
+load_ctx=""
+if [ "$tasks_form" = "github-project" ] && [ -n "${pm_task:-}" ] && command -v harness_setting >/dev/null 2>&1; then
+  load_ctx="$(session_load_context "$pm_task" "$root" 2>/dev/null || true)"
+fi
+
+session_lines="$(emit_session_lines)"
+if [ -z "$load_ctx" ]; then
+  printf '%s\n' "$session_lines"
+else
+  # 開始時の行と表を、1 つの additionalContext にする (標準出力は JSON か平文のどちらか 1 つ)
+  { printf '%s\n\n' "$session_lines"; printf '%s' "$load_ctx"; } | python3 -I -c '
+import json, sys
+text = sys.stdin.read().rstrip("\n")
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}, ensure_ascii=False))
+' 2>/dev/null || printf '%s\n' "$session_lines"
 fi
 
 exit 0

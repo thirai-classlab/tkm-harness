@@ -1,13 +1,13 @@
 ---
 description: GitHub Project の全体像と、どこで何件止まっているか（承認待ち・判断待ち・依存待ち・保留・レビュー中・着手できない理由・人の作業）と、あなたの番（承認・判断・人の作業のカードの決めることと推奨）を出す。**どこで何件止まっているか**を聞かれたとき（スマートフォンから Remote Control で聞かれたときも）に使う。全体の %・担当ごとの順番と進捗率は skill `github-project` の「進みと割り振りの表」（`hirai-task load`）。読むだけで、publish を付けたときだけ進捗用 issue の本文を書く。
-argument-hint: "[text [wave|feature|task <n>] | html | refresh | publish <issue番号>]"
+argument-hint: "[progress [json] | text [wave|feature|task <n>] | html | refresh | publish <issue番号>]"
 ---
 
-# /board [text [wave|feature|task <n>] | html | refresh | publish <issue番号>]
+# /board [progress [json] | text [wave|feature|task <n>] | html | refresh | publish <issue番号>]
 
 GitHub Project のやること（wave → feature → task）を `hirai-task board` で読み、**どこで何件止まっているか**を出す。正本は GitHub の issue と Project。着手できるかの最終判断は `hirai-task ready` が正で、ここは全体を見るための表示。
 
-`command -v hirai-task` が無ければ「hirai-task が見つからない（PATH に入っていない）」と報告して終了する。
+`command -v hirai-task` が無ければ「hirai-task が見つからない（プラグインが壊れている）」と報告して終了する。
 
 ## 引数で分ける
 
@@ -16,6 +16,7 @@ GitHub Project のやること（wave → feature → task）を `hirai-task boa
 | なし | `hirai-task board --summary` と `hirai-task board` | `--summary` の出力をそのまま。最後に 1 行 `詳しい版（依存図・表）: <HTML のパス>（PC のブラウザで開く）` |
 | `text` / `text wave <n>` / `text feature <n>` / `text task <n>` | `hirai-task board --text`（`--wave <n>` / `--feature <n>` / `--task <n>`。task はその行に `←` が付く） | 出力をそのまま（wave → feature → task の木） |
 | `html` | `hirai-task board` | 出力（書いたパスと 1 行の要約）をそのまま。macOS なら `open <パス>` で開けることを添える。既定の置き場は git の管理ディレクトリの下の `hirai-task/board.html`（作業ツリーを汚さない） |
+| `progress` / `progress json` | `hirai-task board --progress`（`--json` も） | 出力をそのまま。全体の 1 行・セクションの表・進行中のタスクの表（担当・順番・進捗・いまやっていること）と、担当の居ないもの・これから立てるもの。担当と注は `orca worktree list` から読む（Orca が無いときは PR の branch 名と Assignees） |
 | `refresh` | 上の「なし」に `--refresh` を付ける | 「なし」と同じ |
 | `publish <issue番号>` | `hirai-task board --publish <issue番号>` | 書き込んだ issue の URL 1 行 |
 
@@ -29,12 +30,12 @@ GitHub Project のやること（wave → feature → task）を `hirai-task boa
 | exit code | 意味 | すること |
 |---|---|---|
 | 0 | 出せた | 上の表のとおり出す |
-| 1 | 取得に失敗した（gh の失敗・認証・レート制限・打ち切り）、またはリポに Project が紐づいていない（標準エラーが `Project: 無し`） | `Project: 無し` なら、利用者が `/hirai-project-method:project-setup` を打てば立ち上げられることを 1 行で伝える。それ以外は標準エラーの末尾 5 行を出し、`refresh` で取り直せることを 1 行添える。どちらも「0 件」とは言わない |
+| 1 | 取得に失敗した（gh の失敗・認証・レート制限・打ち切り）、またはリポに Project が紐づいていない（標準エラーが `Project: 無し`） | `Project: 無し` なら、利用者が `/tkm-harness:project-setup` を打てば立ち上げられることを 1 行で伝える。それ以外は標準エラーの末尾 5 行を出し、`refresh` で取り直せることを 1 行添える。どちらも「0 件」とは言わない |
 | 2 | 呼び方の誤り、または紐づいた Project が 2 件以上で決まらない | 標準エラーをそのまま出す |
 
 ## スマートフォンから聞かれたとき
 
-Claude アプリ（Remote Control）からは、文で届くことが多い。「どこで止まっている?」「何件待ち?」なら引数なしと同じにし、「進捗を見せて」「進捗は?」なら skill `github-project` の「進みと割り振りの表」（`hirai-task load`）を使う。`--summary` は 1 行 40 字前後・表は 2〜3 列に収めてあるので、そのまま出す。HTML のパスはスマートフォンでは開けないので、最後の 1 行は `詳しい版は PC で /hirai-project-method:board html` に替える（手元の端末から聞かれたか分からないときは、パスの行のままでよい）。
+Claude アプリ（Remote Control）からは、文で届くことが多い。「どこで止まっている?」「何件待ち?」なら引数なしと同じにし、「進捗を見せて」「進捗は?」なら skill `github-project` の「進みと割り振りの表」（`hirai-task load`）を使う。`--summary` は 1 行 40 字前後・表は 2〜3 列に収めてあるので、そのまま出す。HTML のパスはスマートフォンでは開けないので、最後の 1 行は `詳しい版は PC で /tkm-harness:board html` に替える（手元の端末から聞かれたか分からないときは、パスの行のままでよい）。
 
 ## 判定できる終了条件
 
