@@ -42,7 +42,7 @@
 #   > どれも無く ORCA_TERMINAL_HANDLE があれば --to を省いて送る（Orca の active Dispatch では宛先省略が Run の受け口。届かなければ orca の stderr）。
 #
 # 親（立てたコーディネーター）がいない会話では送らず exit 0（`hirai-task is-coordinator --role` が coordinator のとき。端末の handle が
-# `orca orchestration worker-list` に載っていない会話・`TKM_HARNESS_ROLE=coordinator`）。親がいる（worker）・判定できない（unknown）ときは送る。
+# `orca orchestration worker-list` に載っていない会話・`TKM_HARNESS_ROLE=coordinator`）。waiting 以外は送らない理由を stderr に 1 行出す。親がいる（worker）・判定できない（unknown）ときは送る。
 # 端末の handle（ORCA_TERMINAL_HANDLE）も `TKM_HARNESS_ROLE` も無い会話では判定せず、今までどおり宛先の決まり（下）で送る。
 # `.claude/settings.json` の env `TKM_HARNESS_NOTIFY`（既定 off）が orca でなければ何もせず exit 0。シェルの HC_NOTIFY が優先（4.x の間は mode.yml の notify: も読む）。
 # <file> は絶対 path に直して送る（無ければ exit 2）。--to と --dispatch-id の両方が引数にあれば --dispatch-id。引数は環境変数より先。
@@ -178,7 +178,11 @@ fi
 # 親がいない会話（コーディネーター）は送らない。親がいる・判定できないときは送る。端末の handle も TKM_HARNESS_ROLE も無い会話は判定しない
 if [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || [ -n "${TKM_HARNESS_ROLE:-}" ]; then
   role="$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/hirai-task" is-coordinator --role 2>/dev/null </dev/null)" || role=""
-  [ "$role" != "coordinator" ] || exit 0
+  if [ "$role" = "coordinator" ]; then
+    # 黙って捨てない: 担当の done・question が消える原因（Run の外で立てた会話）を 1 行で伝える。exit 0 は変えない（waiting の hook が同じ道を通る）
+    [ "$kind" = "waiting" ] || echo "hirai-notify: 親（立てたコーディネーター）がいない会話と判定したので ${kind} を送っていません。Run の外で立てた担当なら TKM_HARNESS_ROLE=worker を付けて開く" >&2
+    exit 0
+  fi
 fi
 
 # <file> は絶対 path にして渡す（コーディネーターは別の dir から読む）。無ければ引数の取り違えとして止める

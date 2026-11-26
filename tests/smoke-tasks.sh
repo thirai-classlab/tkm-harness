@@ -198,7 +198,7 @@ mk_repo() {
 
 # case 8: SessionStart が、親のいない会話にだけ進みの表（控え）を additionalContext で入れる (TKM-R9.1・R9.2)
 check8() { # check8 <session-start.sh> -> 食い違いの文（無ければ空）
-  local hook="$1" s bad="" out rc src plain
+  local hook="$1" s bad="" out rc src plain t8 e8
   s="$(mk)"; mkdir -p "$s/plug/bin" "$s/plug/hooks" "$s/fake" "$s/home"
   cp -R "$ROOT/scripts" "$s/plug/scripts"; cp "$ROOT/VERSION" "$s/plug/"; cp "$hook" "$s/plug/hooks/session-start.sh"
   cat > "$s/plug/bin/hirai-task" <<'FAKETASK'
@@ -236,8 +236,12 @@ FAKETASK
   { ctx > "$s/ctx" 2>/dev/null && grep -q '進みの表の控えがありません（`hirai-task load` で作る）' "$s/ctx" && ! grep -q 'TABLE-ROW' "$s/ctx"; } || bad="$bad 控えが無いときの 1 行が出ない(out=$out);"
   run8 "$s/gp" startup FAKE_ROLE_RC=3
   { ctx > "$s/ctx" 2>/dev/null && grep -q '判定できなかった' "$s/ctx" && ! grep -q 'TABLE-ROW' "$s/ctx" && ! grep -qx 'load --cached' "$s/log"; } || bad="$bad 判定できないとき 1 行で断らず表を入れた(out=$out);"
+  t8="$(date +%s)"
   run8 "$s/gp" startup FAKE_SLEEP=6 HARNESS_LOAD_LIMIT_SEC=1
+  e8=$(( $(date +%s) - t8 ))
   { ctx > "$s/ctx" 2>/dev/null && grep -q '1 秒で出せなかった' "$s/ctx" && ! grep -q 'TABLE-ROW' "$s/ctx"; } || bad="$bad 上限を超えたとき 1 行で断らない(out=$out);"
+  # 子（sleep 6）ごと止める（process group）。子だけ止める形に壊すと 6 秒かかるので、4 秒以下を合格にする
+  [ "$e8" -le 4 ] || bad="$bad 上限を超えたのに ${e8} 秒かかった（子ごと止めていない）;"
   run8 "$s/gp" startup TKM_HARNESS_LOAD_ON_START=off
   { [ "$out" = "$plain" ] && ! grep -q 'is-coordinator\|^load' "$s/log"; } || bad="$bad TKM_HARNESS_LOAD_ON_START=off（環境変数）でも入れた;"
   printf '{"env":{"TKM_HARNESS_TASKS":"github-project","TKM_HARNESS_LOAD_ON_START":"off"}}\n' > "$s/gp/.claude/settings.json"
@@ -315,6 +319,11 @@ check9() { # check9 <プラグインの root> -> 食い違いの文
   [ "$rc" = 0 ] || bad="$bad mode.yml だけの tasks: github-project を読まない(rc=$rc);"
   ARGS9=--role r9 "$s/led" absent ORCA_TERMINAL_HANDLE=term_T; rc=$?
   { [ "$rc" = 0 ] && [ "$(cat "$s/out")" = coordinator ]; } || bad="$bad --role が tasks の形と無関係に coordinator を 1 語で出さない(rc=$rc out=$(cat "$s/out"));"
+  # 親がいない会話 (worker-list に載らない) の done は送らず、黙らず stderr に 1 行出す（Run の外で立てた担当の知らせが消える原因を見せる）
+  printf '# r\n' > "$s/f.md"; : > "$s/log"
+  ( cd "$s/gp" && env -i PATH="$s/fake:$BASE_PATH" HOME="$s/home" FAKE_LOG="$s/log" FAKE_MODE=absent HC_NOTIFY=orca ORCA_TERMINAL_HANDLE=term_D \
+      "$plug/bin/hirai-notify" done "$s/f.md" 完了 --to run:abc >"$s/out" 2>"$s/err" </dev/null ); rc=$?
+  { [ "$rc" = 0 ] && grep -q 'TKM_HARNESS_ROLE=worker' "$s/err" && ! grep -q 'send' "$s/log"; } || bad="$bad 親がいない会話の done が黙って消える（stderr に理由が無い）か送った(rc=$rc err=$(cat "$s/err") log=$(cat "$s/log"));"
   printf '%s' "$bad"
 }
 case_9() {

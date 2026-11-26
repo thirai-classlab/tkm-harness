@@ -70,7 +70,7 @@ merged_into:
 
 ### 要件 TKM-R6: hirai-lite を入れている別のプロジェクトは何も変わらない
 - TKM-R6.1 hirai-method-lite（配布元 hirai-lite）は中身を凍結する。README の先頭に tkm-harness へ移る案内を足すだけ。版は上げない
-- TKM-R6.2 hirai-method-lite の配布の一覧から hirai-lite-v2 の行を外す（入っている 2 か所はそのまま動く。更新が来なくなるだけ）
+- TKM-R6.2 hirai-method-lite の配布の一覧の hirai-lite-v2 の行は**残す**（2026-11-26 の実測: 外すと、入れたままの 2.x は `Plugin "hirai-lite-v2" not found in marketplace` で読み込みに失敗し、hook・command が消える。公式 https://code.claude.com/docs/en/plugins/host-marketplace.md#uninstall-removed-plugins-from-users-machines も同じ）。外すのは、入れている所を tkm-harness か hirai-lite 3.x へ移したあと（要判断・テックリード）
 
 ### 要件 TKM-R7: 責務分離を README と heyapro-app の docs/harness に書く
 - TKM-R7.1 3 つの層: tkm-harness の土台（決まりの予算・進め方・確認・画面下・知らせ）／ タスク管理の機能（hirai-task・board・project-setup）／ 各リポのハーネス（そのリポの決まり・検査・hook・skill・settings）
@@ -111,7 +111,7 @@ merged_into:
 
 ### 4.1 リポの作り方
 
-- 新しいリポ thirai-classlab/tkm-harness（公開）の main は、hirai-method-lite の `feat/2021-feature-unit`（c345922・hirai-lite 3.3.0 と hirai-project-method 1.2.1）を**履歴ごと**そのまま置いた（2026-11-26）。理由: (1) 取り込んだ file の `git log`・`git blame` が続く（ハーネスの検査は blame で過去の行を当て直す） (2) hirai-method-lite にあとから入る直し（#2020 の PR #19 など）を普通の merge で取り込める
+- 新しいリポ thirai-classlab/tkm-harness（公開）の main は、hirai-method-lite の `feat/2021-feature-unit`（c345922・hirai-lite 3.3.0 と hirai-project-method 1.2.1）を**履歴ごと**そのまま置いた（2026-11-26）。理由: (1) 取り込んだ file の `git log`・`git blame` が続く（ハーネスの検査は blame で過去の行を当て直す） (2) 履歴が続くので、hirai-method-lite にあった直しを merge で取り込める（ただし hirai-method-lite は凍結したので、これからの直しは tkm-harness へ直接入れる）
 - 1 つにする直しはすべて branch から main への PR で入れる。merge と tag（`tkm-harness--v4.0.0`）はテックリードの承認のあと
 - 元リポ thirai-classlab/hirai-method（install.sh の旧ハーネス）は使わない
 
@@ -178,4 +178,4 @@ fork（例 classlab-inc/tkm-harness）へ替えるときは `extraKnownMarketpla
 
 1. hirai-task の feature の扱い（TKM-R4）・settings.json の env の読み（TKM-R2）・進捗の表（TKM-R8）を hirai-method-lite の branch で作り、この branch に merge で取り込む
 2. 1 つにする直し・名前の付け替え（`hirai-lite`・`hirai-project-method`・`HIRAI_METHOD_*` → `tkm-harness`・`TKM_HARNESS_*`）・fork しやすさ（TKM-R5）・配布の一覧・README・CHANGELOG
-3. #2020（hirai-method-lite の PR #19）が hirai-method-lite に入ったら、merge で取り込む
+3. #2020（hirai-method-lite の PR #19。branch は hirai-lite 3.2.0 の上にある）は hirai-method-lite に入れない（入れると凍結した hirai-lite に新しい版が出て TKM-R6.1 と食い違う）。tkm-harness の branch へ付け替える（rebase）か閉じ、直しは tkm-harness へ直接入れる

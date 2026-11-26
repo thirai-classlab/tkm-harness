@@ -327,8 +327,9 @@ harness_setting() {
   local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" up hc env v
   case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; load_on_start) up=LOAD_ON_START ;; *) return 0 ;; esac
   hc="HC_$up"; env="TKM_HARNESS_$up"
-  v="${!hc:-}"; v="${v%$'\n'}"
-  if [ -z "$v" ] && [ "${3:-}" != "files" ]; then v="${!env:-}"; v="${v%$'\n'}"; fi
+  # 値の前後の空白（タブ・改行を含む）は外す（file 読み・hirai-task の _harness_setting と同じ）
+  v="${!hc:-}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  if [ -z "$v" ] && [ "${3:-}" != "files" ]; then v="${!env:-}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; fi
   if [ -z "$v" ]; then   # Claude Code の中でも環境変数が空なら file を読む (会話を開いたあとに書いた値・開く前の env が古い会話に効かせる)
     v="$(_harness_file_setting "$item" "$root")"
   fi

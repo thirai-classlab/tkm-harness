@@ -997,6 +997,8 @@ chk hm-env "github-project" "$(fn "$P" TKM_HARNESS_TASKS=github-project -- harne
 J TKM_HARNESS_TASKS ledger > "$P/.claude/settings.json"
 chk hm-env-over-file "github-project" "$(fn "$P" TKM_HARNESS_TASKS=github-project -- harness_tasks_form "$P")"
 chk hm-hc "github-project" "$(fn "$P" HC_TASKS=github-project TKM_HARNESS_TASKS=ledger -- harness_tasks_form "$P")"
+# 値の前後の空白（タブ含む）は外す（file 読み・hirai-task と同じ。"block " が off に倒れない）
+chk hm-env-space "github-project/block" "$(fn "$P" "TKM_HARNESS_TASKS= github-project " -- harness_tasks_form "$P")/$(fn "$P" "TKM_HARNESS_WORKTREE=block	" -- harness_worktree "$P")"
 # Claude Code の中 (CLAUDECODE=1) でも環境変数が空なら file を読む (移す前に開いた会話が既定に戻らない)。環境変数があればそれが先
 J TKM_HARNESS_TASKS github-project > "$P/.claude/settings.json"
 chk hm-claudecode "github-project/ledger" "$(fn "$P" CLAUDECODE=1 -- harness_tasks_form "$P")/$(fn "$P" CLAUDECODE=1 TKM_HARNESS_TASKS=ledger -- harness_tasks_form "$P")"
@@ -1628,7 +1630,9 @@ EOF5
   cat > "$ghpbin/hirai-task" <<EOF6
 #!/usr/bin/env bash
 echo "\$*" >> "$ghplog"
-if [ "\$1" = line ] && [ "\${2:-}" = --refresh ]; then sleep 3; exit 0; fi
+# is-coordinator は exit 1（担当の道＝平文）にして、開始時の行を平文で数える（0 だと JSON 1 行になり行数の検査が空振りする）
+[ "\$1" = is-coordinator ] && exit 1
+if [ "\$1" = line ] && [ "\${2:-}" = --refresh ]; then sleep 20; exit 0; fi
 [ "\$1" = line ] && echo "6（承認 3・裁定 1・取り込み 2）／進行中 5／待ち解け —"
 exit 0
 EOF6
@@ -1640,9 +1644,8 @@ EOF6
   gelapsed=$(( $(date +%s) - gstart ))
   printf '%s' "$gout" | grep -qF 'Project: あなたの番 6（承認 3・裁定 1・取り込み 2）／進行中 5／待ち解け —' \
     || bad5="$bad5 [ghp] session-start が Project の行を出さない: $gout"
-  # 取り直し (--refresh) は 3 秒眠る偽物。待てば 3 秒以上かかる。コーディネーターの判定と控えの表 (is-coordinator・load --cached の 2 回の起動。TKM-R9.1) が
-  # 加わったので、秒単位の測りで 2 秒までは待ちと見なさない
-  [ "$gelapsed" -le 2 ] || bad5="$bad5 [ghp] session-start が取り直しを ${gelapsed} 秒待った"
+  # 取り直し (--refresh) は 20 秒眠る偽物。待てば 20 秒かかる。機械の負荷で揺れないよう 8 秒以下を合格にする
+  [ "$gelapsed" -le 8 ] || bad5="$bad5 [ghp] session-start が取り直しを ${gelapsed} 秒待った"
   [ "$(printf '%s\n' "$gout" | grep -c . || true)" -le 5 ] || bad5="$bad5 [ghp] session-start が 5 行を超えた"
   printf '%s' "$gout" | grep -qF 'tasks: github-project' || bad5="$bad5 [ghp] 設定行に tasks: github-project が無い"
   : > "$ghplog"
@@ -1663,7 +1666,7 @@ EOF6
   local mw mhome mpm mrepo mout msl mbad="" mblk mu mo zsplit
   mw="$(mkt)"; mhome="$mw/home"; mpm="$mw/pm/1.0.0"; mrepo="$mw/repo"
   mkdir -p "$mhome/.claude/plugins" "$mpm/bin" "$mrepo/.claude"; git -C "$mrepo" init -q 2>/dev/null
-  printf '#!/usr/bin/env bash\n[ "$1" = line ] && echo "7（承認 3・裁定 1・取り込み 3）／進行中 2／待ち解け —"\nexit 0\n' > "$mpm/bin/hirai-task"
+  printf '#!/usr/bin/env bash\n[ "$1" = is-coordinator ] && exit 1\n[ "$1" = line ] && echo "7（承認 3・裁定 1・取り込み 3）／進行中 2／待ち解け —"\nexit 0\n' > "$mpm/bin/hirai-task"
   chmod +x "$mpm/bin/hirai-task"
   # M-5: 別のリポの project 行 (版が最大・projectPath が違う) は採らない。scope user の行だけ・このリポの project 行だけを見る
   mkdir -p "$mw/other/bin"; printf '#!/usr/bin/env bash\n[ "$1" = line ] && echo "99（別のリポの行）"\nexit 0\n' > "$mw/other/bin/hirai-task"; chmod +x "$mw/other/bin/hirai-task"
@@ -2801,7 +2804,7 @@ EOF
   cp "$ROOT/scripts/update-check.sh" "$ROOT/scripts/tasks-path.sh" "$wtmp/scripts/" 2>/dev/null
   git -C "$wtmp" init -q 2>/dev/null
   printf '0.1.0\n' > "$wtmp/VERSION"
-  printf '#!/usr/bin/env bash\n[ "$1" = line ] && [ -z "${2:-}" ] && echo "1（承認 1・裁定 0・取り込み 0）／進行中 1／待ち解け —"\nexit 0\n' > "$wbin/hirai-task"
+  printf '#!/usr/bin/env bash\n[ "$1" = is-coordinator ] && exit 1\n[ "$1" = line ] && [ -z "${2:-}" ] && echo "1（承認 1・裁定 0・取り込み 0）／進行中 1／待ち解け —"\nexit 0\n' > "$wbin/hirai-task"
   chmod +x "$wbin/hirai-task"
   local wudir; wudir="$(TMPDIR="$wtd" bash -c ". \"$wtmp/scripts/update-check.sh\"; harness_update_cache_dir \"$wtmp\"")"
   mkdir -p "$wudir"

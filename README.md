@@ -44,7 +44,7 @@ Claude Code で次の 2 行を順に実行します。
 |---|---|---|---|
 | **Local**（おすすめ） | いま開いているプロジェクトで、自分だけ | そのフォルダの `.claude/settings.local.json` | 配られない（git に入らない） |
 | **User** | このパソコンで開くすべてのプロジェクト、自分だけ | ホームの `~/.claude/settings.json` | 配られない |
-| **Project** | いま開いているプロジェクトを触る人全員 | そのフォルダの `.claude/settings.json` | **配られる**（このファイルを commit すると全員に効く。ただし commit は有効にするだけで入れません。入れる操作は人ごとに要ります → 下の「1.x・2.x から 3.0.0 へ移る」） |
+| **Project** | いま開いているプロジェクトを触る人全員 | そのフォルダの `.claude/settings.json` | **配られる**（このファイルを commit すると全員に効く。ただし commit は有効にするだけで入れません。入れる操作は人ごとに要ります → 下の「hirai-lite から移る」） |
 
 **Local をおすすめする理由**は 3 つです。
 
@@ -71,9 +71,9 @@ Claude Code で次の 2 行を順に実行します。
 
 > **`Skills` の件数はコマンドとスキルの合計です。** 4.0.0 はコマンド 14 個 + スキル 3 個の 17 件になるはずです（4.0.0 の実機での表示は、下の「使い捨ての HOME での確認」を参照。v2.7.0 も `Skills (17)` = コマンド 14 + スキル 3 でした）。`Agents (1)`、`MCP servers (2)` と並びます（2026-11-15、偽の HOME に手元の写しを入れて Claude Code 2.1.312 で確認。`Always-on: ~637 tok` と出ました。2.6.0 は `Skills (14)`・`Agents (3)`・約 609 tokens。この見積もりは `disable-model-invocation: true` の 5 本の説明文も数えていますが、[公式](https://code.claude.com/docs/en/skills) ではその説明文は会話に載りません）。
 >
-> **`Hooks` の件数はスクリプトの本数ではなく、きっかけ（イベント）の種類数です。** v1.11.0 の `claude plugin details tkm-harness` は `Hooks (2)  SessionStart, UserPromptSubmit` と出ますが、スクリプトは 3 本あります（`UserPromptSubmit` に 2 本ぶら下がっているため）。偽 HOME への実インストールで確かめた挙動で、3 本目を足しても表示は `(2)` のままです（別イベントを足したコピーでは `(3)` に増えました）。本数を数えるなら `ls <プラグイン>/hooks/*.sh`、または `tests/smoke.sh` case 6 の `hook=3/5` を見てください。
+> **`Hooks` の件数はスクリプトの本数ではなく、きっかけ（イベント）の種類数です。** v1.11.0 の `claude plugin details tkm-harness` は `Hooks (2)  SessionStart, UserPromptSubmit` と出ますが、スクリプトは 3 本あります（`UserPromptSubmit` に 2 本ぶら下がっているため）。偽 HOME への実インストールで確かめた挙動で、3 本目を足しても表示は `(2)` のままです（別イベントを足したコピーでは `(3)` に増えました）。本数を数えるなら `ls <プラグイン>/hooks/*.sh`、または `tests/smoke.sh` case 6 の `hook=6/6`（今の本数）を見てください。
 
-- **自動処理（hooks）だけを対象にした承認画面は出ません。** 入れた時点で動きます。中身は `hooks/session-start.sh` と `hooks/context-budget.sh` と `hooks/loop-reminder.sh` と `hooks/worktree-guard.sh` と `hooks/notify-attention.sh` の 5 本だけで、どれも短いシェルスクリプトです。**`worktree-guard.sh` 以外は操作を止めません**（文章を足すか、コーディネーターへ知らせるだけで、承認・拒否の判断は変えません）。`worktree-guard.sh` は `.claude/mode.yml` に `worktree: block` を置いたリポでだけ、Orca の worktree でない会話からの Edit・Write・NotebookEdit と `git commit` を止めます（MCP の書き込みの道具は止めません。既定は `off` で何もしません。→ [Orca で並行に進める](#orca-で並行に進める選べる機能)）。`loop-reminder.sh` は進め方が `loop` のときだけ動き、`normal`（確認あり）では 1 バイトも出しません。
+- **自動処理（hooks）だけを対象にした承認画面は出ません。** 入れた時点で動きます。中身は `hooks/session-start.sh` と `hooks/context-budget.sh` と `hooks/loop-reminder.sh` と `hooks/worktree-guard.sh` と `hooks/notify-attention.sh` と `hooks/coordinator-load.sh` の 6 本だけで、どれも短いシェルスクリプトです。**`worktree-guard.sh` 以外は操作を止めません**（文章を足すか、コーディネーターへ知らせる・表を入れるだけで、承認・拒否の判断は変えません）。`worktree-guard.sh` は `.claude/settings.json` の env に `TKM_HARNESS_WORKTREE` を `block` で置いたリポ（4.x の間は `.claude/mode.yml` の `worktree: block` も読みます）でだけ、Orca の worktree でない会話からの Edit・Write・NotebookEdit と `git commit` を止めます（MCP の書き込みの道具は止めません。既定は `off` で何もしません。→ [Orca で並行に進める](#orca-で並行に進める選べる機能)）。`loop-reminder.sh` は進め方が `loop` のときだけ動き、`normal`（確認あり）では 1 バイトも出しません。
 - **外部ツール接続（MCP）の 2 つも、承認なしで自動的につながります。** `claude mcp list` で確かめると `plugin:tkm-harness:serena: uvx … - ✔ Connected` のように、名前の頭に `plugin:tkm-harness:` が付いて出ます。`serena` は `uvx`（[uv](https://docs.astral.sh/uv/)）、`context7` は `npx`（Node.js）が必要です。無い場合は該当のものが「つながらない」と出るだけで、ほかの機能はそのまま動きます。
 
 選び終わると `Plugin is now active.`（もう使えます）か `Run /reload-plugins to activate.`（`/reload-plugins` と入力すると使えます）のどちらかが出ます。後者なら、そのまま `/reload-plugins` を実行してください。
