@@ -100,7 +100,10 @@ def section_name(model: dict, number: int) -> str:
 def build(view: dict, prs: dict, assign: dict, settings: dict) -> dict:
     """表の材料（JSON にできる形）を組む。"""
     model = hirai_board.build(view)
+    # 担当の行は task と、控え（assign）に載った feature（割り振りの単位は feature。ADR-0815）。
+    # 全体の数（sections の total・done）は task だけで数え、feature を足して二重に数えない。
     tasks = {i['number']: i for i in view['issues'] if hirai_board.is_task(i)}
+    tasks.update({i['number']: i for i in view['issues'] if i.get('kind') == 'feature' and i['number'] in assign})
     ctx = {'tasks': tasks, 'prs_of': _pr_index(prs['open'], view['repo']),
            'merged_of': {n: [p['number'] for p in ps] for n, ps in _pr_index(prs['merged'], view['repo']).items()}}
     sections = []

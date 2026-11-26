@@ -35,9 +35,13 @@ hirai-task — リポに紐づいた GitHub Project のタスクを読み書き�
 
   Project の在り処は Repository.projectsV2 から引く。0 件なら「無し」、
   2 件以上なら候補を出して exit 2、「種別」を持つものを選ぶ。紐づけが 1 つなら
-  それをそのまま使う。`HIRAI_TASK_PROJECT` を明示したときは自動判定をせず、その番号を
-  そのまま使う（試験用の上書き）。owner/repo は `HIRAI_TASK_REPO`（既定は
-  `git remote get-url origin`）から取る。Project の owner を別に持たない。
+  それをそのまま使う。設定の `TKM_HARNESS_PROJECT`（正の整数。一時の上書きは `HIRAI_TASK_PROJECT`）を
+  明示したときは自動判定をせず、その番号をそのまま使う（正の整数でなければ exit 2）。
+  owner/repo は設定の `TKM_HARNESS_REPO`（一時の上書きは `HIRAI_TASK_REPO`。`<owner>/<name>` の形）、
+  無ければ作業ツリーのルート（今いるディレクトリでなく）の `git remote get-url origin` から取る。
+  設定の読みは 1 本の順: 一時の上書き > 環境変数 `TKM_HARNESS_<項目>` > settings の file の env
+  （本体の checkout の settings.local.json → このリポの settings.local.json → settings.json →
+  ~/.claude/settings.json）> mode.yml（予備。project・repo は読まない）> 空。Project の owner を別に持たない。
 
   一覧の頁ごとの問い合わせ（ITEMS_QUERY）は fieldValues だけを引き、blockedBy と
   closingIssuesReferences を持たない。この 2 つは点数式（各 connection の要求数は
@@ -240,7 +244,7 @@ memos / today / after-merge）:
 board（全体像のコンソール）:
   items を頁送りで全部読み、open の issue と全 wave の blocked by（fetch_extras）、wave の本文を引く。
   取った板は共有の置き場の gh-board-cache.json に残し、10 分以内でリポと Project の指定
-  （HIRAI_TASK_PROJECT。無ければ auto）が同じなら gh を叩かずに使う（--refresh で取り直す。
+  （設定の project。無ければ auto）が同じなら gh を叩かずに使う（--refresh で取り直す。
   --from <json> は残した板から描き gh を叩かない）。blocked by の打ち切り・gh の失敗・errors は
   「0 件」と描かずに exit 1 で、良い残した板は上書きしない。着手できるか（ready_block_reason）と
   wave が出たか（wave_has_exited）はここで ready と同じ判定をして、描く側（scripts/hirai_board.py。
@@ -281,12 +285,12 @@ from typing import NamedTuple
 
 
 def _repo_from_git_remote() -> str:
-    """`git remote get-url origin` から owner/repo を取る。取れなければ空文字を返す
-    （main が「リポを決められない」と exit 2 にする。既定のリポは持たない）。"""
+    """作業ツリーのルート（_root()。今いるディレクトリでなく）の `git remote get-url origin` から owner/repo を取る。
+    取れなければ空文字を返す（main が「リポを決められない」と exit 2 にする。既定のリポは持たない）。"""
     try:
         proc = subprocess.run(
             ['git', 'remote', 'get-url', 'origin'],
-            capture_output=True, text=True, check=True,
+            cwd=_root(), capture_output=True, text=True, check=True,
         )
     except Exception:
         return ''
@@ -294,12 +298,9 @@ def _repo_from_git_remote() -> str:
     return f'{match.group(1)}/{match.group(2)}' if match else ''
 
 
-# リポの owner/name は HIRAI_TASK_REPO（既定は git remote から取る）だけで決める。
+# リポの owner/name・Project の番号は、設定の読み（_harness_setting。TKS-R1）で決める。
+# REPO・OWNER・REPO_NAME・PROJECT_NUMBER_OVERRIDE は、設定の読みを定義したあと（_harness_setting の下）で置く。
 # Project の owner を別に持たない（リポの owner とずれて落ちるのを避ける）。
-# HIRAI_TASK_REPO は試験用の上書きとして残す。
-REPO = os.environ.get('HIRAI_TASK_REPO', '').strip() or _repo_from_git_remote()
-OWNER, _, REPO_NAME = REPO.partition('/')
-PROJECT_NUMBER_OVERRIDE = os.environ.get('HIRAI_TASK_PROJECT', '').strip()
 
 # 種別（kind）の項目名と、一覧から除く種別。空（項目が無い・値が無い）は task とみなす。
 KIND_FIELD = '種別'
@@ -478,7 +479,9 @@ query($owner:String!, $name:String!) {
 
 
 def discover_project_number() -> int:
-    if PROJECT_NUMBER_OVERRIDE:
+    if PROJECT_NUMBER_OVERRIDE:  # 設定で指定されたら、Project を探す問い合わせは打たない
+        if not re.fullmatch(r'[1-9][0-9]*', PROJECT_NUMBER_OVERRIDE):
+            die(f'Project の番号は正の整数で書く（{PROJECT_SOURCE} に {PROJECT_NUMBER_OVERRIDE!r} が入っている）', 2)
         return int(PROJECT_NUMBER_OVERRIDE)
     data = graphql(PROJECTS_QUERY, {'owner': OWNER, 'name': REPO_NAME})
     repo = data.get('repository')
@@ -496,7 +499,7 @@ def discover_project_number() -> int:
     candidates = with_kind or nodes
     listing = '\n'.join(f"  #{n['number']} {n['title']}" for n in candidates)
     die(
-        f'Project の候補が複数ある。HIRAI_TASK_PROJECT で選ぶこと:\n{listing}',
+        f'Project の候補が複数ある。`.claude/settings.json` の env の `TKM_HARNESS_PROJECT` で選ぶこと（一時なら `HIRAI_TASK_PROJECT`）:\n{listing}',
         2,
     )
 
@@ -5185,7 +5188,7 @@ def cmd_memos() -> int:
     return 0
 
 
-# ── 前夜の CI（today の 1 行。mode.yml の nightly_ci が空なら何も出さず gh も呼ばない） ────
+# ── 前夜の CI（today の 1 行。設定の nightly_ci が空なら何も出さず gh も呼ばない） ────
 NIGHTLY_STALE_HOURS = 36
 _JST = datetime.timezone(datetime.timedelta(hours=9))
 _NIGHTLY_FILE_RE = re.compile(r'[A-Za-z0-9._-]+\Z')
@@ -5213,17 +5216,6 @@ def _yml_file_value(path: str, key: str) -> str:
         value = re.sub(r'(^|\s+)#.*$', '', match.group(1)).rstrip()
         quoted = re.fullmatch(r'"(.*)"|\'(.*)\'', value)
         return (quoted.group(1) if quoted.group(1) is not None else quoted.group(2)) if quoted else value
-    return ''
-
-
-def nightly_ci_setting() -> str:
-    """mode.yml の nightly_ci を、プロジェクト（作業ツリー直下の .claude/）→ ホーム（~/.claude/）の順に
-    引く（土台の harness_yml_value と同じ順）。空文字は「設定なし」。読めないときは RuntimeError。
-    土台の scripts には依存しない（このプラグインは土台の関数を呼ばない約束）。"""
-    for path in (os.path.join(_root(), '.claude', 'mode.yml'), os.path.expanduser('~/.claude/mode.yml')):
-        value = _yml_file_value(path, 'nightly_ci')
-        if value:
-            return value
     return ''
 
 
@@ -5269,7 +5261,7 @@ def nightly_ci_line(workflow: str) -> str:
 
 def print_nightly_ci() -> None:
     try:
-        workflow = nightly_ci_setting()
+        workflow = _harness_setting('nightly_ci')  # 設定の読みの 1 本（TKS-R1）。読めないときは RuntimeError
     except RuntimeError as exc:
         print(f'前夜の CI: nightly_ci を読めない（{exc}）', file=sys.stderr)
         return
@@ -5479,7 +5471,7 @@ _BOARD_NUMBER_FLAGS = ('--wave', '--feature', '--task', '--publish')
 _ISSUE_URL_RE = re.compile(r'^https://github\.com/([^/]+/[^/]+)/(?:issues|pull)/\d+\Z')
 _NO_REPO_MESSAGE = (
     'リポを決められない（git remote の origin が github.com を指していない）。'
-    'HIRAI_TASK_REPO=<owner>/<repo> で指定できる'
+    '設定 TKM_HARNESS_REPO=<owner>/<repo>（一時は HIRAI_TASK_REPO）で指定できる'
 )
 
 
@@ -5753,8 +5745,7 @@ def _board_snapshot(opts: dict) -> tuple[dict, str]:
         if snap is None:
             die(f'--from の JSON を読めない: {problem}', 1)
         return snap, 'from'
-    if not REPO:
-        die(_NO_REPO_MESSAGE, 2)
+    _require_repo()
     # --publish は issue の本文に載せるので、控えが新しくても取り直す（書き込みのあとの古い Status を載せない）。
     snap = None if opts['refresh'] or opts['publish'] is not None else _usable_board_cache()
     if snap is not None:
@@ -5864,7 +5855,7 @@ def _mode_setting(key: str, *, home: bool = True) -> str:
 
 
 def _settings_files() -> list[str]:
-    """機能の切り替え（tasks・worktree・notify）を書く settings の file（土台の _harness_setting_files と同じ順）:
+    """設定（mode・tasks・worktree・notify・project・repo・load_* など）を書く settings の file（土台の _harness_setting_files と同じ順）:
     本体の checkout の settings.local.json → このリポの settings.local.json → settings.json → ~/.claude/settings.json。"""
     top = _root()
     files = []
@@ -5878,15 +5869,23 @@ def _settings_files() -> list[str]:
     return files
 
 
-def _harness_setting(key: str) -> str:
-    """機能の切り替え 1 項目を、土台の harness_setting と同じ順に引く:
-    HC_<KEY> > 環境変数 TKM_HARNESS_<KEY> > settings の file の env > mode.yml（4.x の間だけ）。無ければ空。
-    mode.yml が読めないときは RuntimeError。"""
+# 設定の項目ごとの決まり（TKS-R1。土台の harness_setting と同じ順・同じ項目）。
+_HC_KEYS = ('mode', 'auto_sync', 'tasks', 'worktree', 'notify', 'load_on_start')  # 一時の上書き HC_<KEY>
+_TEMP_OVERRIDES = {'project': 'HIRAI_TASK_PROJECT', 'repo': 'HIRAI_TASK_REPO'}  # 一時の上書きの別名
+_NO_MODE_YML_KEYS = ('project', 'repo')  # mode.yml に項目が無い
+
+
+def _harness_setting_source(key: str) -> tuple[str, str]:
+    """設定 1 項目の (値, どこから読んだか) を、土台の harness_setting と同じ順に引く:
+    一時の上書き（HC_<KEY>・HIRAI_TASK_PROJECT・HIRAI_TASK_REPO）> 環境変数 TKM_HARNESS_<KEY> >
+    settings の file の env > mode.yml（予備。project・repo は無い。load_* はプロジェクトだけ）。無ければ ('', '')。
+    値の前後の空白は外す。mode.yml が読めないときは RuntimeError。"""
     up = key.upper()
-    for name in ('HC_' + up, 'TKM_HARNESS_' + up):
+    names = (['HC_' + up] if key in _HC_KEYS else []) + ([_TEMP_OVERRIDES[key]] if key in _TEMP_OVERRIDES else []) + ['TKM_HARNESS_' + up]
+    for name in names:
         value = os.environ.get(name, '').strip()
         if value:
-            return value
+            return value, name
     for path in _settings_files():
         try:
             with open(path, encoding='utf-8') as f:
@@ -5894,8 +5893,39 @@ def _harness_setting(key: str) -> str:
         except (OSError, ValueError, AttributeError):
             continue
         if isinstance(value, str) and value.strip():
-            return value.strip()
-    return _mode_setting(key)
+            return value.strip(), f'{path} の env の TKM_HARNESS_{up}'
+    if key in _NO_MODE_YML_KEYS:
+        return '', ''
+    value = _mode_setting(key, home=not key.startswith('load_'))
+    return value, (f'mode.yml の {key}' if value else '')
+
+
+def _harness_setting(key: str) -> str:
+    """設定 1 項目の値（無ければ空）。順は _harness_setting_source を見る。"""
+    return _harness_setting_source(key)[0]
+
+
+# リポ・Project の番号は設定の読みで決める（TKS-R2.2・R2.3）。読み込み時に決め、形の誤りは使うとき（_require_repo・
+# discover_project_number）に exit 2 で断る（--selftest や line を巻き込まない）。
+def _apply_repo_project_settings() -> None:
+    """REPO・OWNER・REPO_NAME・PROJECT_NUMBER_OVERRIDE を、今の設定から決め直す（読み込み時に 1 回。試験は決め直す）。"""
+    global REPO, OWNER, REPO_NAME, PROJECT_NUMBER_OVERRIDE, PROJECT_SOURCE, _REPO_SETTING, _REPO_SOURCE
+    _REPO_SETTING, _REPO_SOURCE = _harness_setting_source('repo')
+    REPO = _REPO_SETTING or _repo_from_git_remote()
+    OWNER, _, REPO_NAME = REPO.partition('/')
+    PROJECT_NUMBER_OVERRIDE, PROJECT_SOURCE = _harness_setting_source('project')
+
+
+_apply_repo_project_settings()
+_REPO_SHAPE_RE = re.compile(r'[A-Za-z0-9._-]+/[A-Za-z0-9._-]+')
+
+
+def _require_repo() -> None:
+    """リポが決まっていること（設定の repo が `<owner>/<name>` の形であること）を確かめる。誤りは exit 2。"""
+    if _REPO_SETTING and not _REPO_SHAPE_RE.fullmatch(_REPO_SETTING):
+        die(f'TKM_HARNESS_REPO（または HIRAI_TASK_REPO）は owner/name で書く（{_REPO_SOURCE} に {_REPO_SETTING!r} が入っている）', 2)
+    if not REPO:
+        die(_NO_REPO_MESSAGE, 2)
 
 
 def _load_module():
@@ -6020,21 +6050,15 @@ def fetch_deadline_open(date: str) -> int | None:
     return None
 
 
-def _load_setting(key: str) -> str:
-    """load の設定 1 項目。環境変数 TKM_HARNESS_<KEY の大文字>（導入先の .claude/settings.json の env）が先、無ければ mode.yml。"""
-    value = os.environ.get('TKM_HARNESS_' + key.upper(), '').strip()
-    return value or _mode_setting(key, home=False)
-
-
 def _load_settings(prs: dict | None, *, network: bool) -> dict:
-    """環境変数 TKM_HARNESS_LOAD_DEADLINE・_LOAD_DEADLINE_LABEL・_LOAD_MAINLINE・_LOAD_MAINLINE_LABEL が先、無ければ
-    プロジェクトの mode.yml の load_deadline（YYYY-MM-DD）・load_deadline_label・load_mainline・load_mainline_label。
+    """設定の load_deadline（YYYY-MM-DD）・load_deadline_label・load_mainline・load_mainline_label
+    （環境変数 TKM_HARNESS_LOAD_*、無ければ settings の file の env、無ければプロジェクトの mode.yml。_harness_setting の順）。
     無い設定は空にして、その行・印を出さない。日付の形が違う・mode.yml を読めないときは、標準エラーに 1 行で期限の行を出さない。"""
     settings = {'deadline_date': '', 'deadline_label': '期限', 'deadline_open': None, 'mainline': '', 'mainline_label': '本線'}
     try:
-        date = _load_setting('load_deadline')
-        settings['mainline'] = _load_setting('load_mainline')
-        settings['mainline_label'] = _load_setting('load_mainline_label') or '本線'
+        date = _harness_setting('load_deadline')
+        settings['mainline'] = _harness_setting('load_mainline')
+        settings['mainline_label'] = _harness_setting('load_mainline_label') or '本線'
     except RuntimeError as exc:
         print(f'警告: {exc}。期限の行・本線の印は出さない', file=sys.stderr)
         return settings
@@ -6043,7 +6067,7 @@ def _load_settings(prs: dict | None, *, network: bool) -> dict:
         date = ''
     if date:
         settings['deadline_date'] = date
-        settings['deadline_label'] = _load_setting('load_deadline_label') or f'期限（{date}）'
+        settings['deadline_label'] = _harness_setting('load_deadline_label') or f'期限（{date}）'
         if network:
             settings['deadline_open'] = fetch_deadline_open(date)
         elif (prs or {}).get('deadline_date') == date:
@@ -6170,8 +6194,7 @@ def _age_note(model: dict, *, always: bool = False) -> str:
 
 def cmd_load(opts: dict) -> int:
     """進みと割り振りの表（読むだけ）。--changed は前回と比べて動いたときだけ出し、動いていなければ 1 行も出さず exit 3。"""
-    if not REPO:
-        die(_NO_REPO_MESSAGE, 2)
+    _require_repo()
     if opts['if-coordinator'] and not is_coordinator():  # コーディネーターでない会話では何も出さない
         return LOAD_EXIT_UNCHANGED
     load = _load_module()
@@ -6439,7 +6462,7 @@ def _write_assignments(change) -> None:
 
 
 def cmd_assign(argv: list[str]) -> int:
-    """task に作業のセッションの名前と順番を割り振る。手元の控えに書き、Assignees が空なら自分を入れ、
+    """task か feature（種別=feature。ADR-0815）に作業のセッションの名前と順番を割り振る。手元の控えに書き、Assignees が空なら自分を入れ、
     ほかの人なら警告する（Project の項目は足さない・書かない）。--clear は割り振りを外す（Assignees は触らない）。"""
     if len(argv) == 2 and argv[1] == '--clear':
         number = _parse_issue_number(argv[0])
@@ -6457,7 +6480,7 @@ def cmd_assign(argv: list[str]) -> int:
     order = _parse_assign_order(argv[2]) if len(argv) == 3 else None
     project_number = discover_project_number()
     item = _require_item(project_number, number)
-    _reject_wave_feature(item, number, 'assign')
+    _reject_wave_feature(item, number, 'assign', allow_feature=True)  # 割り振りの単位は feature（ADR-0815）。wave は断る
     _reject_closed(item, number, 'assign')
     others = ensure_assignee(number)  # だれの task かを先に見せる（止めない）
     _write_assignments(lambda t: {**t, str(number): {'owner': owner, 'order': order}})
@@ -6738,7 +6761,7 @@ def cmd_line(tail: list[str]) -> int:
 
 
 def _load_setup_module():
-    """GitHub Project の立ち上げ（scripts/hirai_project_setup.py）。repo と Project の決め方はモジュールが持つ。"""
+    """GitHub Project の立ち上げ（scripts/hirai_project_setup.py）。repo と Project の番号は bin の設定の読みが決めて渡す。"""
     scripts_dir = os.path.join(_plugin_root(), 'scripts')
     if not os.path.isfile(os.path.join(scripts_dir, 'hirai_project_setup.py')):
         die(f'立ち上げの道具が見つからない: {scripts_dir}/hirai_project_setup.py', 1)
@@ -6801,10 +6824,9 @@ def main(argv: list[str]) -> int:
             die('使い方: hirai-task is-coordinator [--role]', 2)
         state = coordinator_state()
         return 0 if state == 'coordinator' else (LOAD_EXIT_UNCHANGED if state == 'unknown' else 1)
-    if sub == 'setup':  # 既定は計画だけ。--apply で書く。repo・Project の判定と前提の検査はモジュールが持つ。
-        return _load_setup_module().main(tail)
-    if not REPO:
-        die(_NO_REPO_MESSAGE, 2)
+    if sub == 'setup':  # 既定は計画だけ。--apply で書く。前提の検査はモジュールが持つ（repo・Project の番号は設定の読みで決めて渡す）。
+        return _load_setup_module().main(tail, repo=REPO, project=PROJECT_NUMBER_OVERRIDE)  # 設定の読みで決めた値を渡す
+    _require_repo()
     if sub == 'ready':
         return cmd_ready()
     if sub == 'pending':
