@@ -334,8 +334,8 @@ case_9() {
   local bad d m
   bad="$(check9 "$ROOT")"
   [ -z "$bad" ] || { fail 9 "is-coordinator は親がいるかで決まる" "$bad"; return; }
-  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e"
-  for m in a b c d e; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
+  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e" "$d/f"
+  for m in a b c d e f; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
   sed "s|cursor = page.get('nextCursor') or ''|cursor = ''|" "$ROOT/bin/hirai-task" > "$d/a/bin/hirai-task"
   sed "s|^ROLE_LIMIT_SECONDS = 2 |ROLE_LIMIT_SECONDS = 60 |" "$ROOT/bin/hirai-task" > "$d/b/bin/hirai-task"
   python3 -I - "$ROOT/bin/hirai-task" "$d/c/bin/hirai-task" <<'PY'
@@ -396,8 +396,8 @@ case_10() {
   local bad d m
   bad="$(check10 "$ROOT")"
   [ -z "$bad" ] || { fail 10 "hirai-notify の note・comment・親の判定" "$bad"; return; }
-  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e"
-  for m in a b c d e; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
+  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e" "$d/f"
+  for m in a b c d e f; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
   sed 's|^  if \[ "\$role" = "coordinator" \]; then|  if false; then|' "$ROOT/bin/hirai-notify" > "$d/a/bin/hirai-notify"
   sed 's|^  worktree_comment "完了報告済み"|  true|' "$ROOT/bin/hirai-notify" > "$d/b/bin/hirai-notify"
   sed 's|^NOTE_MAX_CHARS=60|NOTE_MAX_CHARS=600|' "$ROOT/bin/hirai-notify" > "$d/c/bin/hirai-notify"
@@ -465,14 +465,29 @@ check12() { # check12 <プラグインの root> -> 食い違いの文
   { ! grep -q 'projectsV2' "$s/log" && grep -q 'api' "$s/log"; } || bad="$bad settings の数値の TKM_HARNESS_PROJECT=7 を黙って捨てて探しに行った(log=$(head -c 200 "$s/log"));"
   r12 '{"env":{}}' TKM_HARNESS_PROJECT=7; rc=$?
   grep -q 'projectsV2' "$s/log" || bad="$bad 別のリポの会話の env の TKM_HARNESS_PROJECT=7 が効いて探しに行かない(log=$(head -c 200 "$s/log"));"
+  # setup が設定の repo・Project の番号を受ける（TKS-R2.2・R2.3）: 偽の gh は何を聞かれても「Project 無し」と答える。
+  # 番号を渡す道が生きていれば read_project が o/#7 を探して「見つからない」で exit 1、崩れれば自動の選びに落ちて計画だけ出し exit 0
+  cat > "$s/fake/gh-setup" <<'FAKE'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "auth status") echo "  - Token scopes: 'project', 'repo'" >&2; exit 0 ;;
+  "api graphql") cat >> "$FAKE_LOG"; echo '{"data":{"viewer":{"login":"me"},"repositoryOwner":{"__typename":"Organization","projectV2":null},"repository":{"projectsV2":{"nodes":[]}}}}'; exit 0 ;;
+esac
+exit 1
+FAKE
+  chmod +x "$s/fake/gh-setup"
+  printf '%s\n' '{"env":{"TKM_HARNESS_PROJECT":"7","TKM_HARNESS_REPO":"o/r"}}' > "$s/r/.claude/settings.json"; : > "$s/log"
+  ( cd "$s/r" && env -i PATH="$s/fake:$BASE_PATH" HOME="$s/home" FAKE_LOG="$s/log" HIRAI_SETUP_GH="$s/fake/gh-setup" "$task" setup >"$s/out" 2>"$s/err" </dev/null ); rc=$?
+  { [ "$rc" = 1 ] && grep -q 'o/#7' "$s/err" && grep -Eq "number\"? ?: ?7" "$s/log"; } || bad="$bad setup が設定の repo=o/r・Project=7 を使わない(rc=$rc err=$(head -c 200 "$s/err"));"
   printf '%s' "$bad"
 }
 case_12() {
   local bad d m
   bad="$(check12 "$ROOT")"
   [ -z "$bad" ] || { fail 12 "設定の読みの分岐" "$bad"; return; }
-  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e"
-  for m in a b c d e; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
+  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e" "$d/f"
+  for m in a b c d e f; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
   python3 -I - "$ROOT/bin/hirai-task" "$d" <<'PY'
 import sys
 s = open(sys.argv[1], encoding="utf-8").read()
@@ -481,15 +496,16 @@ b = s.replace("    if _REPO_SETTING and not _REPO_SHAPE_RE.fullmatch(_REPO_SETTI
 c = s.replace("[_TEMP_OVERRIDES[key]] if key in _TEMP_OVERRIDES else []", "[]", 1)
 d = s.replace("    if key not in _FILE_FIRST_KEYS:", "    if True:", 1)
 e = s.replace("        if isinstance(value, int) and not isinstance(value, bool):", "        if False:", 1)
-for m, v in (("a", a), ("b", b), ("c", c), ("d", d), ("e", e)):
+f = s.replace("main(tail, repo=REPO, project=PROJECT_NUMBER_OVERRIDE)", "main(tail)", 1)
+for m, v in (("a", a), ("b", b), ("c", c), ("d", d), ("e", e), ("f", f)):
     open(sys.argv[2] + "/" + m + "/bin/hirai-task", "w", encoding="utf-8").write(v)
 PY
   chmod +x "$d"/*/bin/hirai-task
-  for m in a b c d e; do
+  for m in a b c d e f; do
     cmp -s "$ROOT/bin/hirai-task" "$d/$m/bin/hirai-task" && { fail 12 "壊した写し $m を作れた" "当たらず元と同じ"; return; }
     [ -n "$(check12 "$d/$m")" ] || { fail 12 "壊した写し $m で検査が FAIL する" "壊したのに通った"; return; }
   done
-  pass 12 "設定の Project の番号が正の整数でなければ exit 2・数値の 7 も使う・番号があれば projectsV2 を打たない・別のリポの会話の env の番号は効かない・repo の形の誤りは exit 2・一時の上書きが settings に勝つ（壊した写し 5 つで FAIL）"
+  pass 12 "設定の Project の番号が正の整数でなければ exit 2・数値の 7 も使う・番号があれば projectsV2 を打たない・別のリポの会話の env の番号は効かない・repo の形の誤りは exit 2・一時の上書きが settings に勝つ・setup が設定の repo と番号を使う（壊した写し 6 つで FAIL）"
 }
 
 # case 13: 振り出し・完了のあとに進みの表を出す hook (TKS-R5)。偽の hirai-task で is-coordinator と load --cached の答えを決める
