@@ -88,7 +88,7 @@ F4 から、`/tkm-harness:config` で settings の file に書いた値は、開
 ### 要件 TKS-R3: mode.yml は予備
 
 - TKS-R3.1 Given settings にも env にも mode が無く、mode.yml に `mode: loop` When 会話を開く Then loop（4.0.0 と同じ動き）
-- TKS-R3.2 Given mode.yml にだけ値がある項目 When 会話を開く Then 開始時に 1 行「settings の env へ移せます」（4.0.0 の HM-R2.4 を mode・auto_sync・load_* に広げる。mode は settings.local.json へ）
+- TKS-R3.2 Given プロジェクト（パッケージか toplevel）の mode.yml にだけ値があり、`/tkm-harness:update` が移せる項目 When 会話を開く Then 開始時に 1 行「settings の env へ移せます」（4.0.0 の HM-R2.4 を mode・auto_sync・load_*・nightly_ci に広げる。mode は settings.local.json へ）。ホームの `~/.claude/mode.yml` にだけある値と、移さないパッケージの `tasks:` は数えない（移せない値で 1 行が出続けないため）
 - TKS-R3.3 `/tkm-harness:update` の移しは、auto_sync・load_*・nightly_ci を settings.json の env へ、mode を settings.local.json の env へ写す（移した先にすでに値があれば写さない）。mode.yml の行は消さない（チームの mode.yml の mode を消すと、settings.local.json を持たない人が normal に戻るため）
 
 ### 要件 TKS-R4: `hirai-task assign` は feature も受け付ける（ADR-0815 で割り振りの単位が feature になった）
@@ -114,4 +114,5 @@ F4 から、`/tkm-harness:config` で settings の file に書いた値は、開
 
 - mode を settings.json に置く: チームの共有の file を、各自が進め方を変えるたびに書き換えることになる（決まったことの「modeはlocal.json」に合わない）
 - mode.yml の行を移したときに消す: settings.local.json を持たない人の進め方が黙って normal に戻る。予備として残し、効く順で settings を先にする
-- 会話の途中の値を file から先に読む（env より file を先）: F4 で保存した値は env に入るので要らない。file を先にすると、Claude Code が重ねた値（F1・F5）と別の順を自分で組むことになる
+- 全部の項目で file を env より先に読む（2026-11-27 の問いの案 C）: F4 で保存した値は env に入るので、同じリポでは要らない。mode などの人ごと・会話ごとの値まで、Claude Code が重ねた値（F1・F5）と別の順になる。別のリポに会話の値を持ち込む穴は、4 種だけ file を先にする TKS-R1.3（案 A）で塞いだ
+- 4 種も env を先にし、別のリポでは `env -u` で打つと手順に書く（案 B）: 書いた手順を忘れると、別のリポで会話のリポの Project を読み書きする
