@@ -1196,6 +1196,32 @@ chk tks-pr-default "/" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- 
 # 4 種 (project・repo・load_*・nightly_ci) は会話のリポの環境変数を読まない (TKS-R1.3)。file の無いリポでは空
 chk tks-pr-env "/" "$(fn "$P" TKM_HARNESS_PROJECT=7 TKM_HARNESS_REPO=o/r -- harness_setting project "$P")/$(fn "$P" TKM_HARNESS_PROJECT=7 TKM_HARNESS_REPO=o/r -- harness_setting repo "$P")"
 chk tks-4-env-ignored "///" "$(fn "$P" TKM_HARNESS_LOAD_DEADLINE=2028-01-01 TKM_HARNESS_LOAD_MAINLINE=x -- harness_setting load_deadline "$P")/$(fn "$P" TKM_HARNESS_LOAD_MAINLINE=x -- harness_setting load_mainline "$P")/$(fn "$P" TKM_HARNESS_NIGHTLY_CI=n.yml -- harness_setting nightly_ci "$P")/$(fn "$P" TKM_HARNESS_LOAD_DEADLINE_LABEL=l -- harness_setting load_deadline_label "$P")"
+# 4 種の全項目 (7 つ): 環境変数 (会話のリポの値) があっても打ったリポの file を読む。1 項目でも一覧から外れると、その項目だけ env を読んで落ちる
+bad=""
+for it in project repo load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci; do
+  up="$(printf '%s' "$it" | tr 'a-z' 'A-Z')"; J "TKM_HARNESS_$up" file > "$P/.claude/settings.json"
+  [ "$(fn "$P" "TKM_HARNESS_$up=env" -- harness_setting "$it" "$P")" = file ] || bad="$bad $it"
+done
+rm -f "$P/.claude/settings.json"
+chk tks-4-all-env-ignored "" "$bad"
+# 4 種は env があっても mode.yml にだけ値が在るものとして案内に数える (mode は env が先なので数えない)
+printf 'mode: loop\nload_deadline: 2026-12-15\nload_deadline_label: 期限\nload_mainline: 営業\nload_mainline_label: 本線\nnightly_ci: ci.yml\n' > "$P/.claude/mode.yml"
+chk tks-yml-only-4env "load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci" "$(fn "$P" TKM_HARNESS_MODE=loop TKM_HARNESS_LOAD_DEADLINE=e TKM_HARNESS_LOAD_DEADLINE_LABEL=e TKM_HARNESS_LOAD_MAINLINE=e TKM_HARNESS_LOAD_MAINLINE_LABEL=e TKM_HARNESS_NIGHTLY_CI=e -- harness_setting_from_yml_only "$P")"
+rm -f "$P/.claude/mode.yml"
+# 値が 7.0・true・[7] の file は読めない値として飛ばし、標準エラーに 1 行出す
+printf '{"env":{"TKM_HARNESS_PROJECT":7.0}}\n' > "$P/.claude/settings.json"
+be="$(fn "$P" -- harness_setting project "$P" 2>&1 >/dev/null)"; bo="$(fn "$P" -- harness_setting project "$P" 2>/dev/null)"
+chk tks-badtype-warn "1/" "$(printf '%s\n' "$be" | grep -c '文字列か整数')/$bo"
+rm -f "$P/.claude/settings.json"
+# 4 種の一覧は tasks-path.sh と bin/hirai-task の 2 か所にある: 同じ 7 項目であること
+chk tks-4-lists-same "load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci project repo/same" "$(python3 -I - "$S/bin/hirai-task" "$S/scripts/tasks-path.sh" <<'PYL'
+import re, sys
+b = open(sys.argv[1], encoding="utf-8").read(); t = open(sys.argv[2], encoding="utf-8").read()
+pk = set(re.findall(r"'([a-z_]+)'", re.search(r"_FILE_FIRST_KEYS = \(([^)]*)\)", b).group(1)))
+bk = set(re.search(r'_harness_item_file_first\(\) \{\n  case "\$\{1:-\}" in\n    ([^)]*)\) return 0', t).group(1).split("|"))
+print(" ".join(sorted(pk)) + ("/same" if pk == bk else "/differ"))
+PYL
+)"
 # 別のリポ: 会話のリポの env (7) があっても、打ったリポの file (9) か自動 (空) になる。同じリポでは変わらない・env が古くても file に従う
 git init -q "$T/Q4"; mkdir -p "$T/Q4/.claude"; git init -q "$T/R4"; mkdir -p "$T/R4/.claude"
 J TKM_HARNESS_PROJECT 9 > "$T/Q4/.claude/settings.json"; J TKM_HARNESS_PROJECT 7 > "$P/.claude/settings.json"
@@ -1513,6 +1539,10 @@ tks-load-nohome|scripts/tasks-path.sh|s/^  case "\${2:-}" in load_\*) _HY_HOME="
 tks-migrate-existing|scripts/tasks-path.sh|s/^  if \[ -n "\$cur" \]; then$/  if false; then/
 tks-notice|hooks/session-start.sh|s/\$(harness_setting_from_yml_only "\$root" 2>\/dev\/null | sed .s\/ \/・\/g.)/zzz/
 tks-4-other-repo|scripts/tasks-path.sh|s/_harness_item_file_first "\$item" || first=0/first=0/
+tks-4-all-env-ignored|scripts/tasks-path.sh|s/project|repo|load_deadline|load_deadline_label|load_mainline|load_mainline_label|nightly_ci) return 0/project|repo|load_deadline|load_deadline_label|load_mainline|nightly_ci) return 0/
+tks-4-lists-same|bin/hirai-task|s/^_FILE_FIRST_KEYS = ('project', 'repo', 'load_deadline', /_FILE_FIRST_KEYS = ('project', 'repo', /
+tks-badtype-warn|scripts/tasks-path.sh|s/^        print("tkm-harness: " + n + .*$/        pass/
+tks-yml-only-4env|scripts/tasks-path.sh|s/if _harness_item_file_first "\$item" \&\& command -v python3 >\/dev\/null 2>\&1; then :; else/if false; then :; else/
 tks-mode-env-over-file|scripts/tasks-path.sh|s/_harness_item_file_first "\$item" || first=0/first=1/
 tks-4-nopython-env|scripts/tasks-path.sh|s/ \&\& ! command -v python3 >\/dev\/null 2>\&1; then v=/ \&\& false; then v=/
 tks-int-value|scripts/tasks-path.sh|s/not isinstance(v, (str, int))/not isinstance(v, str)/

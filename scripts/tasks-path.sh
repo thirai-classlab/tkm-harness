@@ -341,6 +341,7 @@ _harness_main_dir() {
 
 # _harness_read_env <名前> <file を 1 行ずつ> -> 最初に値が在った file の env.<名前> を stdout (前後の空白を外す)。無ければ空。
 # python3 が無ければ空。値は文字列と、bool でない整数 (文字列にして読む。"TKM_HARNESS_PROJECT": 7) を読む。JSON が読めない file は飛ばす。
+# 7.0・true・[7] のような値は読めない値として飛ばし、標準エラーに 1 行出す (hirai-task は同じ値を exit 2 で断る)。
 _harness_read_env() {
   command -v python3 >/dev/null 2>&1 || return 0
   [ -n "${2:-}" ] || return 0
@@ -353,12 +354,15 @@ for p in sys.stdin.read().split("\n"):
         v = (json.load(open(p, encoding="utf-8")).get("env") or {}).get(n)
     except Exception:
         continue
+    if v is None:
+        continue
     if isinstance(v, bool) or not isinstance(v, (str, int)):
+        print("tkm-harness: " + n + " は文字列か整数で書いてください（" + p + " の値は読まずに飛ばしました）", file=sys.stderr)
         continue
     v = str(v).strip()
     if v:
         print(v, end="")
-        break' "$1" 2>/dev/null
+        break' "$1"
 }
 
 # _harness_file_setting <項目> <root> [nohome] -> 3 の値 (settings の file の env.TKM_HARNESS_<項目>。最初に在った file の値)。無ければ空。
