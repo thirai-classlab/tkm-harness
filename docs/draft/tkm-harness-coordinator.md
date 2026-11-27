@@ -33,7 +33,7 @@ merged_into:
 - 本体の checkout に、19:05 の時点で git に入る差分が 2 件あった（` M .mcp.json`・`?? qqqq`。§2 の M3-1）。Edit・Write は止まるが Bash の書き換えは止まらず、誰にも知らされない（F6）
 - 版の上げは「プラグインを入れてから merge する」順を人が守る（heyapro-app `docs/harness/plugin-and-harness.md` §4.1）。開いたままの会話は開き直すまで古い版で、黙って動く
 
-**注意**: 時刻の予定は、Orca の自動実行の precheck（エージェントを起こす前に回すコマンド）だけを使い、エージェントは起こさない（M1-3）。Orca の版が上がって precheck の cwd や環境が変わると予定が届かなくなるので、実装の task で selftest と開始時の 1 行で気づけるようにする（TKC-R1.5）
+**注意**: 時刻の予定は、Orca の自動実行の precheck（エージェントを起こす前に回すコマンド）だけを使い、エージェントは起こさない（M1-3。テックリードが A を選んだ）。Orca の版が上がって precheck の cwd や環境が変わると予定が届かなくなるので、実装の task で selftest と開始時の 1 行で気づけるようにする（TKC-R1.5）
 
 ## 決まったこと（テックリード 2026-11-27・原文は heyapro-app #2112）
 
@@ -44,6 +44,7 @@ merged_into:
 - プラグインで直すものは 3 つ: (1) コーディネーターの引き継ぎ (2) 本体の checkout に git に入る file の差分ができたら知らせる（止めない）(3) repo が要る版を宣言し、足りない会話に直し方を出す
 - 手元の検査（ci:local）の回し方は、今回は直さない（原文「4はふよう」）
 - 原文: 「プラグインを直しましょう」「タスクをやる場合は作業ツリー それ以外の仕事はコーディネータ コーディネータは成果物を作れない」「ちゃんと設計したいです」「1,2,3は問題ないです。4はふよう開始して下さい。」
+- 2026-11-27、時刻の予定を会話の外で何に持たせるか（A Orca の自動実行の precheck で受信箱へ送るだけ・エージェントは起こさない／B launchd／C CronCreate のまま引き継ぎで作り直す）に「#2112はAで進めて下さい」。届かなかった予定を次の会話の開始時に「過ぎた予定」として出す作り（TKC-R1.5・R2.1）と、Orca を止めている間は未検証であること（§6）を残す
 
 ## 2. 事実（出どころつき）
 
@@ -106,7 +107,7 @@ M2-7 から、今のコーディネーターは前の持ち主の handle を名�
 | TKC-R1.2 | テックリードに承認・判断を頼んだとき、`coord wait add <文> [--ref <PR か issue>]` が答え待ちを 1 件足し、答えを受けたら `coord wait done <id>` が消す | selftest |
 | TKC-R1.3 | 時刻の予定を持つとき、`coord at "<YYYY-MM-DD HH:MM>" <文>` が Orca の自動実行を 1 本作り（その分の cron・`--timezone`・`--workspace` は本体・precheck は `coord fire <id>; exit 1`）、予定を書く。CronCreate は使わない | 使い捨ての Run で 2 分後の予定 → 受信箱に「予定: 〜」が届き、自動実行が消える |
 | TKC-R1.4 | 予定の時刻に、`coord fire <id>` が file の Run の持ち主を `--from` にして `run:<id>` へ `--type status --subject "予定: <文>"` を送り、予定を「送った」にして自分の自動実行を消す。終わりは必ず exit 0 以外（エージェントを起こさない） | M1-3・M1-6・M1-8 と同じ形を selftest（偽の orca） |
-| TKC-R1.5 | Run が無い・送れないとき、`fire` は予定を「届かず」にし、次の会話の開始時に「過ぎた予定」として出す。precheck の cwd が本体でない・`orca` が見つからないときも「届かず」にする（Orca の変わりに気づく） | selftest（Run なし・orca なし） |
+| TKC-R1.5 | Run が無い・送れないとき、`fire` は予定を「届かず」にし、次の会話の開始時に「過ぎた予定」として出す。precheck の cwd が本体でない・`orca` が見つからないときも「届かず」にする（Orca の変わりに気づく）。時刻を過ぎても「待ち」のままの予定（Orca が止まっていて `fire` が動かなかった）も「過ぎた予定」に数える | selftest（Run なし・orca なし・時刻を過ぎた「待ち」） |
 | TKC-R1.6 | 2 つの会話が同時に書くとき、lock と原子的な書き込みで片方を失わない（`_write_assignments` と同じ形） | selftest（2 本同時の `wait add`） |
 | TKC-R1.7 | `coord show [--json]` が Run・持ち主がこの会話か・答え待ち・予定・本体の差分の件数を出す。GitHub を叩かない | selftest |
 | TKC-R1.8 | プラグインの版が上がっても予定が動く。precheck は版の dir を決め打ちせず、`installed_plugins.json` の最大版の hirai-task を引く（`harness_plugin_root_from_installed` と同じ） | selftest（版の dir を 2 つ置く） |
@@ -226,7 +227,7 @@ hook の数は 6 のまま（F1）。足す先:
 
 ## 6. 未検証（実装の task で測る）
 
-- Orca を止めた間の予定（M1-1 の `missedRunPolicy`・720 分は create の返りの値だけ。Orca を止めると全部の担当が止まるので試していない）
+- Orca を止めている間の予定（M1-1 の `missedRunPolicy: run_once_within_grace`・720 分は create の返りの値だけ。Orca を止めると全部の担当が止まるので試していない）。届かなかったときは TKC-R1.5 で「届かず」にし、次の会話の開始時に「過ぎた予定」として出す（R2.1）。Orca が止まっている間は `fire` 自体が動かないので、`coord show` と開始時の控えは、時刻を過ぎて「待ち」のままの予定も「過ぎた予定」に数える
 - `--workspace` に本体の checkout を渡した自動実行（測ったのは作業ツリー。precheck の cwd はそのときも本体だった M1-4）
 - 1 回だけの予定を 5 欄の cron（年が無い）で作ったとき、`fire` が消す前に次の年まで残る形で困らないか（`fire` が消す・`at` の日付を `fire` が見る）
 - 会話の途中で `git pull` が `.claude/settings.json` を変えたとき、env が変わるか（TKS F4 は保存で確かめた）
