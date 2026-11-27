@@ -100,6 +100,29 @@ check5b() {
   grep -q 'projectV2(number' "$log" || { printf '%s' "番号から Project を引く問い合わせを打たない"; return; }
   grep -q '"form": *"ghp"' "$f" && grep -q 'PVT_abc' "$f" && grep -Eq '"project_number": *"?7' "$f" || printf '%s' "form=ghp・id・番号 7 を控えに書かない($(tr '\n' ' ' < "$f" 2>/dev/null | head -c 200))"
 }
+# check5c <scripts のある dir>: 設定の repo を読む・origin の末尾が .git/ でも owner/name・設定の Project の番号が正の整数でなければ探しに行かず件数の行を出さない
+check5c() {
+  local sd="$1" h r bin log f out bad="" v
+  h="$(mk)"; r="$(mk)"; bin="$(mk)"; log="$h/gh-log"
+  git -C "$r" init -q && git -C "$r" remote add origin https://github.com/acme/other.git/
+  mkdir -p "$r/.claude"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncase "$*" in *"projectV2(number"*) echo PVT_abc ;; esac\nexit 0\n' "$log" > "$bin/gh"; chmod +x "$bin/gh"
+  out="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_repo_slug \"$r\"")"
+  [ "$out" = "acme/other" ] || bad="$bad origin の末尾が .git/ のとき owner/name にならない(out=$out);"
+  printf '%s\n' '{"env":{"TKM_HARNESS_PROJECT":"7","TKM_HARNESS_REPO":"o/r"}}' > "$r/.claude/settings.json"
+  HOME="$h" PATH="$bin:$PATH" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_refresh now \"$r\"" >/dev/null 2>&1
+  f="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_cache_file \"$r\"")"
+  { grep -q 'o=o ' "$log" 2>/dev/null && grep -q 'r=r ' "$log" && case "$f" in *tasks-o-r.json) true ;; *) false ;; esac; } || bad="$bad 設定の TKM_HARNESS_REPO=o/r を読まない(log=$(head -c 200 "$log" 2>/dev/null) file=$f);"
+  for v in abc 0; do
+    h="$(mk)"; log="$h/gh-log"; printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$log" > "$bin/gh"
+    printf '{"env":{"TKM_HARNESS_PROJECT":"%s"}}\n' "$v" > "$r/.claude/settings.json"
+    HOME="$h" PATH="$bin:$PATH" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_refresh now \"$r\"" >/dev/null 2>&1
+    f="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_cache_file \"$r\"")"
+    [ ! -s "$log" ] && grep -q '"form": *"invalid_project"' "$f" 2>/dev/null && [ -z "$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_line \"$r\"")" ] \
+      || bad="$bad TKM_HARNESS_PROJECT=$v で探しに行った/控えに理由が無い/件数の行が出た(log=$(head -c 120 "$log" 2>/dev/null));"
+  done
+  printf '%s' "$bad"
+}
 case_5() {
   local h r bin calls out i d
   h="$(mk)"; r="$(mk)"; bin="$(mk)"; calls="$h/gh-calls"
@@ -127,7 +150,18 @@ case_5() {
   sed 's/if \[ -n "\$set_proj" \]; then$/if false; then/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh"
   cmp -s "$ROOT/scripts/ghp-path.sh" "$d/scripts/ghp-path.sh" && { fail 5 "壊した写しを作れた" "sed が当たらず元と同じ"; return; }
   [ -n "$(check5b "$d/scripts")" ] || { fail 5 "壊した写しで検査が FAIL する" "壊したのに通った"; return; }
-  pass 5 "line: 控え無し=空・控えあり=1 行・引数なしは gh 不使用・--refresh は背景で gh・form none=空・設定の Project の番号なら projectsV2 を打たない（壊した写しで FAIL）"
+  out="$(check5c "$ROOT/scripts")"; [ -z "$out" ] || { fail 5 "画面下の repo・Project の落とし方が hirai-task と同じ" "$out"; return; }
+  for i in 1 2 3; do
+    d="$(mk)"; mkdir -p "$d/scripts"; cp "$ROOT"/scripts/*.sh "$d/scripts/"
+    case "$i" in
+      1) sed 's/^  slug="\$(harness_ghp_setting repo "\$root")"$/  slug=""/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh" ;;
+      2) sed 's/s#\/+\$##; s#\\.git\$##/s#\\.git$##; s#\/+$##/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh" ;;
+      3) sed 's/0\*|\*\[!0-9\]\*) harness_ghp_write_probe "\$f" invalid_project; return 0 ;;/0*|*[!0-9]*) set_proj="" ;;/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh" ;;
+    esac
+    cmp -s "$ROOT/scripts/ghp-path.sh" "$d/scripts/ghp-path.sh" && { fail 5 "壊した写し $i を作れた" "当たらず元と同じ"; return; }
+    [ -n "$(check5c "$d/scripts")" ] || { fail 5 "壊した写し $i（check5c）で検査が FAIL する" "壊したのに通った"; return; }
+  done
+  pass 5 "line: 控え無し=空・控えあり=1 行・引数なしは gh 不使用・--refresh は背景で gh・form none=空・設定の Project の番号なら projectsV2 を打たない・設定の repo を読む・origin の .git/ を外す・番号が不正なら探さず行を出さない（壊した写しで FAIL）"
 }
 
 # case 6: 土台との境目 (土台の smoke が見る範囲の逆側) — 土台の source を要らず、ghp-path.sh が bash 3.2 の書き方 (連想配列なし)

@@ -74,7 +74,7 @@ harness_ghp_repo_slug() (
   url="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
   [ -n "$url" ] || return 1
   case "$url" in *github.com*) ;; *) return 1 ;; esac
-  slug="$(printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#\.git$##; s#/+$##')"
+  slug="$(printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#/+$##; s#\.git$##')"
   case "$slug" in
     */*) case "${slug#*/}" in */*) return 1 ;; esac ;;
     *) return 1 ;;
@@ -241,8 +241,11 @@ harness_ghp_refresh() (
   probed_epoch="$(harness_ghp_cache_get "$f" probed_epoch 2>/dev/null || echo 0)"
   [ -n "$probed_epoch" ] 2>/dev/null || probed_epoch=0
   local form proj_id set_proj
-  set_proj="$(harness_ghp_setting project "$root")"   # 設定の Project の番号（正の整数のときだけ使う）
-  case "$set_proj" in ''|0*|*[!0-9]*) set_proj="" ;; esac
+  set_proj="$(harness_ghp_setting project "$root")"   # 設定の Project の番号（正の整数でなければ探しに行かず、控えの form に invalid_project と書く。TKS-R2.2）
+  case "$set_proj" in
+    '') ;;
+    0*|*[!0-9]*) harness_ghp_write_probe "$f" invalid_project; return 0 ;;
+  esac
   if [ "$probed_epoch" -eq 0 ] 2>/dev/null || [ "$(( now - probed_epoch ))" -ge "$interval" ] 2>/dev/null \
      || { [ -n "$set_proj" ] && [ "$(harness_ghp_cache_get "$f" project_number 2>/dev/null || true)" != "$set_proj" ]; }; then
     local q1 q1_out q1_rc n_match proj_number
