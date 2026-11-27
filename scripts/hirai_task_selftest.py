@@ -2982,15 +2982,11 @@ def _progress_checks(t, tmp_dir: str) -> None:
         orig = gh_task._mode_setting
         gh_task._mode_setting = lambda key, home=True: {'load_mainline': '土台', 'load_mainline_label': 'mode 側'}.get(key, '')
         try:
-            os.environ['TKM_HARNESS_LOAD_MAINLINE'] = '環境'
+            os.environ['TKM_HARNESS_LOAD_MAINLINE'] = '環境'  # 会話のリポの値。別のリポで打っても持ち込まない（TKS-R1.3）
             os.environ['TKM_HARNESS_LOAD_MAINLINE_LABEL'] = '本命'
             os.environ.pop('TKM_HARNESS_LOAD_DEADLINE', None)
             s = gh_task._load_settings(None, network=False)
-            assert s['mainline'] == '環境' and s['mainline_label'] == '本命', s
-            os.environ.pop('TKM_HARNESS_LOAD_MAINLINE')
-            os.environ.pop('TKM_HARNESS_LOAD_MAINLINE_LABEL')
-            s = gh_task._load_settings(None, network=False)
-            assert s['mainline'] == '土台' and s['mainline_label'] == 'mode 側', s
+            assert s['mainline'] == '土台' and s['mainline_label'] == 'mode 側', f'環境変数 TKM_HARNESS_LOAD_* を読んだ: {s}'
         finally:
             gh_task._mode_setting = orig
             for k, v in saved.items():
@@ -2998,7 +2994,7 @@ def _progress_checks(t, tmp_dir: str) -> None:
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
-    t('progress: 期限・本線の設定は環境変数 TKM_HARNESS_LOAD_* が先・無ければ mode.yml', _env_settings)
+    t('progress: 期限・本線の設定は環境変数 TKM_HARNESS_LOAD_* を読まず mode.yml へ落ちる（TKS-R1.3）', _env_settings)
 
     def _args() -> None:
         opts = gh_task.parse_board_args(['--progress', '--json'])
@@ -3590,7 +3586,8 @@ def _settings_checks(t, tmp_dir: str) -> None:
         t('TKS-R2.2 Project: 候補が複数のときの文は settings.json の env の TKM_HARNESS_PROJECT で選ぶと言う', _project_choice_sentence)
 
         def _board_key() -> None:
-            with setting_env(wt, home, {'TKM_HARNESS_PROJECT': '7'}):
+            put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='7')
+            with setting_env(wt, home):
                 gh_task._apply_repo_project_settings()
                 assert gh_task._board_key().endswith('#7'), gh_task._board_key()
         t('TKS-R2.2 board の控えの鍵は解決した Project の番号で作る', _board_key)
@@ -3654,6 +3651,51 @@ def _settings_checks(t, tmp_dir: str) -> None:
     t('TKS-R2.2 Project: 設定の番号なら projectsV2 を打たず、一時の上書きが勝ち、正の整数でなければ exit 2 で名前と値を出す', _project)
     t('TKS-R2.3 リポ: 設定の repo > git remote（今いるディレクトリでなく _root() で引く）', _repo)
     t('TKS-R1 load の期限・本線と前夜の CI は、settings の file の env から読める（同じ 1 本の読み）', _load_and_nightly)
+
+    def _file_first() -> None:
+        """TKS-R1.3: project・repo・load_*・nightly_ci は環境変数を読まず、打ったリポの settings の file を先に読む。"""
+        main_repo, wt, home = make_repos()
+        other_main, other_wt, _ = make_repos()  # 会話のリポとは別のリポ（settings の file が無い）
+        stale = {'TKM_HARNESS_PROJECT': '7', 'TKM_HARNESS_REPO': 'conv/repo', 'TKM_HARNESS_LOAD_MAINLINE': '会話', 'TKM_HARNESS_NIGHTLY_CI': 'conv.yml'}
+        with setting_env(other_wt, home, stale):
+            assert gh_task._harness_setting('project') == '', '別のリポで会話の env の TKM_HARNESS_PROJECT が効いた'
+            assert gh_task._harness_setting('repo') == '' and gh_task._harness_setting('load_mainline') == '' and gh_task._harness_setting('nightly_ci') == '', '別のリポで会話の env の repo・load・nightly_ci が効いた'
+            gh_task._apply_repo_project_settings()
+            assert gh_task.PROJECT_NUMBER_OVERRIDE == '' and gh_task.REPO == 'acme/widgets', (gh_task.PROJECT_NUMBER_OVERRIDE, gh_task.REPO)
+        put_env(os.path.join(other_wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='5', TKM_HARNESS_REPO='o/r')
+        with setting_env(other_wt, home, stale):
+            assert gh_task._harness_setting('project') == '5' and gh_task._harness_setting('repo') == 'o/r', '別のリポは自分の settings の file に従う'
+        put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='7')
+        with setting_env(wt, home, {'TKM_HARNESS_PROJECT': '7'}):
+            assert gh_task._harness_setting('project') == '7', '同じリポでは値が変わらない'
+        os.remove(os.path.join(wt, '.claude', 'settings.json'))
+        with setting_env(wt, home, {'TKM_HARNESS_PROJECT': '7'}):
+            assert gh_task._harness_setting('project') == '', '会話の途中で file から消したら、古い env でなく file に従う'
+        put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='3', TKM_HARNESS_MODE='file')
+        with setting_env(wt, home, {'HIRAI_TASK_PROJECT': '9', 'TKM_HARNESS_PROJECT': '7', 'TKM_HARNESS_MODE': 'env'}):
+            assert gh_task._harness_setting('project') == '9', '一時の上書きは file に勝つ'
+            assert gh_task._harness_setting('mode') == 'env', 'mode は 4 種でなく、env が file より先のまま'
+        put(os.path.join(wt, '.claude', 'mode.yml'), 'load_mainline: yml\nnightly_ci: y.yml\n')
+        with setting_env(wt, home, {'TKM_HARNESS_LOAD_MAINLINE': '会話'}):
+            assert gh_task._harness_setting('load_mainline') == 'yml', 'env を飛ばして mode.yml へ落ちる'
+
+    def _int_value() -> None:
+        main_repo, wt, home = make_repos()
+        put(os.path.join(wt, '.claude', 'settings.json'), json.dumps({'env': {'TKM_HARNESS_PROJECT': 7, 'TKM_HARNESS_LOAD_MAINLINE': True}}))
+        with setting_env(wt, home):
+            assert gh_task._harness_setting('project') == '7', '数値の 7 を黙って捨てた（TKS-R1.2）'
+            assert gh_task._harness_setting('load_mainline') == '', 'bool は文字列にして読まない'
+
+    def _remote_trailing_slash() -> None:
+        main_repo, wt, home = make_repos()
+        for url, want in (('https://github.com/o/r/', 'o/r'), ('https://github.com/o/r.git/', 'o/r'), ('git@github.com:o/r.git', 'o/r')):
+            subprocess.run(['git', '-C', wt, 'remote', 'set-url', 'origin', url], check=True, capture_output=True)
+            with setting_env(wt, home):
+                assert gh_task._repo_from_git_remote() == want, (url, gh_task._repo_from_git_remote())
+
+    t('TKS-R1.3 project・repo・load_*・nightly_ci は環境変数を読まず打ったリポの file を先に読む（別のリポ・同じリポ・file から消した後・mode は env が先）', _file_first)
+    t('TKS-R1.2 settings の file の値が数値（bool でない整数）なら文字列にして読む', _int_value)
+    t('TKS-R2.3 origin の URL の末尾が / でも owner/name を読める', _remote_trailing_slash)
 
 
 def main() -> int:
