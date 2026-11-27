@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PostToolUse(Bash) の hook。コーディネーターの会話にだけ、次の 2 つを足す（どちらか 1 回に JSON は 1 つ。両方に当たれば表のほう）。
 #  1. 振り出し（orca orchestration worker-start・orca worktree set --issue・hirai-task / gh-task.sh の assign・start）か
-#     完了（hirai-task / gh-task.sh の done・after-merge・gh pr merge）のあと: `hirai-task load --cached` の表を、
+#     完了（hirai-task / gh-task.sh の done・after-merge・gh pr merge）のあと
+#     （区切った各部分を語に分け、コマンドの位置の語で決める。引用の中の文・閉じない引用では出ない）: `hirai-task load --cached` の表を、
 #     systemMessage（人の画面に出る。F7）と additionalContext（AI に入る。F8）の両方に出す。AI が出力を切っても貼り忘れても人の画面に表が出る。
 #  2. `orca orchestration check` で担当からの知らせを受けたとき: 「hirai-task load --changed を打つ」の 1 行を additionalContext に足す。
 # 止めない: 操作の可否を変えず、常に exit 0。対象外・load の失敗・空・時間切れ（8 秒）は 1 バイトも出さない（_meta.md 条 5 の context を注ぐだけの hook）。
@@ -14,37 +15,16 @@ set -uo pipefail
 input="$(cat 2>/dev/null)" || exit 0
 case "$input" in *orchestration*|*worktree*|*hirai-task*|*gh-task*|*merge*) ;; *) exit 0 ;; esac   # python も hirai-task も起こさない
 command -v python3 >/dev/null 2>&1 || exit 0
+root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && builtin pwd -P)}"
 
 # 1 行目 = table（振り出し・完了）/ notice（知らせを受けた）/ 0、2 行目 = cwd
-hit="$(printf '%s' "$input" | python3 -I -c '
-import json, re, sys
-START = r"orca\s+orchestration\s+worker-start|orca\s+worktree\s+set\b.*--issue\b|(hirai-task|gh-task\.sh)\s+(assign|start|done|after-merge)\b|gh\s+pr\s+merge\b"
-try:
-    d = json.load(sys.stdin)
-    cmd = (d.get("tool_input") or {}).get("command") or ""
-    kind = "0"
-    if d.get("tool_name") == "Bash":
-        for seg in re.split(r"&&|\|\||[;|\n]", cmd):
-            s = seg.strip()
-            if re.match(r"(echo|printf)\s", s) or re.search(r"(\s|^)(--help|-h)(\s|$)", s):
-                continue
-            if re.search(START, s):
-                kind = "table"
-        if kind == "0":
-            out = json.dumps(d.get("tool_response"), ensure_ascii=False)
-            if re.search(r"(^|[;&|\s])orca\s+orchestration\s+check(\s|$)", cmd) and (re.search(r"msg_[0-9a-z]", out) or re.search(r"\s--ack\b", cmd)):
-                kind = "notice"
-    print(kind)
-    print(d.get("cwd") or "")
-except Exception:
-    print("0")
-' 2>/dev/null)" || exit 0
+hit="$(printf '%s' "$input" | python3 -I "$root/scripts/hirai_hook_kind.py" 2>/dev/null)" || exit 0
 kind="${hit%%$'\n'*}"
 case "$kind" in table|notice) ;; *) exit 0 ;; esac
 cwd="${hit#*$'\n'}"
 [ -n "$cwd" ] && [ -d "$cwd" ] && CDPATH= builtin cd -- "$cwd" >/dev/null 2>&1
 
-task="${CLAUDE_PLUGIN_ROOT:-$(CDPATH= builtin cd -- "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && builtin pwd -P)}/bin/hirai-task"
+task="$root/bin/hirai-task"
 [ -x "$task" ] || exit 0
 "$task" is-coordinator >/dev/null 2>&1 || exit 0
 python3 -I -c '

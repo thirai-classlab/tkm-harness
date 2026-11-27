@@ -146,8 +146,8 @@ case_7() {
     || { fail 7 "hooks.json の PostToolUse は Bash の coordinator-load.sh の 1 本" "形が違う"; return; }
   lines="$(wc -l < "$h" | tr -d ' ')"
   [ "$lines" -le 100 ] || { fail 7 "hook は 100 行以内" "$lines 行"; return; }
-  s="$(mk)"; mkdir -p "$s/hooks" "$s/bin" "$s/repo" "$s/fake"
-  cp "$h" "$s/hooks/"
+  s="$(mk)"; mkdir -p "$s/hooks" "$s/bin" "$s/scripts" "$s/repo" "$s/fake"
+  cp "$h" "$s/hooks/"; cp "$ROOT/scripts/hirai_hook_kind.py" "$s/scripts/"
   printf '%s\n' '#!/usr/bin/env bash' 'echo "$@" >> "$FAKE_LOG"' 'pwd -P >> "$FAKE_LOG"' 'exit "${FAKE_RC:-0}"' > "$s/bin/hirai-task"
   printf '%s\n' '#!/usr/bin/env bash' 'echo GH >> "$FAKE_LOG"; exit 1' > "$s/fake/gh"
   chmod +x "$s/bin/hirai-task" "$s/fake/gh"
@@ -529,11 +529,12 @@ PY
 }
 
 # case 13: 振り出し・完了のあとに進みの表を出す hook (TKS-R5)。偽の hirai-task で is-coordinator と load --cached の答えを決める
-# 要件 → 検査: R5.1 = 10 通りの振り出し・完了で 1 つの JSON に systemMessage と additionalContext の両方（load は --cached だけ・gh を叩かない）
+# 要件 → 検査: R5.1 = 13 通りの振り出し・完了で 1 つの JSON に systemMessage と additionalContext の両方（load は --cached だけ・gh を叩かない）
 #   R5.2 = 対象外のコマンド・担当（1）・判定できない（3）・load の失敗/空/時間切れで 1 バイトも出ず exit 0 / R5.3 = 知らせの 1 行は今までどおり・両方に当たれば表だけ
-#   R5.4 = 10,000 字を超える表は末尾が 1 行に切られる・hooks.json は 1 本のまま / 壊した写し 3 つで FAIL
-mk13() { # mk13 <dir> <hook の写し>: 偽の hirai-task と偽の gh を置いた土台を作る
-  mkdir -p "$1/hooks" "$1/bin" "$1/repo" "$1/fake"; cp "$2" "$1/hooks/coordinator-load.sh"
+#   R5.4 = 10,000 字を超える表は末尾が 1 行に切られる・hooks.json は 1 本のまま / 壊した写し 6 つで FAIL
+mk13() { # mk13 <dir> <hook の写し> [操作の判定の写し]: 偽の hirai-task と偽の gh を置いた土台を作る
+  mkdir -p "$1/hooks" "$1/bin" "$1/scripts" "$1/repo" "$1/fake"; cp "$2" "$1/hooks/coordinator-load.sh"
+  cp "${3:-$ROOT/scripts/hirai_hook_kind.py}" "$1/scripts/hirai_hook_kind.py"
   cat > "$1/bin/hirai-task" <<'FAKE'
 #!/usr/bin/env bash
 echo "$@" >> "$FAKE_LOG"
@@ -542,9 +543,9 @@ case "$1" in
   load)
     case "${FAKE_LOAD:-ok}" in
       ok) printf '%s\n' '全体 40% (2/5)' '| 担当 | 進捗 |' '| a | 60% |' ;;
-      fail) echo 'エラー' >&2; exit 1 ;;
+      fail) printf '%s\n' '全体 40% (2/5)' '| a | 60% |'; echo 'エラー' >&2; exit 1 ;;
       empty) : ;;
-      sleep) exec sleep 9 ;;
+      sleep) exec python3 -c 'import time; time.sleep(9); print("全体 40% (2/5)"); print("| a | 60% |")' ;;
       big) python3 -c 'print("あ" * 12000)' ;;
     esac ;;
 esac
@@ -559,7 +560,7 @@ run13() { # run13 <土台> <is-coordinator の exit> <load の型> <command> [to
     | env -i PATH="$1/fake:$PATH" HOME="$1" FAKE_COORD="$2" FAKE_LOAD="$3" FAKE_LOG="$1/log" CLAUDE_PLUGIN_ROOT="$1" bash "$1/hooks/coordinator-load.sh" 2>"$1/err")"; rc=$?
 }
 check13() { # check13 <土台> → 壊れている所を文字で返す（空なら全部通った）
-  local s="$1" bad="" c
+  local s="$1" bad="" c t0
   local starts=(
     "orca orchestration worker-start --agent claude --spec x"
     "orca worktree set --worktree id:1 --issue 12"
@@ -571,6 +572,9 @@ check13() { # check13 <土台> → 壊れている所を文字で返す（空な
     "cd x && hirai-task after-merge 5"
     "bash scripts/gh-task.sh done 12; echo ok"
     "gh pr merge 5 --squash"
+    "bash scripts/gh-task.sh --cost start 12"
+    "\"\$P/bin/hirai-task\" start 12"
+    "GH_TOKEN=x env bash scripts/gh-task.sh done 12"
   )
   for c in "${starts[@]}"; do
     run13 "$s" 0 ok "$c"
@@ -583,13 +587,17 @@ assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalCon
 ' 2>/dev/null; } || bad="$bad [$c] で表が両方に出ない(rc=$rc);"
     grep -qx 'load --cached' "$s/log" && ! grep -q 'GH\|--refresh' "$s/log" || bad="$bad [$c] で load --cached だけを呼んでいない($(tr '\n' ' ' < "$s/log"));"
   done
-  for c in "hirai-task ready" "hirai-task show 1" "git status" "echo hirai-task start 1" "hirai-task start --help" "hirai-task done -h" "gh pr view 5" "orca worktree set --worktree id:1 --display-name x" "orca worktree list"; do
+  for c in "hirai-task ready" "hirai-task show 1" "git status" "echo hirai-task start 1" "hirai-task start --help" "hirai-task done -h" "gh pr view 5" "orca worktree set --worktree id:1 --display-name x" "orca worktree list" \
+    "orca orchestration send --body \"着手は hirai-task start 12\"" "orca terminal send --text \"gh pr merge はしない\"" \
+    "git commit -m \"docs: hirai-task start を直す\"" "grep -n \"hirai-task done\" README.md" "hirai-task start 12 \"閉じない引用"; do
     run13 "$s" 0 ok "$c"; { [ -z "$out" ] && [ "$rc" = 0 ] && [ ! -s "$s/log" ]; } || bad="$bad 対象外 [$c] で出たか呼んだ;"
   done
   run13 "$s" 1 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ] && ! grep -q '^load' "$s/log"; } || bad="$bad 担当の会話（is-coordinator=1）で出たか load を呼んだ;"
   run13 "$s" 3 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad 判定できない（3）で出た;"
   for c in fail empty; do run13 "$s" 0 "$c" "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が $c なのに出たか exit が 0 でない;"; done
+  t0="$(python3 -c 'import time;print(time.time())')"
   run13 "$s" 0 sleep "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が時間切れなのに出たか exit が 0 でない;"
+  python3 -c 'import sys,time; sys.exit(0 if time.time()-float(sys.argv[1]) < 9 else 1)' "$t0" || bad="$bad hook が 8 秒で切らず 9 秒以上待った;"
   run13 "$s" 0 big "hirai-task start 1"
   printf '%s' "$out" | python3 -c '
 import json,sys
@@ -609,21 +617,24 @@ case_13() {
   s="$(mk)"; mk13 "$s" "$h"
   bad="$(check13 "$s")"
   [ -z "$bad" ] || { fail 13 "進みの表の hook" "$bad"; return; }
-  # 壊した写し 3 つ: 振り出しの判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない
-  for v in 1 2 3 4; do
-    d="$(mk)"; mk13 "$d" "$h"
+  # 壊した写し 6 つ: gh pr merge の判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない・時間切れで切らない・exit の検査を外す
+  local k="$ROOT/scripts/hirai_hook_kind.py" src
+  for v in 1 2 3 4 5 6; do
+    d="$(mk)"; mk13 "$d" "$h"; src="$h"; dst="$d/hooks/coordinator-load.sh"
     case "$v" in
-      1) sed 's/|gh\\s+pr\\s+merge\\b//' "$h" > "$d/hooks/coordinator-load.sh" ;;
-      2) sed 's/emit(cut(head + table), cut(table))/emit(cut(head + table))/' "$h" > "$d/hooks/coordinator-load.sh" ;;
-      3) sed 's/^"\$task" is-coordinator .*$/true/' "$h" > "$d/hooks/coordinator-load.sh" ;;
-      4) sed 's/return text if len(text) <= LIMIT else .*$/return text/' "$h" > "$d/hooks/coordinator-load.sh" ;;
+      1) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return rest\[:2\] == \["pr", "merge"\]/return False/' "$src" > "$dst" ;;
+      2) sed 's/emit(cut(head + table), cut(table))/emit(cut(head + table))/' "$src" > "$dst" ;;
+      3) sed 's/^"\$task" is-coordinator .*$/true/' "$src" > "$dst" ;;
+      4) sed 's/return text if len(text) <= LIMIT else .*$/return text/' "$src" > "$dst" ;;
+      5) sed 's/timeout=8/timeout=60/' "$src" > "$dst" ;;
+      6) sed 's/if r.returncode != 0 or not table:/if not table:/' "$src" > "$dst" ;;
     esac
-    cmp -s "$h" "$d/hooks/coordinator-load.sh" && { fail 13 "壊した写し $v を作れた" "sed が当たらず元と同じ"; return; }
+    cmp -s "$src" "$dst" && { fail 13 "壊した写し $v を作れた" "sed が当たらず元と同じ"; return; }
     [ -n "$(check13 "$d")" ] || { fail 13 "壊した写し $v で検査が FAIL する" "壊したのに通った"; return; }
   done
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["hooks"]; assert len(d["PostToolUse"])==1 and d["PostToolUse"][0]["hooks"][0]["timeout"]==10' "$ROOT/hooks/hooks.json" 2>/dev/null \
     || { fail 13 "hooks.json の PostToolUse は 1 本・timeout 10 秒（load の 8 秒より長い）" "形が違う"; return; }
-  pass 13 "振り出し・完了の 10 通りで表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外・担当・判定不能・load 失敗/空/時間切れでは出ず、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 4 つで FAIL）"
+  pass 13 "振り出し・完了の 13 通りで表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外（引用の中の文・閉じない引用を含む）・担当・判定不能・load 失敗（表を出して exit 1 も）/空/時間切れでは出ず、時間切れは 8 秒で切り、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 6 つで FAIL）"
 }
 
 for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11 12 13}; do "case_$n"; done
