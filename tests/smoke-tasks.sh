@@ -525,7 +525,7 @@ PY
     cmp -s "$ROOT/bin/hirai-task" "$d/$m/bin/hirai-task" && { fail 12 "壊した写し $m を作れた" "当たらず元と同じ"; return; }
     [ -n "$(check12 "$d/$m")" ] || { fail 12 "壊した写し $m で検査が FAIL する" "壊したのに通った"; return; }
   done
-  pass 12 "設定の Project の番号が正の整数でなければ exit 2・数値の 7 も使う・番号があれば projectsV2 を打たない・別のリポの会話の env の番号は効かない・repo の形の誤りは exit 2・一時の上書きが settings に勝つ・setup が設定の repo と番号を使う（壊した写し 6 つで FAIL）"
+  pass 12 "設定の Project の番号が正の整数でなければ exit 2・数値の 7 も使う・番号があれば projectsV2 を打たない・別のリポの会話の env の番号は効かない・repo の形の誤りは exit 2・一時の上書きが settings に勝つ・setup が設定の repo と番号を使う（壊した写し 9 つで FAIL）"
 }
 
 # case 13: 振り出し・完了のあとに進みの表を出す hook (TKS-R5)。偽の hirai-task で is-coordinator と load --cached の答えを決める
@@ -545,7 +545,7 @@ case "$1" in
       ok) printf '%s\n' '全体 40% (2/5)' '| 担当 | 進捗 |' '| a | 60% |' ;;
       fail) printf '%s\n' '全体 40% (2/5)' '| a | 60% |'; echo 'エラー' >&2; exit 1 ;;
       empty) : ;;
-      sleep) exec python3 -c 'import time; time.sleep(9); print("全体 40% (2/5)"); print("| a | 60% |")' ;;
+      sleep) exec python3 -c 'import time; time.sleep(15); print("全体 40% (2/5)"); print("| a | 60% |")' ;;
       big) python3 -c 'print("あ" * 12000)' ;;
     esac ;;
 esac
@@ -575,6 +575,24 @@ check13() { # check13 <土台> → 壊れている所を文字で返す（空な
     "bash scripts/gh-task.sh --cost start 12"
     "\"\$P/bin/hirai-task\" start 12"
     "GH_TOKEN=x env bash scripts/gh-task.sh done 12"
+    "bash -c 'hirai-task start 12'"
+    "sh -c \"hirai-task done 12; echo ok\""
+    "for n in 12 13; do hirai-task done \$n; done"
+    "while true; do gh pr merge 5; break; done"
+    "if true; then hirai-task start 12; fi"
+    "{ hirai-task start 12; }"
+    "( hirai-task start 12 )"
+    "! hirai-task start 12"
+    "env -u GITHUB_PAT gh pr merge 5 --squash"
+    "env -i hirai-task start 12"
+    "timeout 60 hirai-task done 12"
+    "time hirai-task done 12"
+    "nice -n 5 hirai-task done 12"
+    "command hirai-task done 12"
+    "exec hirai-task done 12"
+    "sudo hirai-task start 1"
+    "cat > s.md <<'EOF'"$'\n'"it's a spec"$'\n'"EOF"$'\n'"orca orchestration worker-start --spec s.md"
+    "cat > s.md <<-EOF"$'\n'$'\t'"body"$'\n'$'\t'"EOF"$'\n'"hirai-task start 12"
   )
   for c in "${starts[@]}"; do
     run13 "$s" 0 ok "$c"
@@ -589,7 +607,9 @@ assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalCon
   done
   for c in "hirai-task ready" "hirai-task show 1" "git status" "echo hirai-task start 1" "hirai-task start --help" "hirai-task done -h" "gh pr view 5" "orca worktree set --worktree id:1 --display-name x" "orca worktree list" \
     "orca orchestration send --body \"着手は hirai-task start 12\"" "orca terminal send --text \"gh pr merge はしない\"" \
-    "git commit -m \"docs: hirai-task start を直す\"" "grep -n \"hirai-task done\" README.md" "hirai-task start 12 \"閉じない引用"; do
+    "git commit -m \"docs: hirai-task start を直す\"" "grep -n \"hirai-task done\" README.md" "hirai-task start 12 \"閉じない引用" \
+    "cat > s.md <<'EOF'"$'\n'"手順"$'\n'"hirai-task start 12"$'\n'"gh pr merge 5"$'\n'"EOF" "cat <<EOF"$'\n'"hirai-task done 1"$'\n'"EOF" \
+    "command -v hirai-task" "bash -c 'echo hirai-task start 12'" "for n in 1; do echo hirai-task done \$n; done"; do
     run13 "$s" 0 ok "$c"; { [ -z "$out" ] && [ "$rc" = 0 ] && [ ! -s "$s/log" ]; } || bad="$bad 対象外 [$c] で出たか呼んだ;"
   done
   run13 "$s" 1 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ] && ! grep -q '^load' "$s/log"; } || bad="$bad 担当の会話（is-coordinator=1）で出たか load を呼んだ;"
@@ -597,7 +617,7 @@ assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalCon
   for c in fail empty; do run13 "$s" 0 "$c" "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が $c なのに出たか exit が 0 でない;"; done
   t0="$(python3 -c 'import time;print(time.time())')"
   run13 "$s" 0 sleep "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が時間切れなのに出たか exit が 0 でない;"
-  python3 -c 'import sys,time; sys.exit(0 if time.time()-float(sys.argv[1]) < 9 else 1)' "$t0" || bad="$bad hook が 8 秒で切らず 9 秒以上待った;"
+  python3 -c 'import sys,time; sys.exit(0 if time.time()-float(sys.argv[1]) < 12 else 1)' "$t0" || bad="$bad hook が 8 秒で切らず 12 秒以上待った;"
   run13 "$s" 0 big "hirai-task start 1"
   printf '%s' "$out" | python3 -c '
 import json,sys
@@ -617,9 +637,9 @@ case_13() {
   s="$(mk)"; mk13 "$s" "$h"
   bad="$(check13 "$s")"
   [ -z "$bad" ] || { fail 13 "進みの表の hook" "$bad"; return; }
-  # 壊した写し 6 つ: gh pr merge の判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない・時間切れで切らない・exit の検査を外す
+  # 壊した写し 9 つ: gh pr merge の判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない・時間切れで切らない・exit の検査を外す・heredoc の本文を除かない・制御の語を飛ばさない・bash -c の文を見ない
   local k="$ROOT/scripts/hirai_hook_kind.py" src
-  for v in 1 2 3 4 5 6; do
+  for v in 1 2 3 4 5 6 7 8 9; do
     d="$(mk)"; mk13 "$d" "$h"; src="$h"; dst="$d/hooks/coordinator-load.sh"
     case "$v" in
       1) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return rest\[:2\] == \["pr", "merge"\]/return False/' "$src" > "$dst" ;;
@@ -628,13 +648,16 @@ case_13() {
       4) sed 's/return text if len(text) <= LIMIT else .*$/return text/' "$src" > "$dst" ;;
       5) sed 's/timeout=8/timeout=60/' "$src" > "$dst" ;;
       6) sed 's/if r.returncode != 0 or not table:/if not table:/' "$src" > "$dst" ;;
+      7) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/^    return "".join(out)$/    return cmd/' "$src" > "$dst" ;;
+      8) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/^CTRL = .*$/CTRL = ()/' "$src" > "$dst" ;;
+      9) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return starts(r\[1\], depth + 1)/return False/' "$src" > "$dst" ;;
     esac
     cmp -s "$src" "$dst" && { fail 13 "壊した写し $v を作れた" "sed が当たらず元と同じ"; return; }
     [ -n "$(check13 "$d")" ] || { fail 13 "壊した写し $v で検査が FAIL する" "壊したのに通った"; return; }
   done
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["hooks"]; assert len(d["PostToolUse"])==1 and d["PostToolUse"][0]["hooks"][0]["timeout"]==10' "$ROOT/hooks/hooks.json" 2>/dev/null \
     || { fail 13 "hooks.json の PostToolUse は 1 本・timeout 10 秒（load の 8 秒より長い）" "形が違う"; return; }
-  pass 13 "振り出し・完了の 13 通りで表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外（引用の中の文・閉じない引用を含む）・担当・判定不能・load 失敗（表を出して exit 1 も）/空/時間切れでは出ず、時間切れは 8 秒で切り、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 6 つで FAIL）"
+  pass 13 "振り出し・完了の 31 通り（bash -c・for・while・if・{ }・( )・!・env・timeout・time・nice・command・exec・sudo・heredoc を含む）で表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外（引用の中の文・閉じない引用を含む）・担当・判定不能・load 失敗（表を出して exit 1 も）/空/時間切れでは出ず、時間切れは 8 秒で切り、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 9 つで FAIL）"
 }
 
 for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11 12 13}; do "case_$n"; done
