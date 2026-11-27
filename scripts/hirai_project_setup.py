@@ -9,8 +9,9 @@ hirai_project_setup.py — このリポの GitHub Project を、tkm-harness の�
 既定は計画を出すだけ（読むだけで、GitHub には 1 バイトも書かない）。--apply を付けたときだけ書く。
 Project を作るのは外向きの操作なので、呼ぶ側（/tkm-harness:project-setup）が計画を見せて承認を取ってから --apply する。
 
-対象のリポは bin/hirai-task と同じく HIRAI_TASK_REPO（既定は `git remote get-url origin`）。
-Project の選び方も同じ: HIRAI_TASK_PROJECT があればその番号、無ければリポに紐づいた Project
+対象のリポは bin/hirai-task と同じく、設定 TKM_HARNESS_REPO（一時の上書きは HIRAI_TASK_REPO）、
+無ければ作業ツリーのルートの `git remote get-url origin`（bin/hirai-task が決めて main に渡す）。
+Project の選び方も同じ: 設定 TKM_HARNESS_PROJECT（一時の上書きは HIRAI_TASK_PROJECT）があればその番号、無ければリポに紐づいた Project
 （0 件なら作る・1 件ならそれ・2 件以上なら「種別」を持つ 1 件、決まらなければ exit 2）。
 すでにある Project には足りないものだけを足す。既存の項目・選択肢・ビューは消さず、名前も変えない
 （選択肢を足すときは既存の選択肢を id ごと渡す。id を渡さないと、その値を持つ行の値が消える）。
@@ -132,9 +133,11 @@ def gh_write(args: list[str]) -> str:
     return out
 
 
-def resolve_repo() -> tuple[str, str]:
-    """bin/hirai-task と同じ: HIRAI_TASK_REPO、無ければ git remote の origin。"""
-    repo = os.environ.get('HIRAI_TASK_REPO', '').strip()
+def resolve_repo(repo: str | None = None) -> tuple[str, str]:
+    """bin/hirai-task が設定の読み（TKM_HARNESS_REPO・HIRAI_TASK_REPO・settings の env）で決めた repo を受け取る。
+    渡されなければ（この file を単独で回すとき）HIRAI_TASK_REPO、無ければ git remote の origin。"""
+    if repo is None:
+        repo = os.environ.get('HIRAI_TASK_REPO', '').strip()
     if not repo:
         try:
             proc = subprocess.run(['git', 'remote', 'get-url', 'origin'], capture_output=True, text=True, check=True)
@@ -143,8 +146,8 @@ def resolve_repo() -> tuple[str, str]:
         except (OSError, subprocess.CalledProcessError):
             repo = ''
     owner, _, name = repo.partition('/')
-    if not owner or not name or '/' in name:
-        raise SetupError('リポを決められない（origin が GitHub のリポでない）。HIRAI_TASK_REPO=<owner>/<repo> で指定できる', 2)
+    if not re.fullmatch(r'[A-Za-z0-9._-]+', owner) or not re.fullmatch(r'[A-Za-z0-9._-]+', name):
+        raise SetupError('リポを決められない（origin が GitHub のリポでない）。TKM_HARNESS_REPO=<owner>/<repo>（一時は HIRAI_TASK_REPO）で指定できる', 2)
     return owner, name
 
 
@@ -229,7 +232,7 @@ def choose_project(linked: list[dict]) -> dict | None:
     if len(with_kind) == 1:
         return with_kind[0]
     listing = '\n'.join(f"  #{p['number']} {p['title']}" for p in (with_kind or linked))
-    raise SetupError(f'Project の候補が複数ある。HIRAI_TASK_PROJECT で選ぶこと:\n{listing}', 2)
+    raise SetupError(f'Project の候補が複数ある。`.claude/settings.json` の env の `TKM_HARNESS_PROJECT` で選ぶこと（一時なら `HIRAI_TASK_PROJECT`）:\n{listing}', 2)
 
 
 # ── 計画 ─────────────────────────────────────────────────────────
@@ -421,10 +424,10 @@ def parse_args(argv: list[str]) -> dict:
 
 
 def run(args: dict) -> dict:
-    owner, name = resolve_repo()
-    override = os.environ.get('HIRAI_TASK_PROJECT', '').strip()
-    if override and not override.isdigit():
-        raise SetupError(f'HIRAI_TASK_PROJECT は番号（{override} は不正）', 2)
+    owner, name = resolve_repo(args.get('repo'))
+    override = args['project'] if args.get('project') is not None else os.environ.get('HIRAI_TASK_PROJECT', '').strip()
+    if override and not re.fullmatch(r'[1-9][0-9]*', override):
+        raise SetupError(f'Project の番号は正の整数で書く（TKM_HARNESS_PROJECT・HIRAI_TASK_PROJECT に {override!r} が入っている）', 2)
     warnings = preflight(args['apply'])
     data = graphql(STATE_QUERY, {'owner': owner, 'name': name})
     if data.get('repository') is None:
@@ -509,11 +512,13 @@ def render(result: dict) -> str:
     return '\n'.join(lines)
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], repo: str | None = None, project: str | None = None) -> int:
+    """repo・project は bin/hirai-task が設定の読みで決めて渡す（無ければ環境変数 HIRAI_TASK_*）。"""
     try:
         args = parse_args(argv)
         if args['selftest']:
             return selftest()
+        args['repo'], args['project'] = repo, project
         result = run(args)
     except SetupError as exc:
         print(str(exc), file=sys.stdout if exc.code == 0 else sys.stderr)

@@ -13,7 +13,9 @@ HOOKS="$ROOT/hooks"
 FAILED=0
 # 機能の切り替えは環境変数でも決まる (HM-R2)。Claude Code の中から回しても、外の端末・CI と同じ結果になるよう、開始時に全部消す
 # (CLAUDECODE=1 だと settings の file を読まない。必要な検査は env で付け直す)
-unset CLAUDE_PLUGIN_ROOT CLAUDECODE HC_TASKS HC_WORKTREE HC_NOTIFY TKM_HARNESS_TASKS TKM_HARNESS_WORKTREE TKM_HARNESS_NOTIFY
+unset CLAUDE_PLUGIN_ROOT CLAUDECODE HC_TASKS HC_WORKTREE HC_NOTIFY TKM_HARNESS_TASKS TKM_HARNESS_WORKTREE TKM_HARNESS_NOTIFY \
+  HC_MODE HC_AUTO_SYNC TKM_HARNESS_MODE TKM_HARNESS_AUTO_SYNC TKM_HARNESS_PROJECT TKM_HARNESS_REPO TKM_HARNESS_LOAD_DEADLINE TKM_HARNESS_LOAD_DEADLINE_LABEL \
+  TKM_HARNESS_LOAD_MAINLINE TKM_HARNESS_LOAD_MAINLINE_LABEL TKM_HARNESS_NIGHTLY_CI HIRAI_TASK_PROJECT HIRAI_TASK_REPO
 R6_SKIP_FILE="$(mktemp)"   # HARNESS_SMOKE_QUICK=1 で飛ばした壊した複製の本数（r6_suite は $( ) の中で動くのでファイルに足す）
 
 # mkt -> 実体の path (pwd -P) にした使い捨ての dir。macOS の /var → /private/var の違いで、実体を返す script の出力と期待値が食い違わない
@@ -1072,7 +1074,7 @@ rm_cfg
 ss() { env -i PATH="$PATH" HOME="$T/home" CLAUDE_PLUGIN_ROOT="$S" CLAUDE_PROJECT_DIR="$P" "$@" bash "$S/hooks/session-start.sh" 2>&1 </dev/null; }
 printf 'worktree: warn\n' > "$P/.claude/mode.yml"
 o="$(ss)"
-case "$o" in *'settings.json の env（TKM_HARNESS_TASKS'*'/tkm-harness:config の項目 8'*) echo "ok   hm-notice" ;; *) echo "FAIL hm-notice mode.yml にだけ在るのに移行の 1 行が出ない: $o"; fail=1 ;; esac
+case "$o" in *'settings の env（TKM_HARNESS_MODE'*'/tkm-harness:update'*) echo "ok   hm-notice" ;; *) echo "FAIL hm-notice mode.yml にだけ在るのに移行の 1 行が出ない: $o"; fail=1 ;; esac
 case "$(printf '%s\n' "$o" | head -1)" in *'worktree: warn'*) echo "ok   hm-line-yml" ;; *) echo "FAIL hm-line-yml 1 行目が mode.yml の値を出さない: $o"; fail=1 ;; esac
 [ "$(printf '%s\n' "$o" | grep -c .)" -le 5 ] && echo "ok   hm-notice-lines" || { echo "FAIL hm-notice-lines 5 行を超えた: $o"; fail=1; }
 J TKM_HARNESS_WORKTREE block > "$P/.claude/settings.json"
@@ -1107,6 +1109,8 @@ K="$T/K"; git init -q "$K"; mkdir -p "$K/.claude" "$K/apps/api/.claude"
 printf 'tasks: ledger\n' > "$K/.claude/mode.yml"; printf 'tasks: github-project\n' > "$K/apps/api/.claude/mode.yml"
 fn "$K/apps/api" -- harness_settings_migrate "$K/apps/api" >/dev/null
 chk hm-migrate-package "github-project/ledger" "$(fn "$K/apps/api" -- harness_tasks_form "$K/apps/api")/$(fn "$K" -- harness_tasks_form "$K")"
+# 移さないパッケージの tasks: は、開始時の移行の案内にも数えない（案内が消えなくならない）
+chk hm-yml-only-package "" "$(fn "$K/apps/api" -- harness_setting_from_yml_only "$K/apps/api")"
 # 設定を書いたあとも tasks: は mode.yml と env が同じ値になる
 chk hm-set-sync "ledger" "$(fn "$K/apps/api" -- harness_settings_set tasks ledger "$K/apps/api" >/dev/null 2>&1; fn "$K/apps/api" -- harness_yml_file_value "$K/apps/api/.claude/mode.yml" tasks)"
 # orca-context は settings の env だけの worktree: warn を言う
@@ -1122,8 +1126,242 @@ fn "$M" -- harness_settings_set notify orca "$M" local >/dev/null 2>&1
 chk hm-set-local "orca/notify: off" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_NOTIFY"])' "$M/.claude/settings.local.json")/$(grep '^notify:' "$M/.claude/mode.yml")"
 chk hm-set-bad "2" "$(fn "$M" -- harness_settings_set worktree zzz "$M" >/dev/null 2>&1; echo $?)"
 
+# --- TKS (4.1.0): mode・auto_sync・project・repo・期限と本線・前夜の CI を settings の env で読む・書く ---
+mkdir -p "$T/tmp"
+# 読む側 4 本 (開始時・画面下・毎ターンの reminder・/config の読み取り) が同じ値になる。出力は 開始時/画面下/reminder の loop の字の有無/読み取り
+tks_modes() { # tks_modes <dir> [env...]
+  local d="$1"; shift
+  local a b c e
+  a="$(env -i PATH="$PATH" HOME="$T/home" CLAUDE_PLUGIN_ROOT="$S" CLAUDE_PROJECT_DIR="$d" "$@" bash "$S/hooks/session-start.sh" 2>&1 </dev/null | sed -n '1s/.*進め方: \([a-z]*\).*/\1/p')"
+  b="$(printf '{}' | env -i PATH="$PATH" HOME="$T/home" TMPDIR="$T/tmp" NO_COLOR=1 CLAUDE_PROJECT_DIR="$d" "$@" bash "$S/scripts/statusline.sh" 2>/dev/null | sed -n 's/.*mode: \([a-z]*\).*/\1/p')"
+  c="$(env -i PATH="$PATH" HOME="$T/home" CLAUDE_PLUGIN_ROOT="$S" CLAUDE_PROJECT_DIR="$d" "$@" bash "$S/hooks/loop-reminder.sh" 2>&1 </dev/null | grep -c '進め方: loop')"
+  e="$(fn "$d" "$@" -- harness_mode "$d")"
+  printf '%s/%s/%s/%s' "$a" "$b" "$c" "$e"
+}
+rm_cfg
+chk tks-mode-default "normal/normal/0/normal" "$(tks_modes "$P")"
+chk tks-mode-env "loop/loop/1/loop" "$(tks_modes "$P" TKM_HARNESS_MODE=loop)"
+J TKM_HARNESS_MODE loop > "$P/.claude/settings.local.json"
+chk tks-mode-local "loop/loop/1/loop" "$(tks_modes "$P")"
+J TKM_HARNESS_MODE loop > "$P/.claude/settings.json"; J TKM_HARNESS_MODE normal > "$P/.claude/settings.local.json"
+chk tks-mode-local-over-json "normal/normal/0/normal" "$(tks_modes "$P")"
+J TKM_HARNESS_MODE normal > "$P/.claude/settings.json"; J TKM_HARNESS_MODE loop > "$P/.claude/settings.local.json"
+chk tks-mode-local-over-json2 "loop/loop/1/loop" "$(tks_modes "$P")"
+# 本体の checkout の settings.local.json は worktree からも効く (本体の local ＞ worktree の local)
+rm_cfg; git -C "$P" -c user.name=a -c user.email=a@b worktree add -q "$T/PW" -b pw 2>/dev/null; mkdir -p "$T/PW/.claude"
+J TKM_HARNESS_MODE loop > "$P/.claude/settings.local.json"
+chk tks-mode-main-local "loop/loop/1/loop" "$(tks_modes "$T/PW")"
+J TKM_HARNESS_MODE normal > "$T/PW/.claude/settings.local.json"
+chk tks-mode-main-local-first "loop/loop/1/loop" "$(tks_modes "$T/PW")"
+rm -f "$T/PW/.claude/settings.local.json"
+# mode.yml は予備 (settings が先・無ければ効く)
+rm_cfg; printf 'mode: loop\n' > "$P/.claude/mode.yml"
+chk tks-mode-yml "loop/loop/1/loop" "$(tks_modes "$P")"
+J TKM_HARNESS_MODE normal > "$P/.claude/settings.local.json"
+chk tks-mode-yml-behind "normal/normal/0/normal" "$(tks_modes "$P")"
+# 一時の上書き HC_MODE は env・file より先
+chk tks-mode-hc "loop/loop/1/loop" "$(tks_modes "$P" HC_MODE=loop TKM_HARNESS_MODE=normal)"
+printf 'mode: normal\n' > "$P/.claude/mode.yml"; J TKM_HARNESS_MODE normal > "$P/.claude/settings.local.json"
+chk tks-mode-hc-file "loop" "$(fn "$P" HC_MODE=loop -- harness_mode "$P")"
+# 知らない値はそのまま見せる (空白は外す)
+chk tks-mode-unknown "weird" "$(fn "$P" "TKM_HARNESS_MODE= weird " -- harness_mode "$P")"
+rm_cfg
+# auto_sync: 同じ順で読む。update-check の入れ替えまで通る
+chk tks-as-default "off" "$(fn "$P" -- harness_auto_sync "$P")"
+chk tks-as-env "on" "$(fn "$P" TKM_HARNESS_AUTO_SYNC=on -- harness_auto_sync "$P")"
+J TKM_HARNESS_AUTO_SYNC on > "$P/.claude/settings.json"
+chk tks-as-file "on" "$(fn "$P" -- harness_auto_sync "$P")"
+J TKM_HARNESS_AUTO_SYNC off > "$P/.claude/settings.local.json"
+chk tks-as-local "off" "$(fn "$P" -- harness_auto_sync "$P")"
+chk tks-as-hc "off" "$(fn "$P" HC_AUTO_SYNC=off TKM_HARNESS_AUTO_SYNC=on -- harness_auto_sync "$P")"
+rm_cfg; printf 'auto_sync: on\n' > "$P/.claude/mode.yml"
+chk tks-as-yml "on" "$(fn "$P" -- harness_auto_sync "$P")"
+tks_sync() { # tks_sync [env...] -> 入れ替わったら 1・そのままなら 0 (写しの statusline.sh を古い中身にして、入れ替え関数を 1 回回す)
+  local r td; r="$T/SYNC"; td="$(mktemp -d "$T/tmp/sy.XXXXXX")"
+  mkdir -p "$r/.claude"; printf '#!/bin/sh\necho OLD\n' > "$r/.claude/statusline.sh"
+  ( cd "$r" && env -i PATH="$PATH" HOME="$T/home" TMPDIR="$td" CLAUDE_PROJECT_DIR="$r" "$@" bash -c '. "$0/scripts/tasks-path.sh"; . "$0/scripts/update-check.sh"; harness_sync_owned_scripts "$0" "$1"' "$S" "$r" >/dev/null 2>&1 )
+  cmp -s "$S/scripts/statusline.sh" "$r/.claude/statusline.sh" && printf 1 || printf 0
+}
+rm -rf "$T/SYNC"; git init -q "$T/SYNC"; mkdir -p "$T/SYNC/.claude"
+chk tks-as-sync-off "0" "$(tks_sync)"
+chk tks-as-sync-env "1" "$(tks_sync TKM_HARNESS_AUTO_SYNC=on)"
+J TKM_HARNESS_AUTO_SYNC on > "$T/SYNC/.claude/settings.local.json"
+chk tks-as-sync-local "1" "$(tks_sync)"
+chk tks-as-sync-hc "0" "$(tks_sync HC_AUTO_SYNC=off)"
+rm -f "$T/SYNC/.claude/settings.local.json"; printf 'auto_sync: on\n' > "$T/SYNC/.claude/mode.yml"
+chk tks-as-sync-yml "1" "$(tks_sync)"
+rm_cfg
+# project・repo: HIRAI_TASK_* > TKM_HARNESS_* > settings の file。mode.yml には無い (書いてあっても読まない)
+chk tks-pr-default "/" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- harness_setting repo "$P")"
+# 4 種 (project・repo・load_*・nightly_ci) は会話のリポの環境変数を読まない (TKS-R1.3)。file の無いリポでは空
+chk tks-pr-env "/" "$(fn "$P" TKM_HARNESS_PROJECT=7 TKM_HARNESS_REPO=o/r -- harness_setting project "$P")/$(fn "$P" TKM_HARNESS_PROJECT=7 TKM_HARNESS_REPO=o/r -- harness_setting repo "$P")"
+chk tks-4-env-ignored "///" "$(fn "$P" TKM_HARNESS_LOAD_DEADLINE=2028-01-01 TKM_HARNESS_LOAD_MAINLINE=x -- harness_setting load_deadline "$P")/$(fn "$P" TKM_HARNESS_LOAD_MAINLINE=x -- harness_setting load_mainline "$P")/$(fn "$P" TKM_HARNESS_NIGHTLY_CI=n.yml -- harness_setting nightly_ci "$P")/$(fn "$P" TKM_HARNESS_LOAD_DEADLINE_LABEL=l -- harness_setting load_deadline_label "$P")"
+# 4 種の全項目 (7 つ): 環境変数 (会話のリポの値) があっても打ったリポの file を読む。1 項目でも一覧から外れると、その項目だけ env を読んで落ちる
+bad=""
+for it in project repo load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci; do
+  up="$(printf '%s' "$it" | tr 'a-z' 'A-Z')"; J "TKM_HARNESS_$up" file > "$P/.claude/settings.json"
+  [ "$(fn "$P" "TKM_HARNESS_$up=env" -- harness_setting "$it" "$P")" = file ] || bad="$bad $it"
+done
+rm -f "$P/.claude/settings.json"
+chk tks-4-all-env-ignored "" "$bad"
+# 4 種は env があっても mode.yml にだけ値が在るものとして案内に数える (mode は env が先なので数えない)
+printf 'mode: loop\nload_deadline: 2026-12-15\nload_deadline_label: 期限\nload_mainline: 営業\nload_mainline_label: 本線\nnightly_ci: ci.yml\n' > "$P/.claude/mode.yml"
+chk tks-yml-only-4env "load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci" "$(fn "$P" TKM_HARNESS_MODE=loop TKM_HARNESS_LOAD_DEADLINE=e TKM_HARNESS_LOAD_DEADLINE_LABEL=e TKM_HARNESS_LOAD_MAINLINE=e TKM_HARNESS_LOAD_MAINLINE_LABEL=e TKM_HARNESS_NIGHTLY_CI=e -- harness_setting_from_yml_only "$P")"
+rm -f "$P/.claude/mode.yml"
+# 値が 7.0・true・[7] の file は読めない値として飛ばし、標準エラーに 1 行出す
+printf '{"env":{"TKM_HARNESS_PROJECT":7.0}}\n' > "$P/.claude/settings.json"
+be="$(fn "$P" -- harness_setting project "$P" 2>&1 >/dev/null)"; bo="$(fn "$P" -- harness_setting project "$P" 2>/dev/null)"
+chk tks-badtype-warn "1/" "$(printf '%s\n' "$be" | grep -c '文字列か整数')/$bo"
+rm -f "$P/.claude/settings.json"
+# 4 種の一覧は tasks-path.sh と bin/hirai-task の 2 か所にある: 同じ 7 項目であること
+chk tks-4-lists-same "load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci project repo/same" "$(python3 -I - "$S/bin/hirai-task" "$S/scripts/tasks-path.sh" <<'PYL'
+import re, sys
+b = open(sys.argv[1], encoding="utf-8").read(); t = open(sys.argv[2], encoding="utf-8").read()
+pk = set(re.findall(r"'([a-z_]+)'", re.search(r"_FILE_FIRST_KEYS = \(([^)]*)\)", b).group(1)))
+bk = set(re.search(r'_harness_item_file_first\(\) \{\n  case "\$\{1:-\}" in\n    ([^)]*)\) return 0', t).group(1).split("|"))
+print(" ".join(sorted(pk)) + ("/same" if pk == bk else "/differ"))
+PYL
+)"
+# 別のリポ: 会話のリポの env (7) があっても、打ったリポの file (9) か自動 (空) になる。同じリポでは変わらない・env が古くても file に従う
+git init -q "$T/Q4"; mkdir -p "$T/Q4/.claude"; git init -q "$T/R4"; mkdir -p "$T/R4/.claude"
+J TKM_HARNESS_PROJECT 9 > "$T/Q4/.claude/settings.json"; J TKM_HARNESS_PROJECT 7 > "$P/.claude/settings.json"
+chk tks-4-other-repo "9//7/7" "$(fn "$T/Q4" TKM_HARNESS_PROJECT=7 -- harness_setting project "$T/Q4")/$(fn "$T/R4" TKM_HARNESS_PROJECT=7 -- harness_setting project "$T/R4")/$(fn "$P" TKM_HARNESS_PROJECT=7 -- harness_setting project "$P")/$(fn "$P" -- harness_setting project "$P")"
+printf '{"env":{"OTHER":"1"}}\n' > "$P/.claude/settings.json"
+chk tks-4-key-removed "" "$(fn "$P" TKM_HARNESS_PROJECT=7 -- harness_setting project "$P")"
+J TKM_HARNESS_PROJECT 7 > "$P/.claude/settings.json"
+chk tks-4-hc-first "9" "$(fn "$P" HIRAI_TASK_PROJECT=9 TKM_HARNESS_PROJECT=5 -- harness_setting project "$P")"
+# mode は env が file より先のまま (TKS-R1.1)
+J TKM_HARNESS_MODE normal > "$P/.claude/settings.json"
+chk tks-mode-env-over-file "loop" "$(fn "$P" TKM_HARNESS_MODE=loop -- harness_setting mode "$P")"
+# 値が整数 (引用符なし) の file も読む・bool は読まない (TKS-R1.2)
+printf '{"env":{"TKM_HARNESS_PROJECT":7,"TKM_HARNESS_LOAD_DEADLINE":true}}\n' > "$P/.claude/settings.json"
+chk tks-int-value "7/" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- harness_setting load_deadline "$P")"
+# python3 が無く file を読めないときだけ 4 種も env を読む
+chk tks-4-nopython-env "7" "$(run_in "$P" PATH="$T/nopy" TKM_HARNESS_PROJECT=7 /bin/bash -c '. "$0/scripts/tasks-path.sh"; harness_setting project "$PWD"' "$S")"
+rm_cfg
+chk tks-pr-hc "9" "$(fn "$P" HIRAI_TASK_PROJECT=9 TKM_HARNESS_PROJECT=7 -- harness_setting project "$P")"
+chk tks-pr-hc-repo "x/y" "$(fn "$P" HIRAI_TASK_REPO=x/y TKM_HARNESS_REPO=o/r -- harness_setting repo "$P")"
+printf '{"env":{"TKM_HARNESS_PROJECT":"7","TKM_HARNESS_REPO":"o/r"}}\n' > "$P/.claude/settings.json"
+chk tks-pr-file "7/o/r" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- harness_setting repo "$P")"
+rm_cfg; printf 'project: 5\nrepo: a/b\n' > "$P/.claude/mode.yml"
+chk tks-pr-no-yml "/" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- harness_setting repo "$P")"
+# 期限と本線・前夜の CI: env > file > mode.yml。load_* はホームの mode.yml を読まない・nightly_ci は toplevel → ホーム
+rm_cfg
+printf 'load_deadline: 2026-12-15\nload_mainline_label: 本線X\nnightly_ci: ci.yml\n' > "$P/.claude/mode.yml"
+chk tks-load-yml "2026-12-15/本線X/ci.yml" "$(fn "$P" -- harness_setting load_deadline "$P")/$(fn "$P" -- harness_setting load_mainline_label "$P")/$(fn "$P" -- harness_setting nightly_ci "$P")"
+printf '{"env":{"TKM_HARNESS_LOAD_DEADLINE":"2027-01-15","TKM_HARNESS_LOAD_DEADLINE_LABEL":"期限","TKM_HARNESS_LOAD_MAINLINE":"営業","TKM_HARNESS_NIGHTLY_CI":"n.yml"}}\n' > "$P/.claude/settings.json"
+chk tks-load-file "2027-01-15/期限/営業/n.yml" "$(fn "$P" -- harness_setting load_deadline "$P")/$(fn "$P" -- harness_setting load_deadline_label "$P")/$(fn "$P" -- harness_setting load_mainline "$P")/$(fn "$P" -- harness_setting nightly_ci "$P")"
+chk tks-load-env "2027-01-15" "$(fn "$P" TKM_HARNESS_LOAD_DEADLINE=2028-01-01 -- harness_setting load_deadline "$P")"
+rm_cfg; printf 'load_deadline: 2026-12-15\nload_mainline: 営業\nnightly_ci: h.yml\nauto_sync: on\n' > "$T/home/.claude/mode.yml"
+chk tks-load-nohome "//h.yml/on" "$(fn "$P" -- harness_setting load_deadline "$P")/$(fn "$P" -- harness_setting load_mainline "$P")/$(fn "$P" -- harness_setting nightly_ci "$P")/$(fn "$P" -- harness_auto_sync "$P")"
+rm_cfg
+# 書く側: mode は settings.local.json (worktree なら本体の checkout の)・ほかは settings.json。許さない値は rc 2・ほかのキーと mode.yml の行は触らない
+printf '{"permissions":{"deny":["X"]},"env":{"OTHER":"1"}}\n' > "$P/.claude/settings.local.json"; printf 'mode: normal\n' > "$P/.claude/mode.yml"
+p1="$(fn "$P" -- harness_settings_set mode loop "$P")"
+chk tks-set-mode "$P/.claude/settings.local.json/loop/X/1/mode: normal" "$p1/$(fn "$P" -- harness_mode "$P")/$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["permissions"]["deny"][0],d["env"]["OTHER"],sep="/")' "$P/.claude/settings.local.json")/$(grep '^mode:' "$P/.claude/mode.yml")" 
+rm_cfg
+p1="$(fn "$T/PW" -- harness_settings_set mode loop "$T/PW")"
+chk tks-set-mode-main "$P/.claude/settings.local.json/loop/0" "$p1/$(fn "$P" -- harness_mode "$P")/$(ls "$T/PW/.claude/settings.local.json" 2>/dev/null | grep -c .)"
+chk tks-set-mode-path "$P/.claude/settings.local.json" "$(fn "$T/PW" -- harness_mode_write_file "$T/PW")"
+rm_cfg
+p1="$(fn "$P" -- harness_settings_set auto_sync on "$P")"
+chk tks-set-auto-sync "$P/.claude/settings.json/on" "$p1/$(fn "$P" -- harness_auto_sync "$P")"
+fn "$P" -- harness_settings_set project 7 "$P" >/dev/null; fn "$P" -- harness_settings_set repo o/r.x-y_z "$P" >/dev/null
+chk tks-set-project-repo "7/o/r.x-y_z" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- harness_setting repo "$P")"
+bad=""
+for kv in "mode weird" "mode " "auto_sync yes" "project 0" "project 07" "project abc" "project -1" "project 1.5" "repo a" "repo a/b/c" "repo a/b?c" "repo /b" "repo a/" "load_deadline 2026-12-15" "zzz x"; do
+  fn "$P" -- harness_settings_set ${kv} "$P" >/dev/null 2>&1; [ "$?" -eq 2 ] || bad="$bad [$kv]"
+done
+chk tks-set-bad "" "$bad"
+chk tks-set-bad-nowrite "7/o/r.x-y_z" "$(fn "$P" -- harness_setting project "$P")/$(fn "$P" -- harness_setting repo "$P")"
+rm_cfg
+# 移行: mode.yml の mode・auto_sync・load_*・nightly_ci を settings へ写す (mode は settings.local.json・ほかは settings.json)。写し先に値が在れば写さない。mode.yml の行は消さない
+printf 'mode: loop\nauto_sync: on\nload_deadline: 2026-12-15\nload_deadline_label: 期限\nload_mainline: 営業\nload_mainline_label: 本線\nnightly_ci: ci.yml\n' > "$P/.claude/mode.yml"
+chk tks-yml-only "mode auto_sync load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci" "$(fn "$P" -- harness_setting_from_yml_only "$P")"
+chk tks-yml-only-env "auto_sync load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci" "$(fn "$P" TKM_HARNESS_MODE=loop -- harness_setting_from_yml_only "$P")"
+chk tks-yml-only-hc "mode load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci" "$(fn "$P" HC_AUTO_SYNC=off -- harness_setting_from_yml_only "$P")"
+mo2="$(fn "$P" -- harness_settings_migrate "$P")"
+chk tks-migrate-lines "7" "$(printf '%s\n' "$mo2" | grep -c .)"
+chk tks-migrate-split "loop/-/-" "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e.get("TKM_HARNESS_MODE"),e.get("TKM_HARNESS_AUTO_SYNC","-"),e.get("TKM_HARNESS_NIGHTLY_CI","-"),sep="/")' "$P/.claude/settings.local.json" 2>/dev/null)"
+chk tks-migrate-json "on/ci.yml/2026-12-15/期限/営業/本線/-" "$(python3 -I -c 'import json,sys;e=json.load(open(sys.argv[1]))["env"];print(e["TKM_HARNESS_AUTO_SYNC"],e["TKM_HARNESS_NIGHTLY_CI"],e["TKM_HARNESS_LOAD_DEADLINE"],e["TKM_HARNESS_LOAD_DEADLINE_LABEL"],e["TKM_HARNESS_LOAD_MAINLINE"],e["TKM_HARNESS_LOAD_MAINLINE_LABEL"],e.get("TKM_HARNESS_MODE","-"),sep="/")' "$P/.claude/settings.json" 2>/dev/null)"
+chk tks-migrate-keep-yml "7" "$(grep -c : "$P/.claude/mode.yml")"
+chk tks-migrate-idempotent "0" "$(fn "$P" -- harness_settings_migrate "$P" | grep -c .)"
+chk tks-yml-only-gone "" "$(fn "$P" -- harness_setting_from_yml_only "$P")"
+# 写し先に値が在れば写さない (settings の値のまま。言う 1 行は出る)
+rm_cfg
+printf 'mode: loop\nauto_sync: on\n' > "$P/.claude/mode.yml"; J TKM_HARNESS_MODE normal > "$P/.claude/settings.local.json"; J TKM_HARNESS_AUTO_SYNC off > "$P/.claude/settings.json"
+fn "$P" -- harness_settings_migrate "$P" >/dev/null
+chk tks-migrate-existing "normal/off" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_MODE"])' "$P/.claude/settings.local.json")/$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_AUTO_SYNC"])' "$P/.claude/settings.json")"
+# worktree の会話から移すと、mode は本体の checkout の settings.local.json に入る
+rm_cfg; printf 'mode: loop\n' > "$T/PW/.claude/mode.yml"
+fn "$T/PW" -- harness_settings_migrate "$T/PW" >/dev/null
+chk tks-migrate-main "loop/0" "$(fn "$P" -- harness_mode "$P")/$(ls "$T/PW/.claude/settings.local.json" 2>/dev/null | grep -c .)"
+rm -f "$T/PW/.claude/mode.yml"
+# 開始時の移行の案内は mode・auto_sync も言い、mode は settings.local.json・ほかは settings.json と案内する
+rm_cfg; printf 'mode: loop\nauto_sync: on\n' > "$P/.claude/mode.yml"
+o="$(ss)"
+case "$o" in *'mode・auto_sync'*'settings.local.json'*'settings.json'*) echo "ok   tks-notice" ;; *) echo "FAIL tks-notice mode.yml にだけ在る mode・auto_sync の移行の 1 行が出ない: $o"; fail=1 ;; esac
+rm_cfg
+# ホームの ~/.claude/mode.yml にだけ在る値は移せない (移行はプロジェクトの mode.yml だけを読む) ので、消せない案内を毎回出さない
+printf 'mode: loop\nauto_sync: on\n' > "$T/home/.claude/mode.yml"
+chk tks-yml-only-home "" "$(fn "$P" -- harness_setting_from_yml_only "$P")"
+o="$(ss)"
+case "$o" in *'mode.yml にだけある設定'*) echo "FAIL tks-notice-home ホームの mode.yml だけで移行の 1 行が出る: $o" ; fail=1 ;; *) echo "ok   tks-notice-home" ;; esac
+# (c) ホームにだけ mode: loop → migrate はプロジェクトへ写さない
+fn "$P" -- harness_settings_migrate "$P" >/dev/null
+chk tks-migrate-home "0" "$(ls "$P/.claude/settings.local.json" "$P/.claude/settings.json" 2>/dev/null | grep -c .)"
+rm_cfg
+# (b) 知らない値 (mode: weird) は settings.local.json に書かない
+printf 'mode: weird\n' > "$P/.claude/mode.yml"
+mo3="$(fn "$P" -- harness_settings_migrate "$P")"
+chk tks-migrate-weird "0" "$(ls "$P/.claude/settings.local.json" 2>/dev/null | grep -c .)"
+case "$mo3" in *'weird は知らない値'*) echo "ok   tks-migrate-weird-say" ;; *) echo "FAIL tks-migrate-weird-say 知らない値だと言わない: $mo3"; fail=1 ;; esac
+rm_cfg
+# zsh (Claude Code の Bash ツール) で source して打つ。local path (PATH と結び付く)・${!名前} (bash だけ) が無い
+if [ -x /bin/zsh ]; then
+  ze="$T/zerr"
+  zr() { # zr <env...> -- <関数と引数> -> zsh で source して打った出力 (stderr は $ze へ)
+    local e=(); while [ "$1" != "--" ]; do e+=("$1"); shift; done; shift
+    run_in "$P" "${e[@]}" /bin/zsh -c '. "$0/scripts/tasks-path.sh"; "$@"' "$S" "$@" 2>"$ze"
+  }
+  zo="$(zr HC_MODE=normal TKM_HARNESS_MODE=loop -- harness_mode "$P")"
+  chk tks-zsh-mode "normal/0" "$zo/$(wc -c < "$ze" | tr -d ' ')"
+  J TKM_HARNESS_PROJECT 7 > "$P/.claude/settings.json"
+  zo="$(zr TKM_HARNESS_MODE=loop -- harness_setting mode "$P")/$(zr -- harness_setting project "$P")"
+  chk tks-zsh-setting "loop/7/0" "$zo/$(wc -c < "$ze" | tr -d ' ')"
+  rm_cfg; printf 'mode: loop\nauto_sync: on\n' > "$P/.claude/mode.yml"
+  zr -- harness_settings_migrate "$P" >/dev/null
+  chk tks-zsh-migrate "loop/on/0" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_MODE"])' "$P/.claude/settings.local.json" 2>/dev/null)/$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_AUTO_SYNC"])' "$P/.claude/settings.json" 2>/dev/null)/$(wc -c < "$ze" | tr -d ' ')"
+  rm_cfg
+  # /config の 1・7-b・8 が zsh で打つ harness_settings_set（local path を足すと zsh では PATH が空になり書けない）
+  zo="$(zr -- harness_settings_set worktree warn "$P")"; zrc=$?
+  zo2="$(zr -- harness_settings_set mode loop "$P")"; zrc2=$?
+  chk tks-zsh-set "0/0/1/1/0" "$zrc/$zrc2/$(grep -c '"TKM_HARNESS_WORKTREE": "warn"' "$P/.claude/settings.json" 2>/dev/null)/$(grep -c '"TKM_HARNESS_MODE": "loop"' "$P/.claude/settings.local.json" 2>/dev/null)/$(wc -c < "$ze" | tr -d ' ')"
+  rm_cfg
+fi
+
+# /config の 1（mode）の塊（commands/config.md）は、画面下の写しが新しい・古い・無いのどれでも exit 0 で終わる
+# （最後の行が && の連鎖の偽で終わると、書けているのに Bash ツールが失敗と返す）。塊は config.md から取り出して回す
+python3 -I - "$ROOT_T/commands/config.md" > "$T/cfg-mode-block.sh" <<'PYX'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"### 1\. mode.*?```bash\n(.*?)```", s, re.S)
+print(m.group(1) if m else "exit 99")
+PYX
+mkdir -p "$T/cfgd-new" "$T/cfgd-old" "$T/cfgd-none"
+cp "$S/scripts/tasks-path.sh" "$T/cfgd-new/tasks-path.sh"; grep -v '_harness_item_up' "$S/scripts/tasks-path.sh" > "$T/cfgd-old/tasks-path.sh"
+cfg_block() { # cfg_block <写しを置いた dir> <shell> -> exit code と出力の行数
+  local out rc; rm -f "$P/.claude/settings.local.json"
+  out="$(run_in "$P" CLAUDE_PLUGIN_ROOT="$S" HARNESS_RULES_DIR="$1/rules" TKM_HARNESS_MODE= "$2" -c 'eval "$(cat "$0")"' "$T/cfg-mode-block.sh" 2>&1)"; rc=$?
+  printf '%s/%s' "$rc" "$(printf '%s\n' "$out" | grep -c '古い値')"
+}
+rm_cfg
+chk tks-config-exit "0/0 0/1 0/0" "$(cfg_block "$T/cfgd-new" bash) $(cfg_block "$T/cfgd-old" bash) $(cfg_block "$T/cfgd-none" bash)"
+if [ -x /bin/zsh ]; then chk tks-config-exit-zsh "0/0 0/1 0/0" "$(cfg_block "$T/cfgd-new" /bin/zsh) $(cfg_block "$T/cfgd-old" /bin/zsh) $(cfg_block "$T/cfgd-none" /bin/zsh)"; fi
+rm_cfg
+
 # --- 雛形 ---
-chk hm-template "0/1" "$(grep -cE '^(tasks|worktree|notify):' "$ROOT_T/templates/mode.yml" 2>/dev/null || true)/$(grep -c 'TKM_HARNESS_' "$ROOT_T/templates/mode.yml")"
+chk hm-template "0/1" "$(grep -cE '^(tasks|worktree|notify):' "$ROOT_T/templates/mode.yml" 2>/dev/null || true)/$([ "$(grep -c 'TKM_HARNESS_TASKS' "$ROOT_T/templates/mode.yml")" -ge 1 ] && echo 1 || echo 0)"
 exit $fail
 R6HM
   ( cd "$s" && ROOT_T="$s" env -u CLAUDE_PROJECT_DIR -u ORCA_WORKTREE_ID -u CLAUDECODE bash hm-test.sh "$s" 2>&1 | grep '^FAIL' )
@@ -1259,18 +1497,19 @@ X
       ;;
     hm)
       cat <<'X'
-hm-env|scripts/tasks-path.sh|s/if \[ -z "\$v" \] \&\& \[ "\${3:-}" != "files" \]; then/if false; then/
+hm-env|scripts/tasks-path.sh|s/if \[ -z "\$v" \] \&\& \[ "\$first" = 0 \] \&\& \[ "\${3:-}" != "files" \]; then/if false; then/
 hm-file|scripts/tasks-path.sh|s/^    v="\$(_harness_file_setting "\$item" "\$root")"$/    v=""/
 hm-claudecode|scripts/tasks-path.sh|s/^  if \[ -z "\$v" \]; then   # Claude Code の中でも.*$/  if [ -z "$v" ] \&\& [ "${CLAUDECODE:-}" != "1" ]; then/
 hm-nopython|scripts/tasks-path.sh|s/^  command -v python3 >\/dev\/null 2>\&1 || return 0$/  command -v python3 >\/dev\/null 2>\&1 || { printf zzz; return 0; }/
 hm-migrate-keep-tasks|scripts/tasks-path.sh|s/^      tasks|notify)$/      zzz)/
 hm-migrate-package|scripts/tasks-path.sh|s/if \[ "\$item" = tasks \] \&\& \[ -n "\$v" \] \&\& .*; then/if false; then/
+hm-yml-only-package|scripts/tasks-path.sh|s/^    if \[ "\$item" = tasks \]; then   # パッケージの tasks:/    if false; then   # パッケージの tasks:/
 hm-guard-linked-main|hooks/worktree-guard.sh|s/^      linked_main_blocks "\$d" \&\& return 0$/      :/
 hm-orca-context|scripts/orca-context.sh|s/^if \[ -f "\$here\/tasks-path.sh" \]/if false \&\& [ -f "$here\/tasks-path.sh" ]/
-hm-main-local|scripts/tasks-path.sh|s/^  \[ "\${common##\*\/}" = ".git" \] \&\& main=.*$/  main=""/
+hm-main-local|scripts/tasks-path.sh|s/^  \[ "\${common##\*\/}" = ".git" \] \&\& printf .*$/  :/
 hm-file-home|scripts/tasks-path.sh|s/^  \[ "\${2:-}" = "nohome" \] || \[ -z "\${HOME:-}" \] || printf .*$/  :/
-hm-hc|scripts/tasks-path.sh|s/^  v="\${!hc:-}".*$/  v=""/
-hm-yml|scripts/tasks-path.sh|s/^  \[ -n "\$v" \] || v="\$(harness_yml_value "\$root" "\$item")"$/  :/
+hm-hc|scripts/tasks-path.sh|s/^  \[ -z "\$hc" \] || v="\$(_harness_trim .*$/  :/
+hm-yml|scripts/tasks-path.sh|s/\*) \[ -n "\$v" \] || v="\$(harness_yml_value "\$root" "\$item")" ;; esac/*) : ;; esac/
 hm-unknown|scripts/tasks-path.sh|s/^    \*) printf 'off' ;;$/    *) printf 'block' ;;/
 hm-guard-json|hooks/worktree-guard.sh|s/^  case "\$c" in \*TKM_HARNESS_WORKTREE\*block\*) return 0 ;; esac$/  :/
 hm-guard-json-local|hooks/worktree-guard.sh|s/ || may_block_json "\$1\/.claude\/settings.local.json"//
@@ -1285,10 +1524,39 @@ hm-set-broken|scripts/tasks-path.sh|s/^        d = json.loads(raw)$/        d = 
 hm-set-local|scripts/tasks-path.sh|s/if \[ "\${4:-}" != "local" \]; then /if true; then /
 hm-set-bad|scripts/tasks-path.sh|s/worktree) up=WORKTREE; case "\$val" in off|warn|block) ;; \*) return 2 ;; esac ;;/worktree) up=WORKTREE ;;/
 hm-unset|scripts/tasks-path.sh|s/^  grep -Eq "\^\[\[:space:\]\]\*\${k}:" "\$f" 2>\/dev\/null || return 0$/  return 0/
-hm-migrate-env|scripts/tasks-path.sh|s/^    if path="\$(harness_settings_set "\$item" "\$v" "\$top")"; then$/    if false; then/
+hm-migrate-env|scripts/tasks-path.sh|s/^    if wrote_to="\$(harness_settings_set "\$item" "\$v" "\$top")"; then$/    if false; then/
 hm-migrate-skip|scripts/tasks-path.sh|s/notify) up=NOTIFY; case "\$val" in off|orca) ;; \*) return 2 ;; esac ;;/notify) up=NOTIFY ;;/
 hm-notify-bin|bin/hirai-notify|s/harness_notify "\$PWD"/harness_yml_value "$PWD" notify/
 hm-template|templates/mode.yml|s/^# 機能の切り替え（tasks \/ worktree \/ notify） — このファイルには書かない$/tasks: ledger/
+tks-set-mode-path|scripts/tasks-path.sh|s/^  printf '%s' "\${main:-\$top}\/.claude\/settings.local.json"$/  printf '%s' "$top\/.claude\/settings.json"/
+tks-set-mode-main|scripts/tasks-path.sh|s/^  printf '%s' "\${main:-\$top}\/.claude\/settings.local.json"$/  printf '%s' "$top\/.claude\/settings.local.json"/
+tks-mode-yml|scripts/tasks-path.sh|s/project|repo) ;; \*) \[ -n "\$v" \] || v=/project|repo|mode) ;; *) [ -n "$v" ] || v=/
+tks-pr-no-yml|scripts/tasks-path.sh|s/case "\$item" in project|repo) ;; \*)/case "$item" in zzz) ;; *)/
+tks-set-bad|scripts/tasks-path.sh|s/^    project) up=PROJECT; .*$/    project) up=PROJECT ;;/
+tks-set-mode|scripts/tasks-path.sh|s/^    f="\$(harness_mode_write_file "\$root")"$/    f="$top\/.claude\/settings.json"/
+tks-yml-only|scripts/tasks-path.sh|s/for item in mode auto_sync tasks worktree notify load_deadline/for item in tasks worktree notify load_deadline/
+tks-load-nohome|scripts/tasks-path.sh|s/^  case "\${2:-}" in load_\*) _HY_HOME="" ;; esac.*$/  :/
+tks-migrate-existing|scripts/tasks-path.sh|s/^  if \[ -n "\$cur" \]; then$/  if false; then/
+tks-notice|hooks/session-start.sh|s/\$(harness_setting_from_yml_only "\$root" 2>\/dev\/null | sed .s\/ \/・\/g.)/zzz/
+tks-4-other-repo|scripts/tasks-path.sh|s/_harness_item_file_first "\$item" || first=0/first=0/
+tks-4-all-env-ignored|scripts/tasks-path.sh|s/project|repo|load_deadline|load_deadline_label|load_mainline|load_mainline_label|nightly_ci) return 0/project|repo|load_deadline|load_deadline_label|load_mainline|nightly_ci) return 0/
+tks-4-lists-same|bin/hirai-task|s/^_FILE_FIRST_KEYS = ('project', 'repo', 'load_deadline', /_FILE_FIRST_KEYS = ('project', 'repo', /
+tks-badtype-warn|scripts/tasks-path.sh|s/^        print("tkm-harness: " + n + .*$/        pass/
+tks-yml-only-4env|scripts/tasks-path.sh|s/if _harness_item_file_first "\$item" \&\& command -v python3 >\/dev\/null 2>\&1; then :; else/if false; then :; else/
+tks-mode-env-over-file|scripts/tasks-path.sh|s/_harness_item_file_first "\$item" || first=0/first=1/
+tks-4-nopython-env|scripts/tasks-path.sh|s/ \&\& ! command -v python3 >\/dev\/null 2>\&1; then v=/ \&\& false; then v=/
+tks-int-value|scripts/tasks-path.sh|s/not isinstance(v, (str, int))/not isinstance(v, str)/
+tks-yml-only-home|scripts/tasks-path.sh|s/\[ -z "\$(_harness_yml_project_value "\$root" "\$item")" \] || out=/[ -z "$(harness_yml_value "$root" "$item")" ] || out=/
+tks-notice-home|scripts/tasks-path.sh|s/\[ -z "\$(_harness_yml_project_value "\$root" "\$item")" \] || out=/[ -z "$(harness_yml_value "$root" "$item")" ] || out=/
+tks-migrate-home|scripts/tasks-path.sh|s/^  \[ -n "\$v" \] || { \[ -z "\$_HY_TOP" \].*$/  [ -n "$v" ] || v="$(harness_yml_file_value "$_HY_HOME" "${2:-}")"/
+tks-migrate-weird|scripts/tasks-path.sh|s/mode) case "\$v" in normal|loop) ;; \*) printf/mode) case "$v" in normal|loop|weird) ;; *) printf/
+tks-yml-only|scripts/tasks-path.sh|s/notify load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci; do/notify load_deadline load_mainline_label nightly_ci; do/
+tks-migrate-lines|scripts/tasks-path.sh|s/for item in mode auto_sync load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci; do/for item in mode auto_sync load_deadline load_mainline_label nightly_ci; do/
+tks-zsh-mode|scripts/tasks-path.sh|s/v="\$(_harness_trim "\$(_harness_getenv "\$hc")")"/v="$(_harness_trim "${!hc:-}")"/
+tks-zsh-setting|scripts/tasks-path.sh|s/then v="\$(_harness_trim "\$(_harness_getenv "\$env")")"; fi$/then v="${!env}"; fi/
+tks-zsh-migrate|scripts/tasks-path.sh|s/wrote_to/path/g
+tks-zsh-set|scripts/tasks-path.sh|s/^  local item="\${1:-}" val="\${2:-}" root top up f$/  local item="${1:-}" val="${2:-}" root top up f path/
+tks-config-exit|commands/config.md|/^D=/{s/; if \[ -f "\$D\/tasks-path.sh" \] \&\& ! grep -q '_harness_item_up' "\$D\/tasks-path.sh"; then echo /; [ -f "$D\/tasks-path.sh" ] \&\& ! grep -q '_harness_item_up' "$D\/tasks-path.sh" \&\& echo /;s/; fi$//;}
 X
       ;;
     worktrees)
@@ -1447,13 +1715,13 @@ normal loop   loop（自動で進む）   両方あればプロジェクト側
 loop   normal normal（確認あり）   両方あればプロジェクト側
 -      -      normal（確認あり）   どちらも無し
 EOF
-  # /config の書き込み先: ホーム側だけに在るならプロジェクト側に新設しない
+  # /config の mode の書き込み先 (TKS-R2.4): ホーム側に mode.yml が在っても、各自の .claude/settings.local.json (プロジェクト側) に書く。mode.yml は触らない
   rm -f "$mw/home/.claude/mode.yml" "$mw/proj/.claude/mode.yml"
   printf 'mode: normal\n' > "$mw/home/.claude/mode.yml"
   local wf
   wf="$(HOME="$mw/home" bash -c '. "$1/scripts/tasks-path.sh"; harness_mode_write_file "$2"' _ "$mw/plug" "$mw/proj" 2>/dev/null)"
-  if [ "$wf" != "$mw/home/.claude/mode.yml" ]; then
-    rm -rf "$mw"; fail 1 "/config はすでに在る側に書く" "書き込み先=${wf:-無} (期待: ホーム側)"; return
+  if [ "$wf" != "$mw/proj/.claude/settings.local.json" ]; then
+    rm -rf "$mw"; fail 1 "/config は mode を settings.local.json に書く" "書き込み先=${wf:-無} (期待: $mw/proj/.claude/settings.local.json)"; return
   fi
   rm -rf "$mw"
 
@@ -1806,7 +2074,7 @@ EOF6
   fi
   if [ -n "$bad6" ]; then fail 1 "new-task・start-task・finish-task は形の見分けを先に行い、github-project の形で hirai-task を呼び、台帳を書かない" "$bad6"; return; fi
 
-  pass 1 "session-start.sh は対象ファイル不在でも exit 0 / ${lines} 行 / [harness] prefix あり / statusline も空 stdin・壊れた JSON・控え不在/空/壊れで 2 行 + 設定リンク常時 + exit 0 (色あり/NO_COLOR とも) / 進め方は置き場 5 通りで冒頭と画面下部が一致し /config は在る側に書く / /update 手順 2-2 の移行は中身を保ち同名は上書きせず両方残し、移行後は冒頭と画面下部が docs/ の台帳を読む / /init 第 2 段階は 事実収集 → 範囲提示 → grilling 呼び出し の順で、事実収集の bash は中身ありでも空でも exit 0、grilling へ渡す指示に範囲の制約 (調達・法務へ踏み込まない / 不要な質問は落とす / 事実は自分で調べる) が入っている / tasks: の形は mode.yml が決め (自動で見分けない)、台帳の形 5 場合 (remote 無し・GitHub 以外・gh が失敗・Project 0 件・tasks: github-project で hirai-task 無し) で冒頭と画面下部が尋ねず exit 0・5 行以内・gh を 1 回も呼ばず、hirai-task 無しは入れ方を 1 行示し、tasks: github-project + hirai-task は冒頭が取り直しを待たず画面下部が --refresh を付けずに あなたの番 を出す / PATH に hirai-task が無くても開始時と画面下が installed_plugins.json の版が最大の行から足すプラグインを見つけ、mode.yml の引用符・行末コメントを外して読み、項目ごとにプロジェクト > ホームの順で読み、notify: orca でも開始時は 5 行以内、/update 手順 2b は末尾 / の remote でも 2.x の控えを見つけて github-project を書き痕跡が無ければ書かずホームに書かず、/init 手順 7 は ledger のときだけ台帳を作る (/bin/bash 3.2) / new-task・start-task・finish-task は形の見分けを先に行い、GitHub Project の形の節は hirai-task を呼び入れ方を示し台帳を書かず、土台は harness_ghp_* を直接呼ばない"
+  pass 1 "session-start.sh は対象ファイル不在でも exit 0 / ${lines} 行 / [harness] prefix あり / statusline も空 stdin・壊れた JSON・控え不在/空/壊れで 2 行 + 設定リンク常時 + exit 0 (色あり/NO_COLOR とも) / 進め方は置き場 5 通りで冒頭と画面下部が一致し /config は在る側に書く / /update 手順 2-2 の移行は中身を保ち同名は上書きせず両方残し、移行後は冒頭と画面下部が docs/ の台帳を読む / /init 第 2 段階は 事実収集 → 範囲提示 → grilling 呼び出し の順で、事実収集の bash は中身ありでも空でも exit 0、grilling へ渡す指示に範囲の制約 (調達・法務へ踏み込まない / 不要な質問は落とす / 事実は自分で調べる) が入っている / tasks: の形は settings の env（4.x の間は mode.yml も）が決め (自動で見分けない)、台帳の形 5 場合 (remote 無し・GitHub 以外・gh が失敗・Project 0 件・tasks: github-project で hirai-task 無し) で冒頭と画面下部が尋ねず exit 0・5 行以内・gh を 1 回も呼ばず、hirai-task 無しは入れ方を 1 行示し、tasks: github-project + hirai-task は冒頭が取り直しを待たず画面下部が --refresh を付けずに あなたの番 を出す / PATH に hirai-task が無くても開始時と画面下が installed_plugins.json の版が最大の行から足すプラグインを見つけ、mode.yml の引用符・行末コメントを外して読み、項目ごとにプロジェクト > ホームの順で読み、notify: orca でも開始時は 5 行以内、/update 手順 2b は末尾 / の remote でも 2.x の控えを見つけて github-project を書き痕跡が無ければ書かずホームに書かず、/init 手順 7 は ledger のときだけ台帳を作る (/bin/bash 3.2) / new-task・start-task・finish-task は形の見分けを先に行い、GitHub Project の形の節は hirai-task を呼び入れ方を示し台帳を書かず、土台は harness_ghp_* を直接呼ばない"
 }
 
 # ---------- case 2: UserPromptSubmit の 2 本は、出してよい時だけ出す ----------
@@ -3248,7 +3516,7 @@ PYCMD
         ( cd "$aw/mp" && git init -q . 2>/dev/null; env CLAUDE_PLUGIN_ROOT="$ROOT" HOME="$aw/mu/home2" bash -c "$blk" ) >/dev/null 2>&1
         if [ "$mi" = ok ]; then
           grep -q '^mode: ' "$aw/mu/home/.claude/mode.yml" 2>/dev/null || abad="$abad /init user がホームに mode.yml を置かない"
-          grep -qE 'TKM_HARNESS_|^nightly_ci:' "$aw/mu/home/.claude/mode.yml" 2>/dev/null && abad="$abad /init user がホームへ tasks・worktree・notify の案内か nightly_ci: を写した"
+          grep -qE 'TKM_HARNESS_TASKS|^nightly_ci:' "$aw/mu/home/.claude/mode.yml" 2>/dev/null && abad="$abad /init user がホームへ tasks・worktree・notify の案内か nightly_ci: を写した"
           grep -qE '^(tasks|worktree|notify):' "$aw/mp/.claude/mode.yml" 2>/dev/null && abad="$abad /init project が mode.yml に tasks:・worktree:・notify: の行を写した (値は settings.json の env に書く)"
           grep -q 'TKM_HARNESS_TASKS' "$aw/mp/.claude/mode.yml" 2>/dev/null || abad="$abad /init project が mode.yml に settings.json の env の案内を写さない"
         else

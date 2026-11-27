@@ -108,16 +108,16 @@ python3 -m json.tool "$D/settings.json" >/dev/null && echo "settings.json は妥
 
 `MODE` は手順 1 の質問 3 の答え。「normal（確認あり）」(既定) なら `normal`、「loop（自動で進む）」なら `loop`。
 
-**進め方の書き込み先は `$D` で決め打ちせず、`/config` と同じ `harness_mode_write_file`（すでに在る側に書く）に通す。** `$D` 基準にすると、ホーム側だけに `mode.yml` を置いている人のプロジェクトへ `.claude/mode.yml` を新設し、ホーム側を黙って覆い隠す。`user` 指定のときだけはホーム側に入れると決まっているので、そちらを直に指す。**`user` 指定のときは、雛形の「機能の切り替え（tasks / worktree / notify）」の案内と `nightly_ci:`（雛形の `# 機能の切り替え（tasks / worktree / notify）` の行から末尾まで）をホームに写さない**（ホームの値は全リポに効くため、`tasks`・`worktree`・`notify` はプロジェクトの `.claude/settings.json` の `env` にだけ書く。`/tkm-harness:config` の項目 8 が書く。`nightly_ci:` はプロジェクトの `.claude/mode.yml` に書く）。
+**進め方は 2 か所に置く（4.1.0〜）。** 本体は各自の `.claude/settings.local.json` の `env.TKM_HARNESS_MODE`（`/config` と同じ `harness_settings_set mode`。git の worktree なら本体の checkout の settings.local.json。リポに入らない）で、`mode.yml` の `mode:` は settings.local.json を持たない人のための予備（効く順は settings が先）。`mode.yml` の置き場は `$D` で決め打ちせず、すでに在る側（`harness_mode_file`）に通す。`$D` 基準にすると、ホーム側だけに `mode.yml` を置いている人のプロジェクトへ `.claude/mode.yml` を新設し、ホーム側を黙って覆い隠す。`user` 指定のときだけはホーム側に入れると決まっているので、そちらを直に指す（`user` 指定では settings.local.json に書かない。ホームに settings.local.json は無いため）。**`user` 指定のときは、雛形の「機能の切り替え（tasks / worktree / notify）」の案内と `nightly_ci:`（雛形の `# 機能の切り替え（tasks / worktree / notify）` の行から末尾まで）をホームに写さない**（ホームの値は全リポに効くため、`tasks`・`worktree`・`notify` はプロジェクトの `.claude/settings.json` の `env` にだけ書く。`/tkm-harness:config` の項目 8 が書く。`nightly_ci:` はプロジェクトの `.claude/mode.yml` に書く）。
 
 ```bash
 SCOPE=; D=.claude; [ "$SCOPE" = user ] && D="$HOME/.claude"; MODE=normal
 P="${CLAUDE_PLUGIN_ROOT}"; [ -d "$P" ] || P="$(command -v python3 >/dev/null 2>&1 && python3 -I -c 'import json,re,sys; d=json.load(open(sys.argv[1])); r=[x for k,v in d.get("plugins",{}).items() if k.split("@",1)[0]==sys.argv[2] for x in v if x.get("installPath")]; r.sort(key=lambda x:[int(n) if n.isdigit() else 0 for n in re.split(r"[.]", str(x.get("version","0")).split("-",1)[0])]); print(r[-1]["installPath"] if r else "")' "$HOME/.claude/plugins/installed_plugins.json" tkm-harness 2>/dev/null)"; [ -d "$P" ] || P="$(ls -d "$HOME"/.claude/plugins/cache/*/tkm-harness/*/ 2>/dev/null | sort -V | tail -1)"; P="${P%/}"
 . "$P/scripts/tasks-path.sh"
-if [ "$SCOPE" = user ]; then MF="$HOME/.claude/mode.yml"; else MF="$(harness_mode_write_file "$PWD")"; fi
+if [ "$SCOPE" = user ]; then MF="$HOME/.claude/mode.yml"; else MF="$(harness_mode_file "$PWD" || printf '%s/.claude/mode.yml' "$(harness_root "$PWD")")"; fi
 mkdir -p "$(dirname "$MF")"
 [ -e "$MF" ] && echo "kept   $MF" || { cp "$P/templates/mode.yml" "$MF" && sed -i.bak "s/^mode: .*/mode: $MODE/" "$MF" && rm -f "$MF.bak" && { [ "$SCOPE" != user ] || { sed -i.bak '/^# 機能の切り替え/,$d' "$MF" && rm -f "$MF.bak"; }; } && echo "placed $MF ($MODE)"; }
-grep -c '^mode: \(normal\|loop\)$' "$MF"
+grep -c '^mode: \(normal\|loop\)$' "$MF"; [ "$SCOPE" = user ] || [ -n "$(harness_setting mode "$PWD" | grep .)" ] || { f="$(harness_settings_set mode "$MODE" "$PWD")" && echo "placed $f (TKM_HARNESS_MODE=$MODE)"; }
 C=CLAUDE.md; [ "$SCOPE" = user ] && C="$HOME/.claude/CLAUDE.md"; [ -e "$C" ] && echo "kept   $C" || { cp "$P/templates/CLAUDE.md" "$C" && echo "placed $C"; [ -n "$SCOPE" ] || for a in AGENTS.md .claude/AGENTS.md; do [ -e "$a" ] && { printf '@%s\n\n' "$a" | cat - "$C" > "$C.tmp" && mv "$C.tmp" "$C" && echo "imported $a"; }; done; }
 for s in statusline.sh tasks-path.sh context-usage.sh; do [ -e "$D/$s" ] && echo "kept   $D/$s" || { cp "$P/scripts/$s" "$D/$s" && chmod +x "$D/$s" && echo "placed $D/$s"; }; done
 bash "$D/statusline.sh" </dev/null
@@ -173,7 +173,7 @@ bash の出力は作業ログであって報告ではない。**最後に必ず�
 ✅ 安全設定を追加しました → .claude/settings.json
    本番反映や強制 push など、取り返しのつかない操作の前に確認が入ります
 ✅ ultracode（深く考えて自動で手分けする。利用量が増える）を有効にしました
-✅ mode（進め方）の設定を置きました → .claude/mode.yml（いまは normal（確認あり））
+✅ mode（進め方）の設定を置きました → .claude/settings.local.json（自分だけの設定。いまは normal（確認あり））と .claude/mode.yml（予備）
    後から /tkm-harness:config で loop（自動で進む）に変えられます
 ✅ プロジェクト情報の下書きを置きました → CLAUDE.md（中身は次回に伺って埋めます）
 ✅ タスク一覧表を作りました → docs/tasks/list.md
@@ -191,7 +191,7 @@ docs/ の書類を埋めます。**
 ```
 
 - 質問 2 で「有効にしない」を選ばれたら、3 行目を `✅ ultracode（深く考えて自動で手分けする設定）は入れていません（利用量は増えません）` に差し替える。
-- 質問 3 で `loop（自動で進む）` を選ばれたら、mode の 2 行を `✅ mode（進め方）の設定を置きました → <実際の書き込み先>（いまは loop（自動で進む））` ＋ `後から /tkm-harness:config で normal（確認あり）に戻せます。止めたいときは「stop」と伝えてください` に差し替える。**どちらを選んでも「後から /tkm-harness:config で変えられます」の 1 行は必ず残す。** パスは手順 6 の `$MF` の実測値を書く（ホーム側だった場合は `~/.claude/mode.yml` と出る）。
+- 質問 3 で `loop（自動で進む）` を選ばれたら、mode の 2 行を `✅ mode（進め方）の設定を置きました → <実際の書き込み先>（いまは loop（自動で進む））` ＋ `後から /tkm-harness:config で normal（確認あり）に戻せます。止めたいときは「stop」と伝えてください` に差し替える。**どちらを選んでも「後から /tkm-harness:config で変えられます」の 1 行は必ず残す。** パスは手順 6 の `placed` の行と `$MF` の実測値を書く（ホーム側だった場合は `~/.claude/mode.yml` と出る）。
 - `docs/` を新しく作ったときは、タスク一覧表の行の前に 1 行足す: `✅ 書類の置き場を作りました → docs/`。手順 7 が `skip 旧レイアウト` だったときは手順 7 の 4 行を出さず、代わりに 1 行書く: `やることの一覧表などは .claude/ の下にあります。/tkm-harness:update を実行すると docs/ へ移します（中身はそのまま移動します）。`
 - `imported AGENTS.md` と出たときは CLAUDE.md の行に 1 行足す: `   AGENTS.md も読まれるよう、先頭で読み込んでいます（Codex など他のエージェントと同じ指示を共有できます）`。手順 5 で `removed … statusLine` と出たときは statusLine の行を `✅ 画面下部の表示は、いまの表示（ユーザー設定）のままにしました。/tkm-harness:config で切り替えられます` に差し替える。
 - `CLAUDE.md` がすでにあった場合は、その 2 行を出さず「そのままにしたもの」に数える (中身は 1 バイトも触っていない)。手順 1 で「すでに一式が入っています」と伝えた再実行のときは、1 行目を `すでに入っている一式を確認しました。変更はありません。` にし、`✅` 行を出さずに「そのままにしたもの」の件数と一覧だけを書く。
@@ -293,7 +293,7 @@ echo "== 既存の書類 =="; find docs -name '*.md' 2>/dev/null | head -20; ech
 
 - `ls "$D"/rules/*.md` が 5 件返し、手順 3 の層判定が T0 2 本 / T1 3 本になる。
 - `python3 -m json.tool "$D/settings.json"` が exit 0。質問 2 で「有効にしない」を選ばれた場合は加えて `grep -c '"ultracode"' "$D/settings.json"` が 0。
-- `ls "$D/rules-archive/.gitkeep" "$D/statusline.sh"` が exit 0。進め方は `ls "$MF"` が exit 0 で `grep -c '^mode: \(normal\|loop\)$' "$MF"` が 1 (質問 3 で選ばれた値、既存を残したときはその値のまま)。**`$MF` がホーム側だったときは `.claude/mode.yml` が作られていないこと** (`ls .claude/mode.yml` が exit 1)。CLAUDE.md も置き場に在る (`ls CLAUDE.md`、`user` 指定なら `ls "$HOME/.claude/CLAUDE.md"`)。このプロジェクトに入れたときは加えて `ls -d docs` と手順 7 の最終行 (台帳 / parking-lot / incidents / 承認の型 / draft dir の 5 パス) も exit 0 (手順 7 が `skip 旧レイアウト` だった場合を除く)。
+- `ls "$D/rules-archive/.gitkeep" "$D/statusline.sh"` が exit 0。進め方は `ls "$MF"` が exit 0 で `grep -c '^mode: \(normal\|loop\)$' "$MF"` が 1 (質問 3 で選ばれた値、既存を残したときはその値のまま)。このプロジェクトに入れたときは加えて `harness_mode "$PWD"` が質問 3 の値になる（settings.local.json の `TKM_HARNESS_MODE`。すでに mode が決まっていたときは、その値のまま）。**`$MF` がホーム側だったときは `.claude/mode.yml` が作られていないこと** (`ls .claude/mode.yml` が exit 1)。CLAUDE.md も置き場に在る (`ls CLAUDE.md`、`user` 指定なら `ls "$HOME/.claude/CLAUDE.md"`)。このプロジェクトに入れたときは加えて `ls -d docs` と手順 7 の最終行 (台帳 / parking-lot / incidents / 承認の型 / draft dir の 5 パス) も exit 0 (手順 7 が `skip 旧レイアウト` だった場合を除く)。
 - 手順 8 を実行済み。警告が出た場合は報告に転記済み。
 
 ### 第 2 段階（手順 10）

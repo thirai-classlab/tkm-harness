@@ -64,7 +64,7 @@ Claude Code で次の 2 行を順に実行します。
 |---|---|
 | コマンド 14 個 + スキル 3 個（画面では合わせて **Skills**） | `/tkm-harness:init` `/tkm-harness:commit` `/tkm-harness:start-task` など、こちらから呼び出して使う操作 14 個と、AI が必要なときに自分で読む手引き 3 個（`grilling` / `context-engineering` / `github-project`）。GitHub Project 用の `/tkm-harness:board`・`:project-setup` と skill `github-project`（タスク管理の機能）もここに入っている |
 | エージェント 1 個（**Agents**） | テストを先に書く進め方の担当（`tdd-guide`）。v2.7.0 でレビューの agent 2 個は外した（正しさは組み込みの `/code-review`。脆弱性は観点を指示した reviewer と、利用者が打つ `/security-review`。詳しくは「同梱しているエージェント」） |
-| 自動処理 6 本 | セッション開始時の表示（版と効いている設定を含む）、容量が増えたときの警告、`loop`（自動で進む）のときの進め方の再掲、`worktree: block` のときだけ働く編集前の確認（`worktree-guard.sh`。既定の `off` では何もしない）、`notify: orca` のときだけ働く「権限の確認で止まっています」の知らせ（`notify-attention.sh`。判断は変えない）、コーディネーターの会話だけで働く PostToolUse の 1 行（`coordinator-load.sh`。止めない） |
+| 自動処理 6 本 | セッション開始時の表示（版と効いている設定を含む）、容量が増えたときの警告、`loop`（自動で進む）のときの進め方の再掲、`worktree: block` のときだけ働く編集前の確認（`worktree-guard.sh`。既定の `off` では何もしない）、`notify: orca` のときだけ働く「権限の確認で止まっています」の知らせ（`notify-attention.sh`。判断は変えない）、コーディネーターの会話だけで働く PostToolUse（`coordinator-load.sh`。振り出しと完了のあとに進みの表を人の画面にも出し、担当からの知らせの 1 行を足す。止めない） |
 | 外部ツール接続 2 個（**MCP servers**） | コードを検索する `serena` と、ライブラリの公式ドキュメントを取ってくる `context7` |
 
 あわせて、毎回のセッションで常にかかる容量の見積もりも出ます（v1.8.0 をターミナルの `claude plugin details` で見ると `Always-on: ~520 tok` と表示されました。v1.7.0 は約 452 tokens で、増えた分は `grilling` の名前と説明が常時載るぶんです）。
@@ -88,7 +88,7 @@ Claude Code で次の 2 行を順に実行します。
 
 - `.claude/rules/` — 決まりごと本体
 - `.claude/settings.json` — 安全設定と画面下部の表示
-- `.claude/mode.yml` — mode（進め方）（→ [mode（進め方）とは](#mode進め方とは)）。**すでにホーム側（`~/.claude/mode.yml`）に持っている人には、プロジェクト側に新しく作りません**（そちらを黙って覆い隠さないため）
+- `.claude/mode.yml` — mode（進め方）の予備（本体は各自の `.claude/settings.local.json`。→ [mode（進め方）とは](#mode進め方とは)）。**すでにホーム側（`~/.claude/mode.yml`）に持っている人には、プロジェクト側に新しく作りません**（そちらを黙って覆い隠さないため）
 - `CLAUDE.md` — このプロジェクトの説明（概要 / 使っている技術 / よく使うコマンド）の下書き。中身は**次の `/tkm-harness:init` で伺って埋めます**。すでにある場合は触りません
 - `docs/` — 書類の置き場。**無ければ作ります**（`docs/draft/` 設計メモ / `docs/rules-reference/` 困ったことの記録帳と承認の型）。**プロジェクトの書類は常にここです。** 旧版（v1.8.0 以前）で `.claude/tasks/` などに作った環境は、`/tkm-harness:update` が `docs/` へ移します（中身はそのまま移動します）
 
@@ -132,6 +132,24 @@ Claude Code で次の 2 行を順に実行します。
 - 「入れる範囲」を選ぶ画面での並び順と、はじめから選ばれている選択肢。3 つの選択肢があることと[それぞれの意味](https://code.claude.com/docs/en/discover-plugins.md#install-plugins)は公式ドキュメントに、記録される場所はターミナルから `--scope` を指定して実際に入れた結果で確かめています
 - フォルダを信頼するか尋ねる画面が出る条件。このプラグインが配る安全設定は「禁止」と「確認」だけで、公式ドキュメントによればこの 2 つは信頼の確認を待たずに効きます
 
+## 設定の置き場と効く順（`.claude/settings.json` の `env`。mode だけ `.claude/settings.local.json`）
+
+プロジェクトごとの設定（4.1.0 から）は、各リポの `.claude/settings.json` の `env` に集まります。**各自の好みの mode だけは `.claude/settings.local.json`**（git に入らない）に書きます。`/tkm-harness:config` が 1 つのキーだけを書きます。
+
+| 項目 | env の名前 | 値 | 既定 | `/config` が書く先 |
+|---|---|---|---|---|
+| mode（進め方） | `TKM_HARNESS_MODE` | `normal` ／ `loop` | `normal` | `settings.local.json`（Claude Code が最初に読むもの。worktree の会話からは本体の checkout の） |
+| auto_sync（更新後の入れ替え） | `TKM_HARNESS_AUTO_SYNC` | `on` ／ `off` | `off` | `settings.json` |
+| tasks・worktree・notify | `TKM_HARNESS_TASKS`・`_WORKTREE`・`_NOTIFY` | 下の表 | `ledger`・`off`・`off` | `settings.json` |
+| project（GitHub Project の番号） | `TKM_HARNESS_PROJECT` | 正の整数 | 無し（リポに紐づいた Project を探す） | `settings.json` |
+| repo（owner/リポ） | `TKM_HARNESS_REPO` | `<owner>/<name>` | `git remote get-url origin` | `settings.json` |
+| 進みの表の期限と本線 | `TKM_HARNESS_LOAD_DEADLINE`・`_LOAD_DEADLINE_LABEL`・`_LOAD_MAINLINE`・`_LOAD_MAINLINE_LABEL` | 期限は `YYYY-MM-DD` | 空 | `settings.json`（手で書く） |
+| 前夜の CI | `TKM_HARNESS_NIGHTLY_CI` | workflow のファイル名 | 空 | `settings.json`（手で書く） |
+
+**効く順（上が先）**: ① シェルの一時の上書き（`HC_MODE`・`HC_AUTO_SYNC`・`HC_TASKS`・`HC_WORKTREE`・`HC_NOTIFY`・`HIRAI_TASK_PROJECT`・`HIRAI_TASK_REPO`） → ② 環境変数 `TKM_HARNESS_<項目>`（Claude Code の中では `settings.local.json` > `settings.json` の `env` が重なって届きます） → ③ settings の file の `env`（本体の checkout の `settings.local.json` → toplevel の `settings.local.json` → toplevel の `settings.json` → `~/.claude/settings.json`。Claude Code の外の端末・CI と、②が空のときに読みます） → ④ `.claude/mode.yml` の `<項目>:`（移行用の予備） → ⑤ 既定。保存すると同じ会話の次の Bash・hook から新しい値が効きます（消したときだけ、開き直すまで古い値が残ります）。
+
+**4 種だけ例外（project・repo・期限と本線の 4 つ・前夜の CI）**: 同じ会話から別のリポで打つと、②（会話のリポの値）が別のリポの Project を持ち込むため、①の次に③（**打ったリポ**の settings の file）を読み、②は使いません（file を読む python3 が無いときだけ②）。順は ①（`HIRAI_TASK_PROJECT`・`HIRAI_TASK_REPO`）→ ③ → ④（期限と本線・前夜の CI だけ） → ⑤。mode・auto_sync・tasks・worktree・notify は上の順のままです。
+
 ## やることの形と Orca の設定（`.claude/settings.json` の `env`）
 
 効かせる機能は、各リポの `.claude/settings.json` の `env` の 3 項目で選びます。**自動では見分けません**（会話の開始時の 1 行目に、版と今の値が出ます。例: `tkm-harness v<版>・tasks: ledger・worktree: off・notify: off`）。変えるときは `/tkm-harness:config`（項目 8。`env` の 1 つのキーだけを書きます）。プラグインがプロジェクトの `settings.json` から読めるのは `env` だけです（[公式: settings の env](https://code.claude.com/docs/en/settings-reference.md#env)）。
@@ -146,10 +164,10 @@ Claude Code で次の 2 行を順に実行します。
 }
 ```
 
-- **読む順（上が先）**: ① シェルの `HC_TASKS`・`HC_WORKTREE`・`HC_NOTIFY`（一時の上書き。`HC_NOTIFY=off claude` がコーディネーターの開き方） → ② 環境変数 `TKM_HARNESS_*`（Claude Code の中では `settings.local.json` > `settings.json` の `env` が重なって届きます。**同じ名前ならシェルの値より settings の値が勝つ**ので〔Claude Code 2.1.312 で実測〕、一時の上書きは別の名前の `HC_*` にしてあります） → ③ Claude Code の外（端末・CI）では、本体の checkout の `settings.local.json` → toplevel の `settings.local.json` → toplevel の `settings.json` → `~/.claude/settings.json` の `env` を直に読む（python3 が要ります。Claude Code の中は `CLAUDECODE=1` で、②が写しているので読みません） → ④ `.claude/mode.yml` の `tasks:`・`worktree:`・`notify:`（4.x の間だけ読む移行用） → ⑤ 既定（`ledger`・`off`・`off`）。未知の値は既定に倒します
+- **読む順（上が先）**: 上の「設定の置き場と効く順」と同じです。**同じ名前ならシェルの値より settings の値が勝つ**ので（Claude Code 2.1.312 で実測）、一時の上書きは別の名前の `HC_*` にしてあります。Claude Code の中でも、②が空のときは settings の file を直に読みます（開いたあとに書いた値と、移す前に開いた会話のため）。未知の値は既定（`ledger`・`off`・`off`）に倒します
 - **自分だけ変える**: `.claude/settings.local.json`（git に入りません）の `env` に同じ名前で書きます。チームの `settings.json` より先に効きます
-- **mode.yml からの移行**: `mode.yml` にだけ値がある間は、会話の開始時に 1 行（`/tkm-harness:config` の項目 8 へ移せます）が出ます。`/tkm-harness:update` が `env` へ移し、`mode.yml` の行を消します
-- `settings.json` の `env` は、書いたあとに開いた会話から効きます（開いている会話は変わりません）
+- **mode.yml からの移行**: `mode.yml` にだけ値がある間は、会話の開始時に 1 行（settings の env へ移せます。mode は `settings.local.json` へ・ほかは `settings.json` へ）が出ます。`/tkm-harness:update` が `env` へ移します。`tasks`・`worktree`・`notify` は `mode.yml` の行を消し（`tasks`・`notify` は `hirai-task` のために残す）、mode・auto_sync・期限と本線・前夜の CI は `mode.yml` の行を残します（チームの `mode.yml` の `mode:` を消すと、`settings.local.json` を持たない人が normal に戻るため）
+- `settings.json` の `env` は、書くと同じ会話の次の Bash・hook から効きます（Claude Code が会話の途中の保存を環境変数に入れます。消したときだけ、開き直すまで古い値が残ります）
 
 | 項目 | 値（既定が先頭） | 効くこと |
 |---|---|---|
@@ -173,17 +191,17 @@ Claude Code で次の 2 行を順に実行します。
 | `commands/project-setup.md` | `/tkm-harness:project-setup` Project の作成・紐づけ・項目・ビューの立ち上げ（既定は計画だけ。`--apply` で書く） |
 | `bin/hirai-task load`・`assign` | 全体の %・担当ごとの順番と進捗率の表と、割り振り・Assignees の決まり（「進捗を見せて」などで出る。決まりは `skills/github-project/` の「進みと割り振りの表」） |
 | `bin/hirai-task board --progress`・`scripts/hirai_progress.py` | `load` と同じ計算に、担当と「いまやっていること」（`orca worktree list` の表示名・linkedIssue・linkedPR・comment が第一。Orca が無いときは PR の branch 名と Assignees）と「これから立てる」を足した表。`--json` で同じ中身を機械の形で出す。期限・本線の設定は環境変数 `TKM_HARNESS_LOAD_DEADLINE`・`_DEADLINE_LABEL`・`_MAINLINE`・`_MAINLINE_LABEL`（導入先の `.claude/settings.json` の `env`）が先、無ければ `mode.yml` の `load_*` |
-| `hooks/coordinator-load.sh` | コーディネーターの会話だけの PostToolUse（止めない・gh も控えも読まない・知らせを受けたとき（前景の `orca orchestration check` の出力に message の id があるか `--ack` を付けたとき）「`hirai-task load --changed` を打つ」の 1 行を足す。コーディネーターか（親〔立てたコーディネーター〕がいない会話で、tasks が `github-project`）の判定は `hirai-task is-coordinator` が持つ。担当の会話・判定できない会話・台帳のリポでは出ない） |
+| `hooks/coordinator-load.sh` | コーディネーターの会話だけの PostToolUse（止めない・gh は叩かない。振り出し〔`orca orchestration worker-start`・`orca worktree set --issue`・`hirai-task` / `gh-task.sh` の `assign`・`start`〕と完了〔`done`・`after-merge`・`gh pr merge`〕のあと、`hirai-task load --cached`〔8 秒で切る〕の表を systemMessage〔人の画面〕と additionalContext〔AI〕の両方に出す。各欄 10,000 字まで・超えたら末尾に「（続きは hirai-task load）」。load が失敗・空・時間切れなら出さない。表と下の 1 行が重なれば表だけ。知らせを受けたとき（前景の `orca orchestration check` の出力に message の id があるか `--ack` を付けたとき）「`hirai-task load --changed` を打つ」の 1 行を足す。コーディネーターか（親〔立てたコーディネーター〕がいない会話で、tasks が `github-project`）の判定は `hirai-task is-coordinator` が持つ。担当の会話・判定できない会話・台帳のリポでは出ない） |
 | `skills/github-project/` | GitHub Project の形の規範（正本は Project・3 段・Status 8 値・書き込みはメイン専任・承認カード） |
 | `docs/rules-reference/project-setup.md`・`glossary.md` | 立ち上げの手順と、wave・feature・8 状態の用語 |
 | `hirai-task today` の見回りの書き込み | align・close-parents に加え、**閉じたのに Status が 完了 でない task へ Status=完了 だけを書く**（書き込みが 1 種増える。書くのは今の Status が 進行中・レビュー中・空 で、[操作]・[User] でない task（この repo の行だけ。閉じた理由が not planned・duplicate でも同じ）。[操作]・[User] と、承認待ち・判断待ち・依存待ち・着手可・保留 のまま閉じた行は、今までどおり stuck に番号と題を出すだけ（誤って閉じた・実行していないものがありうる）。書く直前に state・種別・Status・題を読み直し、書く相手でなくなっていれば飛ばす。1 件書くたびに `完了にした: #n（前の Status → 完了）題` を出し、書けない 1 件は理由を出してほかを続け、rate limit・権限の 403 なら残りを打ち切る（rate limit の回は align も一覧だけ）。1 回 5 件・45 秒まで（45 秒を超える前に次を始めないだけで、始めた 1 件は最後まで行う）。次の today は試した所の続きから。align と同じ許可（`- today は書かない: はい`）に従う。today に `--json`・`--dry-run` は無く、付けると exit 2）。**「この repo の行だけ」は完了の書き込みだけの決まり**（align・close-parents は、複数のリポを載せた Project で別 repo の行を絞らない。1.0.0 と同じ）。種別なしの行には直すコマンドを 1 行出し、`set`・`start` は相手の種別が空なら stderr に警告 1 行（止めない。種別の項目が無い Project では、どちらも出さない）。直近 7 日に `no-issue` ラベルで merge した既定の branch 向けの PR を番号で出す（closed の PR 100 件の読みを使い、API を増やさない。100 件で見切れて 0 件のときも「0 件」と出す） |
 | `hirai-task` の feature の単位（HM-R4） | PR と承認の単位は feature。`start`・`review`・`done`・`set <feature> Status 進行中\|レビュー中\|完了` は feature を受ける（着手可の feature だけ start が通り、承認待ち → 着手可は人がボードで行う。wave は今までどおり断る）。`ready` は、開いたコードの task の子が無い着手可の feature も `[feature]` の印とチェックリストの未完の行数つきで出す。`new --from-table` は印（`[操作]`・`[User]`）の無い task の行を issue にせず、親の feature の本文の `## やること` に `- [ ] <id>: <題名>` で並べ、目印に `rows=`・`reads=`（束の和）を書く。`coverage` は `rows=` を起票済みと数え、`show`・`start` は feature の `reads=` を読む束で出す。`after-merge` は `Closes` で閉じた feature（進行中・レビュー中）を 完了 にする |
-| `hirai-task today` の `nightly_ci` の 1 行 | `.claude/mode.yml` の `nightly_ci: <workflow のファイル名>` があるときだけ、`gh run list --event schedule -L 1` の結果を先頭に 1 行出す |
+| `hirai-task today` の `nightly_ci` の 1 行 | `.claude/settings.json` の `env` `TKM_HARNESS_NIGHTLY_CI`（予備: `.claude/mode.yml` の `nightly_ci: <workflow のファイル名>`）があるときだけ、`gh run list --event schedule -L 1` の結果を先頭に 1 行出す |
 | `scripts/ghp-path.sh` | 件数の控え（`~/.claude/plugins/data/tkm-harness-tkm-harness/`）を読み書きするシェル関数 |
 
-- 確かめるのは `bash tests/smoke-tasks.sh`（タスク管理の機能と進みの表の入れ方の 11 case）
-- 全体の進みに期限の行や本線の印を出すときは、`.claude/settings.json` の `env`（`TKM_HARNESS_LOAD_DEADLINE`・`TKM_HARNESS_LOAD_DEADLINE_LABEL`・`TKM_HARNESS_LOAD_MAINLINE`・`TKM_HARNESS_LOAD_MAINLINE_LABEL`）か、`.claude/mode.yml` の `load_deadline`・`load_deadline_label`・`load_mainline`・`load_mainline_label` に書く（`env` が先。書き方は `skills/github-project/SKILL.md`）
-- 夜間に回す CI の赤を見逃さないときは、`.claude/mode.yml` に `nightly_ci: ci.yml`（workflow のファイル名）を足す。`hirai-task today` の先頭に、その workflow の直近の schedule の run の結果を 1 行出す。空か無ければ何も出さず gh も呼ばない
+- 確かめるのは `bash tests/smoke-tasks.sh`（タスク管理の機能と進みの表の入れ方の 13 case）
+- 全体の進みに期限の行や本線の印を出すときは、`.claude/settings.json` の `env`（`TKM_HARNESS_LOAD_DEADLINE`・`TKM_HARNESS_LOAD_DEADLINE_LABEL`・`TKM_HARNESS_LOAD_MAINLINE`・`TKM_HARNESS_LOAD_MAINLINE_LABEL`）に書く（予備: `.claude/mode.yml` の `load_deadline`・`load_deadline_label`・`load_mainline`・`load_mainline_label`。`env` が先。書き方は `skills/github-project/SKILL.md`）
+- 夜間に回す CI の赤を見逃さないときは、`.claude/settings.json` の `env` に `TKM_HARNESS_NIGHTLY_CI=ci.yml`（workflow のファイル名。予備: `.claude/mode.yml` の `nightly_ci: ci.yml`）を足す。`hirai-task today` の先頭に、その workflow の直近の schedule の run の結果を 1 行出す。空か無ければ何も出さず gh も呼ばない
 
 ### Orca で並行に進める（選べる機能）
 
@@ -275,7 +293,7 @@ claude plugin uninstall hirai-lite@hirai-lite --scope <範囲> --keep-data
 ```
 
 - **command の名前が変わります。** `/hirai-lite:init` は `/tkm-harness:init`、`/hirai-project-method:board` は `/tkm-harness:board` のように、先頭が `/tkm-harness:` になります（`/hirai-lite:` は使えなくなります）。
-- **`.claude/mode.yml` の 3 項目（`tasks`・`worktree`・`notify`）は `.claude/settings.json` の `env`（`TKM_HARNESS_TASKS`・`TKM_HARNESS_WORKTREE`・`TKM_HARNESS_NOTIFY`）へ移ります。** `/tkm-harness:update` が移し、移行の間は `mode.yml` も読みます。環境変数の名前が `HIRAI_METHOD_*` だった版（4.0.0 より前の開発版）を使っていたリポは、`TKM_HARNESS_*` に書き換えます。
+- **`.claude/mode.yml` の項目は `.claude/settings.json` の `env` へ移ります。** 4.0.0 で `tasks`・`worktree`・`notify`（`TKM_HARNESS_TASKS`・`TKM_HARNESS_WORKTREE`・`TKM_HARNESS_NOTIFY`）、4.1.0 で `auto_sync`・期限と本線・前夜の CI が `settings.json` へ、`mode` が各自の `settings.local.json` へ移ります。`/tkm-harness:update` が移し、移行の間は `mode.yml` も予備として読みます（上の「設定の置き場と効く順」）。環境変数の名前が `HIRAI_METHOD_*` だった版（4.0.0 より前の開発版）を使っていたリポは、`TKM_HARNESS_*` に書き換えます。
 - **`--keep-data` を付ける**のは、件数の控え（`~/.claude/plugins/data/…`）を消さないためです。新しい控えは `tkm-harness-tkm-harness/` に作り直されるので、最初の会話では画面下の件数が出るまで 1 回待ちます。
 - **2 つのプラグインを同じ範囲に入れていた場合も、4 行目まで打ちます**（`hirai-project-method` の uninstall は、`hirai-lite` の前に）。入れていなかった側の uninstall は「not installed」と出るだけで、害はありません。
 - **旧 `hirai-lite-v2`（2.x）から移るとき**は、更新ではなく入れ替えです。順は上の 4 行ではなく `/tkm-harness:update` の手順 1（`hirai-lite-v2` を先に uninstall しない・控えを読ませてから外す）に従います。
@@ -338,7 +356,7 @@ GitHub Project でやることを管理するリポでは、**着手の承認は
 | 3 | Claude Code を閉じて開き直す | ここで入れ替えが実際に効きます |
 | 4 | `/tkm-harness:update` | プロジェクト側にコピーされているスクリプトを最新にし、旧版で `.claude/` に作った書類を `docs/` へ移します |
 
-**4 を飛ばすと、画面下部の表示が古いままになります。** ステップ 1〜3 で新しくなるのはコマンド・自動処理・エージェント・外部ツール接続だけで、`/tkm-harness:init` のときにプロジェクトへ**コピーされた**ファイル（画面下部の表示スクリプトなど）は、その場に残った古いコピーのままだからです。
+**4 を飛ばすと、画面下部の表示が古いままになります。**（auto_sync が `off` の導入先で 4.0.0 の写しのまま 4.1.0 に上げたときも、`/tkm-harness:config` で mode を変えたあと、画面下は `/tkm-harness:update` で写しを入れ替えるまで `mode.yml` の古い値を出します。4.0.0 の写しは `TKM_HARNESS_MODE` を読みません。） ステップ 1〜3 で新しくなるのはコマンド・自動処理・エージェント・外部ツール接続だけで、`/tkm-harness:init` のときにプロジェクトへ**コピーされた**ファイル（画面下部の表示スクリプトなど）は、その場に残った古いコピーのままだからです。
 
 ステップ 4 が入れ替えるのは、あなたが編集する前提でない 3 本（`statusline.sh` / `tasks-path.sh` / `context-usage.sh`）だけです。手を入れていた場合は、元の内容を `.bak` という名前で残してから入れ替えます。**決まりごと（ルール）・安全設定・mode（進め方）の設定・やること（GitHub の issue と Project。台帳の形のリポでは list.md）には触りません。**
 
@@ -364,7 +382,7 @@ GitHub Project でやることを管理するリポでは、**着手の承認は
 }
 ```
 
-**ステップ 4 の自動化がこのプラグインの受け持ちです。** 有効にすると、`mode.yml` に `auto_sync: on` が書かれ、**プラグインの版が変わった回のセッション冒頭だけ**、複製された 3 本を配布版に揃えて 1 行報告します。
+**ステップ 4 の自動化がこのプラグインの受け持ちです。** 有効にすると、`.claude/settings.json` の `env` に `TKM_HARNESS_AUTO_SYNC=on` が書かれ、**プラグインの版が変わった回のセッション冒頭だけ**、複製された 3 本を配布版に揃えて 1 行報告します。
 
 ```
 [harness] v1.13.0 に合わせてスクリプト 2 件を入れ替えました (元の内容は .bak に保存) — 反映は次回起動から
@@ -375,7 +393,7 @@ GitHub Project でやることを管理するリポでは、**着手の承認は
 - **決まりごと（ルール）・安全設定・`CLAUDE.md`・やること（GitHub の issue と Project。台帳の形のリポでは list.md）は、自動では一切書き換えません。** 対象は上の 3 本だけです。
 - 失敗してもセッションは壊れません（通信も CLI 呼び出しもせず、何が起きても `exit 0` で抜けます）。
 - ステップ 2（書類の移動）と ステップ 3（rules の再配置）は**自動にできません**。どちらも「同名衝突をどちらに寄せるか」「どのルールを新しくするか」という利用者の判断を含むので、`/tkm-harness:update` で人が見ます。
-- 1 回だけ止めたいときは環境変数 `HC_AUTO_SYNC=off`（`mode.yml` より優先されます）。
+- 1 回だけ止めたいときは環境変数 `HC_AUTO_SYNC=off`（settings の `env` より優先されます）。
 
 ### 合図が出ないとき
 
@@ -434,7 +452,7 @@ Claude Code 2.1.247 で実際に確かめたところ、この表示が出てい
 
 ## mode（進め方）とは
 
-作業の進め方の設定で、値は 2 つだけ。`.claude/mode.yml` に入っていて、**`/tkm-harness:init` の 3 問目で選ぶ**（v1.7.0 から。すでに `mode.yml` がある場合は聞かれず、いまの設定がそのまま残る）。後から `/tkm-harness:config` で切り替えられる（一覧の「1. mode（進め方）」）。画面下部の表示にも出る。
+作業の進め方の設定で、値は 2 つだけ。4.1.0 から各自の `.claude/settings.local.json` の `env` `TKM_HARNESS_MODE` に入っていて（`mode.yml` の `mode:` は無いときの予備）、**`/tkm-harness:init` の 3 問目で選ぶ**（v1.7.0 から。すでに `mode.yml` がある場合は聞かれず、いまの設定がそのまま残る）。後から `/tkm-harness:config` で切り替えられる（一覧の「1. mode（進め方）」）。画面下部の表示にも出る。
 
 利用者に見せる表記は **`<正式名>（<短い解説>）`** に統一している（v1.6.0 から）。正式名だけでは設定を触ったことのない人に伝わらず、解説だけでは `mode.yml` や `settings.json` の中身と結び付かないため、両方を出す。同じ規則を `ultracode（深く考えて自動で手分けする。利用量が増える）` と `statusLine（画面下部の情報表示）` にも適用している。
 
@@ -618,7 +636,7 @@ claude plugins install mattpocock-skills
 
 4. **ロード検証** — **`/init` の次に開くセッション**で行う（rules は起動時に読まれるため、`/init` を実行したセッション内では確認できない。`/init` の終了条件にも含めていない）。新しいセッションを開き、T0 の 3 ファイルが載っていること、T1 が `paths:` 該当ファイルを開くまで載らないことを確認する。想定と違えば frontmatter を直す。
 
-5. **更新する** — 既定では自動更新しない（本体の自動更新は Claude Code 本体の機能で、第三者マーケットプレイスは既定 off。複製された 3 本の入れ替えは `mode.yml` の `auto_sync`、既定 off。どちらも `/tkm-harness:config` の項目 7）。手順は `/plugin marketplace update tkm-harness` → 端末で `claude plugin update tkm-harness@tkm-harness --scope <入れた範囲>`（画面なら `/plugin` → Installed → Update now）→ 再起動 → `/tkm-harness:update`（旧レイアウトの書類を `docs/` へ `mv` で移す → rules を再配置 → プラグイン所有の `statusline.sh` / `tasks-path.sh` / `context-usage.sh` を、配置先 (`.claude/` または `$HOME/.claude/`) のうち**実際に在る側だけ**配布版に入れ替え）。利用者向けの手順は[更新する](#更新する既定では自動で新しくなりません)。
+5. **更新する** — 既定では自動更新しない（本体の自動更新は Claude Code 本体の機能で、第三者マーケットプレイスは既定 off。複製された 3 本の入れ替えは settings の env `TKM_HARNESS_AUTO_SYNC`、既定 off。どちらも `/tkm-harness:config` の項目 7）。手順は `/plugin marketplace update tkm-harness` → 端末で `claude plugin update tkm-harness@tkm-harness --scope <入れた範囲>`（画面なら `/plugin` → Installed → Update now）→ 再起動 → `/tkm-harness:update`（旧レイアウトの書類を `docs/` へ `mv` で移す → rules を再配置 → プラグイン所有の `statusline.sh` / `tasks-path.sh` / `context-usage.sh` を、配置先 (`.claude/` または `$HOME/.claude/`) のうち**実際に在る側だけ**配布版に入れ替え）。利用者向けの手順は[更新する](#更新する既定では自動で新しくなりません)。
 
 ## 受け持ち（責務分離）
 
@@ -661,12 +679,12 @@ tkm-harness は、そのまま fork して自分の owner で配れるように�
 | `agents/` | サブエージェント 1 個（`tdd-guide`。MIT、出典は `NOTICE.md`） |
 | `commands/` | スラッシュコマンド 14 個（数の上限は v2.7.0 で外した。`init`・`update`・`config`・`rules-audit` は `disable-model-invocation: true` で説明文が常時載らず、Claude からは呼ばれない） |
 | `skills/` | スキル 3 個（`grilling` は MIT で出典は `NOTICE.md` / `context-engineering` は自作、`references/` に公式出典 / `github-project` はタスク管理の機能）。`plugin.json` に `skills` キーは書かない（既定で読まれる） |
-| `hooks/` | `hooks.json` + SessionStart 1 本（`session-start.sh`）と UserPromptSubmit 2 本（`loop-reminder.sh` / `context-budget.sh`）は context を足すだけで、操作は止めない。PreToolUse 1 本（`worktree-guard.sh`）は `worktree: block` のときだけ Edit・Write・NotebookEdit と `git commit` を止める（MCP の書き込みの道具は止めない。条 5 の例外。既定の `off` では何もしない）。Notification・PermissionDenied・StopFailure に結ぶ 1 本（`notify-attention.sh`）は `notify: orca` のときだけコーディネーターへ知らせる（判断は変えない）。PostToolUse 1 本（`coordinator-load.sh`）はコーディネーターの会話だけに 1 行を足す（止めない） |
+| `hooks/` | `hooks.json` + SessionStart 1 本（`session-start.sh`）と UserPromptSubmit 2 本（`loop-reminder.sh` / `context-budget.sh`）は context を足すだけで、操作は止めない。PreToolUse 1 本（`worktree-guard.sh`）は `worktree: block` のときだけ Edit・Write・NotebookEdit と `git commit` を止める（MCP の書き込みの道具は止めない。条 5 の例外。既定の `off` では何もしない）。Notification・PermissionDenied・StopFailure に結ぶ 1 本（`notify-attention.sh`）は `notify: orca` のときだけコーディネーターへ知らせる（判断は変えない）。PostToolUse 1 本（`coordinator-load.sh`）はコーディネーターの会話だけに、振り出し・完了のあとの進みの表と、知らせを受けたときの 1 行を足す（止めない） |
 | `rules/` | **プラグインは読まない。** `/init` が配置先の `.claude/rules/` へ配る素材 |
 | `scripts/` | hook / statusline が source する共通ライブラリ（パス解決 `tasks-path.sh` / context 使用率 `context-usage.sh` / 更新検知 `update-check.sh` / GitHub Project の控え `ghp-path.sh`）+ `hirai-task` の部品（`hirai_*.py`）+ `/init` の二重ロード検査 |
 | `templates/` | `settings.json` / `mode.yml` / `CLAUDE.md` / draft / `pull_request_template.md`（PR の本文の 4 種別の型。`/init` が導入先の `.github/` に、無ければ置く）の雛形（`CLAUDE.md` は `/init` が導入先へ置く。プラグイン直下に置くと `validate --strict` が警告するため `templates/` に置いている） |
 | `tests/smoke.sh` | 自己検証 10 case（予算監査を含む。hook 6 / skill 3 / case 10 の上限も case 6 が見る。command は数だけ出す） |
-| `tests/smoke-tasks.sh` | タスク管理の機能（`hirai-task`・`ghp-path.sh`・`coordinator-load.sh`）の自己検証 11 case |
+| `tests/smoke-tasks.sh` | タスク管理の機能（`hirai-task`・`ghp-path.sh`・`coordinator-load.sh`）の自己検証 13 case |
 | `CHANGELOG.md` | 版ごとの変更点。v0.6.0 以前の既知の不具合もここに記録 |
 | `CONTRIBUTING.md` | 開発の進め方。**`main` 1 本で配る**（プラグイン `tkm-harness` 1 つ。旧 `hirai-lite` の `v2` は凍結） |
 

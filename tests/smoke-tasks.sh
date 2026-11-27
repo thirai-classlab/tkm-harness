@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tkm-harness のタスク管理の機能 (hirai-task・ghp-path.sh・coordinator-load.sh・進みの表の入れ方) の自己検証 smoke (11 case)。1 件でも FAIL なら exit 1。
+# tkm-harness のタスク管理の機能 (hirai-task・ghp-path.sh・coordinator-load.sh・進みの表の入れ方) の自己検証 smoke (13 case)。1 件でも FAIL なら exit 1。
 # プラグイン全体の確かめは tests/smoke.sh。
 #
 #   ROOT = このスクリプトの 1 つ上 (プラグインのルート。1 つのプラグインなので土台も同じ)
@@ -10,6 +10,10 @@ ROOT="$(cd "$here/.." && pwd)"
 FAILED=0
 # gh を呼ばせない。case 4 だけが偽の gh を PATH に置く。
 export HARNESS_UPDATE_CHECK=off
+# 設定の読み（TKS-R1）に効く環境変数を外す。Claude Code の中で回しても外と同じ結果にする（会話の env には TKM_HARNESS_TASKS などが入っている）。
+unset HC_MODE HC_AUTO_SYNC TKM_HARNESS_MODE TKM_HARNESS_AUTO_SYNC TKM_HARNESS_PROJECT TKM_HARNESS_REPO \
+  TKM_HARNESS_LOAD_DEADLINE TKM_HARNESS_LOAD_DEADLINE_LABEL TKM_HARNESS_LOAD_MAINLINE TKM_HARNESS_LOAD_MAINLINE_LABEL TKM_HARNESS_NIGHTLY_CI \
+  HIRAI_TASK_PROJECT HIRAI_TASK_REPO
 
 pass() { echo "PASS  case $1: $2"; }
 fail() { echo "FAIL  case $1: $2 — ${3:-}"; FAILED=1; }
@@ -82,8 +86,45 @@ case_4() {
 
 # case 5: hirai-task line の出し分け (実物の ghp-path.sh と偽の HOME・偽の gh)
 #   控え無し=空 / 控えあり=1 行 / 引数なしは gh を呼ばない / --refresh は背景で gh を呼ぶ / form が ghp でない=空
+# check5b <scripts のある dir>: 設定の Project の番号（settings.json の env）があれば projectsV2 を打たず、番号から引いて form=ghp にする
+check5b() {
+  local sd="$1" h r bin log f
+  h="$(mk)"; r="$(mk)"; bin="$(mk)"; log="$h/gh-log"
+  git -C "$r" init -q && git -C "$r" remote add origin https://github.com/acme/widgets.git
+  mkdir -p "$r/.claude"; printf '%s\n' '{"env":{"TKM_HARNESS_PROJECT":"7"}}' > "$r/.claude/settings.json"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncase "$*" in *"projectV2(number"*) echo PVT_abc ;; esac\nexit 0\n' "$log" > "$bin/gh"; chmod +x "$bin/gh"
+  HOME="$h" PATH="$bin:$PATH" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_refresh now \"$r\"" >/dev/null 2>&1
+  f="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_cache_file \"$r\"")"
+  [ -f "$log" ] || { printf '%s' "gh を 1 回も呼ばない"; return; }
+  ! grep -q 'projectsV2' "$log" || { printf '%s' "設定の Project の番号があるのに projectsV2 を打った"; return; }
+  grep -q 'projectV2(number' "$log" || { printf '%s' "番号から Project を引く問い合わせを打たない"; return; }
+  grep -q '"form": *"ghp"' "$f" && grep -q 'PVT_abc' "$f" && grep -Eq '"project_number": *"?7' "$f" || printf '%s' "form=ghp・id・番号 7 を控えに書かない($(tr '\n' ' ' < "$f" 2>/dev/null | head -c 200))"
+}
+# check5c <scripts のある dir>: 設定の repo を読む・origin の末尾が .git/ でも owner/name・設定の Project の番号が正の整数でなければ探しに行かず件数の行を出さない
+check5c() {
+  local sd="$1" h r bin log f out bad="" v
+  h="$(mk)"; r="$(mk)"; bin="$(mk)"; log="$h/gh-log"
+  git -C "$r" init -q && git -C "$r" remote add origin https://github.com/acme/other.git/
+  mkdir -p "$r/.claude"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncase "$*" in *"projectV2(number"*) echo PVT_abc ;; esac\nexit 0\n' "$log" > "$bin/gh"; chmod +x "$bin/gh"
+  out="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_repo_slug \"$r\"")"
+  [ "$out" = "acme/other" ] || bad="$bad origin の末尾が .git/ のとき owner/name にならない(out=$out);"
+  printf '%s\n' '{"env":{"TKM_HARNESS_PROJECT":"7","TKM_HARNESS_REPO":"o/r"}}' > "$r/.claude/settings.json"
+  HOME="$h" PATH="$bin:$PATH" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_refresh now \"$r\"" >/dev/null 2>&1
+  f="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_cache_file \"$r\"")"
+  { grep -q 'o=o ' "$log" 2>/dev/null && grep -q 'r=r ' "$log" && case "$f" in *tasks-o-r.json) true ;; *) false ;; esac; } || bad="$bad 設定の TKM_HARNESS_REPO=o/r を読まない(log=$(head -c 200 "$log" 2>/dev/null) file=$f);"
+  for v in abc 0; do
+    h="$(mk)"; log="$h/gh-log"; printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$log" > "$bin/gh"
+    printf '{"env":{"TKM_HARNESS_PROJECT":"%s"}}\n' "$v" > "$r/.claude/settings.json"
+    HOME="$h" PATH="$bin:$PATH" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_refresh now \"$r\"" >/dev/null 2>&1
+    f="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_cache_file \"$r\"")"
+    [ ! -s "$log" ] && grep -q '"form": *"invalid_project"' "$f" 2>/dev/null && [ -z "$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_line \"$r\"")" ] \
+      || bad="$bad TKM_HARNESS_PROJECT=$v で探しに行った/控えに理由が無い/件数の行が出た(log=$(head -c 120 "$log" 2>/dev/null));"
+  done
+  printf '%s' "$bad"
+}
 case_5() {
-  local h r bin calls out i
+  local h r bin calls out i d
   h="$(mk)"; r="$(mk)"; bin="$(mk)"; calls="$h/gh-calls"
   git -C "$r" init -q && git -C "$r" remote add origin https://github.com/acme/widgets.git
   printf '#!/usr/bin/env bash\necho call >> "%s"\nexit 1\n' "$calls" > "$bin/gh"; chmod +x "$bin/gh"
@@ -103,7 +144,24 @@ case_5() {
   # form が none なら出さない
   HOME="$h" bash -c ". \"$ROOT/scripts/ghp-path.sh\"; f=\"\$(harness_ghp_cache_file \"$r\")\"; harness_ghp_write_probe \"\$f\" none"
   out="$(run_line)"; [ -z "$out" ] || { fail 5 "form が ghp でなければ出さない" "out=$out"; return; }
-  pass 5 "line: 控え無し=空・控えあり=1 行・引数なしは gh 不使用・--refresh は背景で gh・form none=空"
+  # 設定の Project の番号があるとき（#1）。壊した写し（番号の分岐を外す）で FAIL する
+  out="$(check5b "$ROOT/scripts")"; [ -z "$out" ] || { fail 5 "設定の Project の番号で projectsV2 を飛ばす" "$out"; return; }
+  d="$(mk)"; mkdir -p "$d/scripts"; cp "$ROOT"/scripts/*.sh "$d/scripts/"
+  sed 's/if \[ -n "\$set_proj" \]; then$/if false; then/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh"
+  cmp -s "$ROOT/scripts/ghp-path.sh" "$d/scripts/ghp-path.sh" && { fail 5 "壊した写しを作れた" "sed が当たらず元と同じ"; return; }
+  [ -n "$(check5b "$d/scripts")" ] || { fail 5 "壊した写しで検査が FAIL する" "壊したのに通った"; return; }
+  out="$(check5c "$ROOT/scripts")"; [ -z "$out" ] || { fail 5 "画面下の repo・Project の落とし方が hirai-task と同じ" "$out"; return; }
+  for i in 1 2 3; do
+    d="$(mk)"; mkdir -p "$d/scripts"; cp "$ROOT"/scripts/*.sh "$d/scripts/"
+    case "$i" in
+      1) sed 's/^  slug="\$(harness_ghp_setting repo "\$root")"$/  slug=""/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh" ;;
+      2) sed 's/s#\/+\$##; s#\\.git\$##/s#\\.git$##; s#\/+$##/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh" ;;
+      3) sed 's/0\*|\*\[!0-9\]\*) harness_ghp_write_probe "\$f" invalid_project; return 0 ;;/0*|*[!0-9]*) set_proj="" ;;/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh" ;;
+    esac
+    cmp -s "$ROOT/scripts/ghp-path.sh" "$d/scripts/ghp-path.sh" && { fail 5 "壊した写し $i を作れた" "当たらず元と同じ"; return; }
+    [ -n "$(check5c "$d/scripts")" ] || { fail 5 "壊した写し $i（check5c）で検査が FAIL する" "壊したのに通った"; return; }
+  done
+  pass 5 "line: 控え無し=空・控えあり=1 行・引数なしは gh 不使用・--refresh は背景で gh・form none=空・設定の Project の番号なら projectsV2 を打たない・設定の repo を読む・origin の .git/ を外す・番号が不正なら探さず行を出さない（壊した写しで FAIL）"
 }
 
 # case 6: 土台との境目 (土台の smoke が見る範囲の逆側) — 土台の source を要らず、ghp-path.sh が bash 3.2 の書き方 (連想配列なし)
@@ -114,16 +172,16 @@ case_6() {
   pass 6 "ghp-path.sh は bash 3.2 の書き方で構文が通る"
 }
 
-# case 7: コーディネーターの hook（止めない・60 行以内・GitHub も控えも読まない・知らせを受けたときだけ 1 行を足す）
+# case 7: コーディネーターの hook（止めない・100 行以内・知らせを受けたときの 1 行。表の出し方は case 13）
 case_7() {
   local h="$ROOT/hooks/coordinator-load.sh" cfg="$ROOT/hooks/hooks.json" s out rc lines bad=""
   bash -n "$h" || { fail 7 "coordinator-load.sh の構文" "bash -n が落ちた"; return; }
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=d["hooks"]; assert len(e["PostToolUse"])==1 and e["PostToolUse"][0]["matcher"]=="Bash" and "coordinator-load.sh" in e["PostToolUse"][0]["hooks"][0]["command"]' "$cfg" 2>/dev/null \
     || { fail 7 "hooks.json の PostToolUse は Bash の coordinator-load.sh の 1 本" "形が違う"; return; }
   lines="$(wc -l < "$h" | tr -d ' ')"
-  [ "$lines" -le 60 ] || { fail 7 "hook は 60 行以内" "$lines 行"; return; }
-  s="$(mk)"; mkdir -p "$s/hooks" "$s/bin" "$s/repo" "$s/fake"
-  cp "$h" "$s/hooks/"
+  [ "$lines" -le 100 ] || { fail 7 "hook は 100 行以内" "$lines 行"; return; }
+  s="$(mk)"; mkdir -p "$s/hooks" "$s/bin" "$s/scripts" "$s/repo" "$s/fake"
+  cp "$h" "$s/hooks/"; cp "$ROOT/scripts/hirai_hook_kind.py" "$s/scripts/"
   printf '%s\n' '#!/usr/bin/env bash' 'echo "$@" >> "$FAKE_LOG"' 'pwd -P >> "$FAKE_LOG"' 'exit "${FAKE_RC:-0}"' > "$s/bin/hirai-task"
   printf '%s\n' '#!/usr/bin/env bash' 'echo GH >> "$FAKE_LOG"; exit 1' > "$s/fake/gh"
   chmod +x "$s/bin/hirai-task" "$s/fake/gh"
@@ -334,12 +392,12 @@ case_9() {
   for m in a b c; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
   sed "s|cursor = page.get('nextCursor') or ''|cursor = ''|" "$ROOT/bin/hirai-task" > "$d/a/bin/hirai-task"
   sed "s|^ROLE_LIMIT_SECONDS = 2 |ROLE_LIMIT_SECONDS = 60 |" "$ROOT/bin/hirai-task" > "$d/b/bin/hirai-task"
-  python3 -I -c '
-import re, sys
+  python3 -I - "$ROOT/bin/hirai-task" "$d/c/bin/hirai-task" <<'PY'
+import sys
 s = open(sys.argv[1], encoding="utf-8").read()
-s = re.sub(r"    for path in _settings_files\(\):\n.*?\n    return _mode_setting\(key\)", "    return _mode_setting(key)", s, count=1, flags=re.S)
+s = s.replace("    for path in _settings_files():\n", "    for path in []:\n", 1)
 open(sys.argv[2], "w", encoding="utf-8").write(s)
-' "$ROOT/bin/hirai-task" "$d/c/bin/hirai-task"
+PY
   chmod +x "$d"/*/bin/hirai-task
   for m in a b c; do
     cmp -s "$ROOT/bin/hirai-task" "$d/$m/bin/hirai-task" && { fail 9 "壊した写し $m を作れた" "当たらず元と同じ"; return; }
@@ -435,5 +493,206 @@ case_11() {
   pass 11 "settings の env の TKM_HARNESS_NOTIFY=orca で notify-attention が送り、開始時の 1 行目が notify: orca になる（設定が無ければ off。壊した写しで FAIL）"
 }
 
-for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11}; do "case_$n"; done
+# case 12: 設定の読みの分岐 (TKS-R1・R2.2・R2.3): Project の番号・リポの形の誤りは exit 2、設定の番号なら projectsV2 を打たない、
+# リポは設定が git remote に勝つ。偽の gh は呼び出しを記録する（応答は常に失敗）。
+check12() { # check12 <プラグインの root> -> 食い違いの文
+  local plug="$1" s bad="" rc
+  s="$(mk)"; mkdir -p "$s/fake" "$s/home"
+  printf '#!/usr/bin/env bash\necho "$*" >> "$FAKE_LOG"; exit 1\n' > "$s/fake/gh"; chmod +x "$s/fake/gh"
+  mk_repo "$s/r" ""; git -C "$s/r" remote add origin https://github.com/acme/widgets.git
+  local task="$plug/bin/hirai-task"
+  r12() { # r12 <settings.json の中身> [VAR=値 ...] -> rc。log は $s/log
+    printf '%s\n' "$1" > "$s/r/.claude/settings.json"; shift; : > "$s/log"
+    ( cd "$s/r" && env -i PATH="$s/fake:$BASE_PATH" HOME="$s/home" FAKE_LOG="$s/log" "$@" "$task" ready >"$s/out" 2>"$s/err" </dev/null )
+  }
+  r12 '{"env":{"TKM_HARNESS_PROJECT":"abc"}}'; rc=$?
+  { [ "$rc" = 2 ] && grep -q 'TKM_HARNESS_PROJECT' "$s/err" && ! grep -q 'projectsV2' "$s/log"; } || bad="$bad TKM_HARNESS_PROJECT=abc が exit 2 で断られない(rc=$rc err=$(head -c 200 "$s/err"));"
+  r12 '{"env":{"TKM_HARNESS_PROJECT":"7"}}'; rc=$?
+  { ! grep -q 'projectsV2' "$s/log" && grep -q 'api' "$s/log"; } || bad="$bad TKM_HARNESS_PROJECT=7 でも Project を探しに行った/gh を呼ばない(log=$(head -c 200 "$s/log"));"
+  r12 '{"env":{"TKM_HARNESS_REPO":"noslash"}}'; rc=$?
+  { [ "$rc" = 2 ] && grep -q 'owner/name' "$s/err" && [ ! -s "$s/log" ]; } || bad="$bad TKM_HARNESS_REPO=noslash が exit 2 で断られない(rc=$rc);"
+  r12 '{"env":{"TKM_HARNESS_PROJECT":"7","TKM_HARNESS_REPO":"o/r"}}'; rc=$?
+  grep -q 'o/r\|-f owner=o\|owner=o' "$s/log" || bad="$bad 設定の repo=o/r が git remote に勝たない(log=$(head -c 300 "$s/log"));"
+  r12 '{"env":{"TKM_HARNESS_PROJECT":"7"}}' HIRAI_TASK_PROJECT=oops; rc=$?
+  { [ "$rc" = 2 ] && grep -q 'HIRAI_TASK_PROJECT' "$s/err"; } || bad="$bad 一時の上書き HIRAI_TASK_PROJECT が settings に勝たない(rc=$rc);"
+  r12 '{"env":{"TKM_HARNESS_PROJECT":7}}'; rc=$?
+  { ! grep -q 'projectsV2' "$s/log" && grep -q 'api' "$s/log"; } || bad="$bad settings の数値の TKM_HARNESS_PROJECT=7 を黙って捨てて探しに行った(log=$(head -c 200 "$s/log"));"
+  r12 '{"env":{}}' TKM_HARNESS_PROJECT=7; rc=$?
+  grep -q 'projectsV2' "$s/log" || bad="$bad 別のリポの会話の env の TKM_HARNESS_PROJECT=7 が効いて探しに行かない(log=$(head -c 200 "$s/log"));"
+  # setup が設定の repo・Project の番号を受ける（TKS-R2.2・R2.3）: 偽の gh は何を聞かれても「Project 無し」と答える。
+  # 番号を渡す道が生きていれば read_project が o/#7 を探して「見つからない」で exit 1、崩れれば自動の選びに落ちて計画だけ出し exit 0
+  cat > "$s/fake/gh-setup" <<'FAKE'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "auth status") echo "  - Token scopes: 'project', 'repo'" >&2; exit 0 ;;
+  "api graphql") cat >> "$FAKE_LOG"; echo '{"data":{"viewer":{"login":"me"},"repositoryOwner":{"__typename":"Organization","projectV2":null},"repository":{"projectsV2":{"nodes":[]}}}}'; exit 0 ;;
+esac
+exit 1
+FAKE
+  chmod +x "$s/fake/gh-setup"
+  printf '%s\n' '{"env":{"TKM_HARNESS_PROJECT":"7","TKM_HARNESS_REPO":"o/r"}}' > "$s/r/.claude/settings.json"; : > "$s/log"
+  ( cd "$s/r" && env -i PATH="$s/fake:$BASE_PATH" HOME="$s/home" FAKE_LOG="$s/log" HIRAI_SETUP_GH="$s/fake/gh-setup" "$task" setup >"$s/out" 2>"$s/err" </dev/null ); rc=$?
+  { [ "$rc" = 1 ] && grep -q 'o/#7' "$s/err" && grep -Eq "number\"? ?: ?7" "$s/log"; } || bad="$bad setup が設定の repo=o/r・Project=7 を使わない(rc=$rc err=$(head -c 200 "$s/err"));"
+  printf '%s' "$bad"
+}
+case_12() {
+  local bad d m
+  bad="$(check12 "$ROOT")"
+  [ -z "$bad" ] || { fail 12 "設定の読みの分岐" "$bad"; return; }
+  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e" "$d/f"
+  for m in a b c d e f; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
+  python3 -I - "$ROOT/bin/hirai-task" "$d" <<'PY'
+import sys
+s = open(sys.argv[1], encoding="utf-8").read()
+a = s.replace("        if not re.fullmatch(r'[1-9][0-9]*', PROJECT_NUMBER_OVERRIDE):", "        if False:", 1)
+b = s.replace("    if _REPO_SETTING and not _REPO_SHAPE_RE.fullmatch(_REPO_SETTING):", "    if False:", 1)
+c = s.replace("[_TEMP_OVERRIDES[key]] if key in _TEMP_OVERRIDES else []", "[]", 1)
+d = s.replace("    if key not in _FILE_FIRST_KEYS:", "    if True:", 1)
+e = s.replace("        if isinstance(value, int) and not isinstance(value, bool):", "        if False:", 1)
+f = s.replace("main(tail, repo=REPO, project=PROJECT_NUMBER_OVERRIDE)", "main(tail)", 1)
+for m, v in (("a", a), ("b", b), ("c", c), ("d", d), ("e", e), ("f", f)):
+    open(sys.argv[2] + "/" + m + "/bin/hirai-task", "w", encoding="utf-8").write(v)
+PY
+  chmod +x "$d"/*/bin/hirai-task
+  for m in a b c d e f; do
+    cmp -s "$ROOT/bin/hirai-task" "$d/$m/bin/hirai-task" && { fail 12 "壊した写し $m を作れた" "当たらず元と同じ"; return; }
+    [ -n "$(check12 "$d/$m")" ] || { fail 12 "壊した写し $m で検査が FAIL する" "壊したのに通った"; return; }
+  done
+  pass 12 "設定の Project の番号が正の整数でなければ exit 2・数値の 7 も使う・番号があれば projectsV2 を打たない・別のリポの会話の env の番号は効かない・repo の形の誤りは exit 2・一時の上書きが settings に勝つ・setup が設定の repo と番号を使う（壊した写し 9 つで FAIL）"
+}
+
+# case 13: 振り出し・完了のあとに進みの表を出す hook (TKS-R5)。偽の hirai-task で is-coordinator と load --cached の答えを決める
+# 要件 → 検査: R5.1 = 13 通りの振り出し・完了で 1 つの JSON に systemMessage と additionalContext の両方（load は --cached だけ・gh を叩かない）
+#   R5.2 = 対象外のコマンド・担当（1）・判定できない（3）・load の失敗/空/時間切れで 1 バイトも出ず exit 0 / R5.3 = 知らせの 1 行は今までどおり・両方に当たれば表だけ
+#   R5.4 = 10,000 字を超える表は末尾が 1 行に切られる・hooks.json は 1 本のまま / 壊した写し 6 つで FAIL
+mk13() { # mk13 <dir> <hook の写し> [操作の判定の写し]: 偽の hirai-task と偽の gh を置いた土台を作る
+  mkdir -p "$1/hooks" "$1/bin" "$1/scripts" "$1/repo" "$1/fake"; cp "$2" "$1/hooks/coordinator-load.sh"
+  cp "${3:-$ROOT/scripts/hirai_hook_kind.py}" "$1/scripts/hirai_hook_kind.py"
+  cat > "$1/bin/hirai-task" <<'FAKE'
+#!/usr/bin/env bash
+echo "$@" >> "$FAKE_LOG"
+case "$1" in
+  is-coordinator) exit "${FAKE_COORD:-0}" ;;
+  load)
+    case "${FAKE_LOAD:-ok}" in
+      ok) printf '%s\n' '全体 40% (2/5)' '| 担当 | 進捗 |' '| a | 60% |' ;;
+      fail) printf '%s\n' '全体 40% (2/5)' '| a | 60% |'; echo 'エラー' >&2; exit 1 ;;
+      empty) : ;;
+      sleep) exec python3 -c 'import time; time.sleep(15); print("全体 40% (2/5)"); print("| a | 60% |")' ;;
+      big) python3 -c 'print("あ" * 12000)' ;;
+    esac ;;
+esac
+exit 0
+FAKE
+  printf '%s\n' '#!/usr/bin/env bash' 'echo GH >> "$FAKE_LOG"; exit 1' > "$1/fake/gh"
+  chmod +x "$1/bin/hirai-task" "$1/fake/gh"
+}
+run13() { # run13 <土台> <is-coordinator の exit> <load の型> <command> [tool_response]  → out・rc・$1/log
+  : > "$1/log"
+  out="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]},"tool_response":{"stdout":sys.argv[3]},"cwd":sys.argv[2]}))' "$4" "$1/repo" "${5:-ok}" \
+    | env -i PATH="$1/fake:$PATH" HOME="$1" FAKE_COORD="$2" FAKE_LOAD="$3" FAKE_LOG="$1/log" CLAUDE_PLUGIN_ROOT="$1" bash "$1/hooks/coordinator-load.sh" 2>"$1/err")"; rc=$?
+}
+check13() { # check13 <土台> → 壊れている所を文字で返す（空なら全部通った）
+  local s="$1" bad="" c t0
+  local starts=(
+    "orca orchestration worker-start --agent claude --spec x"
+    "orca worktree set --worktree id:1 --issue 12"
+    "hirai-task assign 12 w1"
+    "hirai-task start 12"
+    "bash scripts/gh-task.sh assign 12 w1"
+    "bash scripts/gh-task.sh start 12 | tail -3"
+    "hirai-task done 12"
+    "cd x && hirai-task after-merge 5"
+    "bash scripts/gh-task.sh done 12; echo ok"
+    "gh pr merge 5 --squash"
+    "bash scripts/gh-task.sh --cost start 12"
+    "\"\$P/bin/hirai-task\" start 12"
+    "GH_TOKEN=x env bash scripts/gh-task.sh done 12"
+    "bash -c 'hirai-task start 12'"
+    "sh -c \"hirai-task done 12; echo ok\""
+    "for n in 12 13; do hirai-task done \$n; done"
+    "while true; do gh pr merge 5; break; done"
+    "if true; then hirai-task start 12; fi"
+    "{ hirai-task start 12; }"
+    "( hirai-task start 12 )"
+    "! hirai-task start 12"
+    "env -u GITHUB_PAT gh pr merge 5 --squash"
+    "env -i hirai-task start 12"
+    "timeout 60 hirai-task done 12"
+    "time hirai-task done 12"
+    "nice -n 5 hirai-task done 12"
+    "command hirai-task done 12"
+    "exec hirai-task done 12"
+    "sudo hirai-task start 1"
+    "cat > s.md <<'EOF'"$'\n'"it's a spec"$'\n'"EOF"$'\n'"orca orchestration worker-start --spec s.md"
+    "cat > s.md <<-EOF"$'\n'$'\t'"body"$'\n'$'\t'"EOF"$'\n'"hirai-task start 12"
+  )
+  for c in "${starts[@]}"; do
+    run13 "$s" 0 ok "$c"
+    { [ "$rc" = 0 ] && printf '%s' "$out" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+assert set(d)=={"systemMessage","hookSpecificOutput"}, list(d)
+h=d["hookSpecificOutput"]; assert h["hookEventName"]=="PostToolUse" and set(h)=={"hookEventName","additionalContext"}, h
+assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalContext"] and "人の画面にも出ています" in h["additionalContext"] and "人の画面にも出ています" not in d["systemMessage"]
+' 2>/dev/null; } || bad="$bad [$c] で表が両方に出ない(rc=$rc);"
+    grep -qx 'load --cached' "$s/log" && ! grep -q 'GH\|--refresh' "$s/log" || bad="$bad [$c] で load --cached だけを呼んでいない($(tr '\n' ' ' < "$s/log"));"
+  done
+  for c in "hirai-task ready" "hirai-task show 1" "git status" "echo hirai-task start 1" "hirai-task start --help" "hirai-task done -h" "gh pr view 5" "orca worktree set --worktree id:1 --display-name x" "orca worktree list" \
+    "orca orchestration send --body \"着手は hirai-task start 12\"" "orca terminal send --text \"gh pr merge はしない\"" \
+    "git commit -m \"docs: hirai-task start を直す\"" "grep -n \"hirai-task done\" README.md" "hirai-task start 12 \"閉じない引用" \
+    "cat > s.md <<'EOF'"$'\n'"手順"$'\n'"hirai-task start 12"$'\n'"gh pr merge 5"$'\n'"EOF" "cat <<EOF"$'\n'"hirai-task done 1"$'\n'"EOF" \
+    "command -v hirai-task" "bash -c 'echo hirai-task start 12'" "for n in 1; do echo hirai-task done \$n; done"; do
+    run13 "$s" 0 ok "$c"; { [ -z "$out" ] && [ "$rc" = 0 ] && [ ! -s "$s/log" ]; } || bad="$bad 対象外 [$c] で出たか呼んだ;"
+  done
+  run13 "$s" 1 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ] && ! grep -q '^load' "$s/log"; } || bad="$bad 担当の会話（is-coordinator=1）で出たか load を呼んだ;"
+  run13 "$s" 3 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad 判定できない（3）で出た;"
+  for c in fail empty; do run13 "$s" 0 "$c" "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が $c なのに出たか exit が 0 でない;"; done
+  t0="$(python3 -c 'import time;print(time.time())')"
+  run13 "$s" 0 sleep "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が時間切れなのに出たか exit が 0 でない;"
+  python3 -c 'import sys,time; sys.exit(0 if time.time()-float(sys.argv[1]) < 12 else 1)' "$t0" || bad="$bad hook が 8 秒で切らず 12 秒以上待った;"
+  run13 "$s" 0 big "hirai-task start 1"
+  printf '%s' "$out" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for v in (d["systemMessage"], d["hookSpecificOutput"]["additionalContext"]):
+    assert len(v)<=10000 and v.endswith("（続きは hirai-task load）") and v.count("\n")>=1, (len(v), v[-30:])
+' 2>/dev/null || bad="$bad 10,000 字を超える表が切られない;"
+  run13 "$s" 0 ok "orca orchestration check --wait" '{"messages":[{"id":"msg_ab12"}]}'
+  printf '%s' "$out" | grep -q 'load --changed' && ! printf '%s' "$out" | grep -q systemMessage && ! grep -q '^load' "$s/log" || bad="$bad 知らせの 1 行が今までどおりでない($out);"
+  run13 "$s" 0 ok "hirai-task start 1 && orca orchestration check --wait" '{"messages":[{"id":"msg_ab12"}]}'
+  [ "$(printf '%s' "$out" | wc -l | tr -d ' ')" = 0 ] && printf '%s' "$out" | grep -q '| a | 60% |' && ! printf '%s' "$out" | grep -q 'load --changed' || bad="$bad 両方に当たったとき表だけでない;"
+  printf '%s' "$bad"
+}
+case_13() {
+  local h="$ROOT/hooks/coordinator-load.sh" s d bad v
+  bash -n "$h" || { fail 13 "coordinator-load.sh の構文" "bash -n が落ちた"; return; }
+  s="$(mk)"; mk13 "$s" "$h"
+  bad="$(check13 "$s")"
+  [ -z "$bad" ] || { fail 13 "進みの表の hook" "$bad"; return; }
+  # 壊した写し 9 つ: gh pr merge の判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない・時間切れで切らない・exit の検査を外す・heredoc の本文を除かない・制御の語を飛ばさない・bash -c の文を見ない
+  local k="$ROOT/scripts/hirai_hook_kind.py" src
+  for v in 1 2 3 4 5 6 7 8 9; do
+    d="$(mk)"; mk13 "$d" "$h"; src="$h"; dst="$d/hooks/coordinator-load.sh"
+    case "$v" in
+      1) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return rest\[:2\] == \["pr", "merge"\]/return False/' "$src" > "$dst" ;;
+      2) sed 's/emit(cut(head + table), cut(table))/emit(cut(head + table))/' "$src" > "$dst" ;;
+      3) sed 's/^"\$task" is-coordinator .*$/true/' "$src" > "$dst" ;;
+      4) sed 's/return text if len(text) <= LIMIT else .*$/return text/' "$src" > "$dst" ;;
+      5) sed 's/timeout=8/timeout=60/' "$src" > "$dst" ;;
+      6) sed 's/if r.returncode != 0 or not table:/if not table:/' "$src" > "$dst" ;;
+      7) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/^    return "".join(out)$/    return cmd/' "$src" > "$dst" ;;
+      8) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/^CTRL = .*$/CTRL = ()/' "$src" > "$dst" ;;
+      9) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return starts(r\[1\], depth + 1)/return False/' "$src" > "$dst" ;;
+    esac
+    cmp -s "$src" "$dst" && { fail 13 "壊した写し $v を作れた" "sed が当たらず元と同じ"; return; }
+    [ -n "$(check13 "$d")" ] || { fail 13 "壊した写し $v で検査が FAIL する" "壊したのに通った"; return; }
+  done
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["hooks"]; assert len(d["PostToolUse"])==1 and d["PostToolUse"][0]["hooks"][0]["timeout"]==10' "$ROOT/hooks/hooks.json" 2>/dev/null \
+    || { fail 13 "hooks.json の PostToolUse は 1 本・timeout 10 秒（load の 8 秒より長い）" "形が違う"; return; }
+  pass 13 "振り出し・完了の 31 通り（bash -c・for・while・if・{ }・( )・!・env・timeout・time・nice・command・exec・sudo・heredoc を含む）で表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外（引用の中の文・閉じない引用を含む）・担当・判定不能・load 失敗（表を出して exit 1 も）/空/時間切れでは出ず、時間切れは 8 秒で切り、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 9 つで FAIL）"
+}
+
+for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11 12 13}; do "case_$n"; done
 [ "$FAILED" -eq 0 ] && echo "ALL PASS" || { echo "FAILED"; exit 1; }

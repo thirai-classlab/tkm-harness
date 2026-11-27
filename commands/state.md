@@ -15,7 +15,7 @@ context 使用率 50% 到達時と、作業を中断する時に実行する。
 ## 手順
 
 1. `git rev-parse --abbrev-ref HEAD` / `git log --oneline -5` / `git status --porcelain` を実行し、現在の git 状態を実測する。控えの置き場 `$S` は `. "$P/scripts/tasks-path.sh"; S="$(harness_state_dir "$PWD")"` が返す dir（`$P` の探し方は `start-task` の「形の見分け」と同じ）。渡された dir → `harness_root` の順で控えが在る方で、無ければ `harness_root` の下に新しく作る（開始時の「前回の続き」も同じ関数を通す。`apps/api` で保存しても、toplevel で開き直して読める）。以降の `$S` はこの値。
-2. 進行中のタスクを 1 件控える。形は `.claude/mode.yml` の `tasks:` が決める（`. "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"` が `ledger` か `github-project` を返す。`$P` の探し方は `start-task` の「形の見分け」と同じ）。`github-project` なら進行中の issue を控える（番号は user に聞くか、直近の commit 件名の `(#n)` から取る）。`ledger` なら台帳 (`$HARNESS_TASKS_FILE` > `docs/tasks/list.md` > 旧レイアウトの `.claude/tasks/list.md`。`harness_tasks_file "$PWD"`) を Read し、status が `進行中` の行と `未着手` の行の id を取り出す。
+2. 進行中のタスクを 1 件控える。形は `.claude/settings.json` の `env`（`TKM_HARNESS_TASKS`。4.x の間は mode.yml の `tasks:` も読む） が決める（`. "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"` が `ledger` か `github-project` を返す。`$P` の探し方は `start-task` の「形の見分け」と同じ）。`github-project` なら進行中の issue を控える（番号は user に聞くか、直近の commit 件名の `(#n)` から取る）。`ledger` なら台帳 (`$HARNESS_TASKS_FILE` > `docs/tasks/list.md` > 旧レイアウトの `.claude/tasks/list.md`。`harness_tasks_file "$PWD"`) を Read し、status が `進行中` の行と `未着手` の行の id を取り出す。
 3. `$S/latest.md` を以下の書式で**上書き**保存する。ディレクトリが無ければ `mkdir -p "$S"` で作る。
 
 ```markdown
@@ -117,7 +117,7 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
 2. `git rev-parse --abbrev-ref HEAD` を実行し、state に書かれた branch と突き合わせる。不一致なら state の branch 名を提示し「切替えますか?」と聞く。承認されたら `git switch <state の branch>` を実行する。承認が無ければ現 branch のまま 3 へ進む。
 3. `git log --oneline -1` を実行し、HEAD を突き合わせる。state の HEAD と一致しなければ、`git log --oneline <state の hash>..HEAD` で state 保存後に積まれた commit を列挙し、チャットに提示する。
 
-4. 形は `.claude/mode.yml` の `tasks:` が決める（`. "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"` が `ledger` か `github-project` を返す。`$P` の探し方は `start-task` の「形の見分け」と同じ）。`github-project` のとき、`HT="$(harness_pm_task_bin)"`（`hirai-task` の絶対 path。PATH に頼らない）を引いて `"$HT" show <n>` で state の issue の Status と開閉を確かめる。進行中でない・閉じているなら「state より GitHub 側が新しい」と報告し、GitHub 側を正とする。`harness_pm_task_bin` が空なら「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と報告して 5 へ進む。`ledger` のとき、台帳を Read し、state の「進行中タスク」の id が今も `進行中` かを確認する。`完了` になっていれば「state より台帳が新しい」と報告し、台帳側を正とする。
+4. 形は `.claude/settings.json` の `env`（`TKM_HARNESS_TASKS`。4.x の間は mode.yml の `tasks:` も読む） が決める（`. "$P/scripts/tasks-path.sh"; harness_tasks_form "$PWD"` が `ledger` か `github-project` を返す。`$P` の探し方は `start-task` の「形の見分け」と同じ）。`github-project` のとき、`HT="$(harness_pm_task_bin)"`（`hirai-task` の絶対 path。PATH に頼らない）を引いて `"$HT" show <n>` で state の issue の Status と開閉を確かめる。進行中でない・閉じているなら「state より GitHub 側が新しい」と報告し、GitHub 側を正とする。`harness_pm_task_bin` が空なら「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と報告して 5 へ進む。`ledger` のとき、台帳を Read し、state の「進行中タスク」の id が今も `進行中` かを確認する。`完了` になっていれば「state より台帳が新しい」と報告し、台帳側を正とする。
 5. 4 で読んだ issue の本文（台帳の形では完了条件の列）から、まだ満たしていない完了条件を 1 つ選ぶ。
 6. 再開サマリを次の書式で 1 回だけ出す。
 
@@ -132,7 +132,7 @@ state ファイルは**次のセッションの最初の 1 手**を渡すもの�
 
 ## loop 引数
 
-`/state resume loop` で呼ばれた場合、6 のサマリ出力後に mode（進め方）を `loop`（自動で進む）へ書き換え（書き込み先は決め打ちせず `tasks-path.sh` の `harness_mode_write_file "$PWD"` が返す**すでに在る側**。`/tkm-harness:config` と同じ経路）、形に合わせて連続で着手する。
+`/state resume loop` で呼ばれた場合、6 のサマリ出力後に mode（進め方）を `loop`（自動で進む）へ書き換え（書き込みは `tasks-path.sh` の `harness_settings_set mode loop "$PWD"`。書き先は settings.local.json で、`/tkm-harness:config` と同じ経路）、形に合わせて連続で着手する。
 
 - `ledger`: 台帳の `進行中` → `未着手` の順に着手する。着手できるのは対応 draft の `approved_at:` が埋まっているタスクのみ。空のタスクに到達したら、その id を報告して停止する。GitHub は呼ばない
 - `github-project`: `hirai-task ready`（`harness_pm_task_bin` の絶対 path で呼ぶ）の結果を上から順に着手する。`harness_pm_task_bin` が空なら「hirai-task が見つからない（プラグインが壊れている。`/plugin install tkm-harness@tkm-harness` で入れ直す）」と報告して終了する。一覧が空になったら、その旨を報告して停止する。続けるのを仕組みに任せたいときは、組み込みの `/goal hirai-task ready が空で、着手した task はすべて PR を出した` を打つよう 1 行で案内する（`/goal` は Claude からは呼べない）

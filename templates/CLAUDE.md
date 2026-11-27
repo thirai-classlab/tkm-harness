@@ -38,7 +38,7 @@
 | `docs/overview.md` | ゴール / 背景 / スコープ / 体制と関係者 / ドメイン用語 / 関連リポジトリ |
 | `docs/requirements.md` | 要件（機能・非機能） |
 | `docs/architecture.md` | 構成 / データの持ち方 / 技術判断とその理由 |
-| `docs/tasks/list.md` | やること一覧（台帳）。**いまどこまで進んでいるかもここで分かる**（進捗表は別に作らない）。`.claude/mode.yml` が `tasks: github-project` のリポは、この行を「GitHub Project」に置き換える（立ち上げは `/tkm-harness:project-setup`） |
+| `docs/tasks/list.md` | やること一覧（台帳）。**いまどこまで進んでいるかもここで分かる**（進捗表は別に作らない）。`.claude/settings.json` の env が `TKM_HARNESS_TASKS=github-project` のリポは、この行を「GitHub Project」に置き換える（立ち上げは `/tkm-harness:project-setup`） |
 | `docs/draft/` | 設計メモ（承認後に task 化） |
 | `docs/adr/` | 決定の記録（ADR。1 決定 = 1 ファイル。置き場を変えたら、この行も直す） |
 | `docs/rules-reference/` | 背景・事故記録・承認の型（必要なとき読む） |
@@ -47,4 +47,4 @@
 
 ## mode（進め方）
 
-`.claude/mode.yml` の `mode:` で決まる。`normal`（確認あり）/ `loop`（自動で進む）。切替は `/tkm-harness:config`。詳細は `.claude/rules/core.md` の該当条。
+各自の `.claude/settings.local.json` の env `TKM_HARNESS_MODE` で決まる（`.claude/mode.yml` の `mode:` は予備）。`normal`（確認あり）/ `loop`（自動で進む）。切替は `/tkm-harness:config`。詳細は `.claude/rules/core.md` の該当条。

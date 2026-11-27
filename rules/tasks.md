@@ -11,7 +11,7 @@ paths:
 
 ## タスク管理の形
 
-- **形は mode.yml が決める**: メインエージェントは、やること管理の形を `.claude/mode.yml` の `tasks:`（`ledger` か `github-project`。項目が無ければ `ledger`）で読む。Project の有無・remote・gh の結果では決めない ／ 例: `tasks: github-project` のリポはタスク管理の機能（skill `github-project`・`hirai-task`）に従い、下の「台帳」は使わない ／ 失効: なし
+- **形は settings の env が決める**: メインエージェントは、やること管理の形を `.claude/settings.json` の `env`（`TKM_HARNESS_TASKS`。4.x の間は mode.yml の `tasks:` も読む）（`ledger` か `github-project`。項目が無ければ `ledger`）で読む。Project の有無・remote・gh の結果では決めない ／ 例: `tasks: github-project` のリポはタスク管理の機能（skill `github-project`・`hirai-task`）に従い、下の「台帳」は使わない ／ 失効: なし
 
 ## 台帳
 

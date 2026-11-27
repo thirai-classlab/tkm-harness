@@ -12,7 +12,7 @@
 # プラグインの bin は無い）。
 
 # --- GHP (GitHub Project) の形 -------------------------------------------------
-# どの形で動くか (台帳か GitHub Project か) は、土台の `.claude/mode.yml` の `tasks:` が決める
+# どの形で動くか (台帳か GitHub Project か) は、土台の `.claude/settings.json` の `env`（`TKM_HARNESS_TASKS`。4.x の間は mode.yml の `tasks:` も読む） が決める
 # (土台の harness_tasks_form)。ここは自動では見分けない。この関数群が控えに書く form
 # ("ghp" / "none" / "ambiguous") は、リポに紐づいた Project が項目「種別」を持つかの実測で、
 # `hirai-task line` が件数を出してよいかの判定にだけ使う。紐づく Project が 2 件以上あるときは、
@@ -44,18 +44,37 @@ HARNESS_GHP_PROBE_INTERVAL_DEFAULT=86400
 # 要るので間隔を空けずに毎回取る。
 HARNESS_GHP_COUNTS_STALE_DEFAULT=120
 
+# この file の置き場所（土台の scripts/tasks-path.sh を探す所）。source した時点で決める。
+HARNESS_GHP_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)"
+
+# harness_ghp_setting <項目> [root] -> 設定の値（project・repo）を stdout。無ければ空。常に rc 0。
+# 土台の harness_setting（tasks-path.sh）を、読み込まれていなければ subshell の中で source して使う（呼び出し元の shell を汚さない）。
+# tasks-path.sh が無い・python3 が無いときは空（今までどおり git remote と Project の探索）。
+harness_ghp_setting() (
+  set -uo pipefail
+  local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+  if ! type harness_setting >/dev/null 2>&1; then
+    [ -n "${HARNESS_GHP_DIR:-}" ] && [ -f "$HARNESS_GHP_DIR/tasks-path.sh" ] || exit 0
+    . "$HARNESS_GHP_DIR/tasks-path.sh" >/dev/null 2>&1 || exit 0
+    type harness_setting >/dev/null 2>&1 || exit 0
+  fi
+  harness_setting "$item" "$root" 2>/dev/null || true
+)
+
 # harness_ghp_repo_slug [root] -> "<owner>/<repo>" を stdout、無ければ空 + rc 1。
-# git remote (origin) から読むだけで、gh は呼ばない (ここは通信しない)。
+# 設定の repo（<owner>/<name> の形のとき）が先。無ければ git remote (origin) から読むだけで、gh は呼ばない (ここは通信しない)。
 # git@host:owner/repo (SCP 形) ・ ssh://[user@]host/owner/repo ・ https://[user@]host/owner/repo
 # のどれでも、"github.com" の直後の区切り (: か /) までを削れば owner/repo だけが残る。
 # github.com 以外のホストや、owner/repo が 1 対に決まらない値は解決できずに rc 1 を返す。
 harness_ghp_repo_slug() (
   set -uo pipefail
   local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" url slug
+  slug="$(harness_ghp_setting repo "$root")"
+  if [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then printf '%s' "$slug"; return 0; fi
   url="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
   [ -n "$url" ] || return 1
   case "$url" in *github.com*) ;; *) return 1 ;; esac
-  slug="$(printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#\.git$##; s#/+$##')"
+  slug="$(printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#/+$##; s#\.git$##')"
   case "$slug" in
     */*) case "${slug#*/}" in */*) return 1 ;; esac ;;
     *) return 1 ;;
@@ -221,9 +240,24 @@ harness_ghp_refresh() (
   local probed_epoch interval="${HARNESS_GHP_PROBE_INTERVAL:-$HARNESS_GHP_PROBE_INTERVAL_DEFAULT}"
   probed_epoch="$(harness_ghp_cache_get "$f" probed_epoch 2>/dev/null || echo 0)"
   [ -n "$probed_epoch" ] 2>/dev/null || probed_epoch=0
-  local form proj_id
-  if [ "$probed_epoch" -eq 0 ] 2>/dev/null || [ "$(( now - probed_epoch ))" -ge "$interval" ] 2>/dev/null; then
+  local form proj_id set_proj
+  set_proj="$(harness_ghp_setting project "$root")"   # 設定の Project の番号（正の整数でなければ探しに行かず、控えの form に invalid_project と書く。TKS-R2.2）
+  case "$set_proj" in
+    '') ;;
+    0*|*[!0-9]*) harness_ghp_write_probe "$f" invalid_project; return 0 ;;
+  esac
+  if [ "$probed_epoch" -eq 0 ] 2>/dev/null || [ "$(( now - probed_epoch ))" -ge "$interval" ] 2>/dev/null \
+     || { [ -n "$set_proj" ] && [ "$(harness_ghp_cache_get "$f" project_number 2>/dev/null || true)" != "$set_proj" ]; }; then
     local q1 q1_out q1_rc n_match proj_number
+    if [ -n "$set_proj" ]; then
+      # 設定の番号があれば Project を探す問い合わせ（projectsV2）は打たず、番号から node id を引く。
+      # 失敗（オフライン・枠切れ・番号違い）では前回の見分けを変えない
+      q1_out="$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){projectV2(number:$n){id}}}' \
+            -f o="$owner" -f r="$repo" -F n="$set_proj" --jq '.data.repository.projectV2.id' 2>/dev/null)" || return 0
+      case "$q1_out" in ''|*[!A-Za-z0-9_]*) return 0 ;; esac
+      form="ghp"; proj_id="$q1_out"
+      harness_ghp_write_probe "$f" "$form" "$proj_id" "$set_proj"
+    else
     q1='query($o:String!,$r:String!){repository(owner:$o,name:$r){projectsV2(first:20){nodes{id number fields(first:50){nodes{... on ProjectV2FieldCommon{name}}}}}}}'
     q1_out="$(gh api graphql -f query="$q1" -f o="$owner" -f r="$repo" \
           --jq '.data.repository.projectsV2.nodes[] | select([.fields.nodes[]?.name] | index("種別")) | [.id,.number] | @tsv' \
@@ -254,6 +288,7 @@ harness_ghp_refresh() (
         harness_ghp_write_probe "$f" "$form"
         ;;
     esac
+    fi
   else
     form="$(harness_ghp_cache_get "$f" form 2>/dev/null || echo none)"
     proj_id="$(harness_ghp_cache_get "$f" project_id 2>/dev/null || true)"

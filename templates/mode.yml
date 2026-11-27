@@ -1,4 +1,8 @@
-# mode（進め方）の設定 (ここが正) — 値は normal か loop の 2 つだけ
+# **4.1.0 から、設定の正は .claude/settings.json の env（mode だけは各自の .claude/settings.local.json）。**
+# このファイルは settings に値が無いときの予備（移行用）。同じ項目が settings にあれば、settings が先に効く。
+# 会話の開始時に「このファイルにだけある設定」があれば、移し方が 1 行出る（/tkm-harness:update が env へ写す。このファイルの行は消さない）。
+#
+# mode（進め方） — 値は normal か loop の 2 つだけ。env の名前は TKM_HARNESS_MODE
 #
 #   normal（確認あり）  : 重要な分かれ道でひとこと聞いてから進む (最初はこちら)
 #   loop（自動で進む）  : 確認を求めず最後まで進む。止めたいときは「stop」と伝える。
@@ -10,17 +14,17 @@
 #                         (例: /goal 台帳に未着手の行が無く、着手した task はすべて PR を出した。
 #                          tasks: github-project のリポは /goal hirai-task ready が空で、着手した task はすべて PR を出した)。
 #
-# 切り替え : /tkm-harness:config （設定の一覧から mode（進め方）を変えるとこのファイルが書き換わる）
-# 一時的に : 環境変数 HC_MODE=loop (このファイルより優先される)
-# 置き場所 : 導入先リポジトリの .claude/mode.yml (/init が置く)
+# 切り替え : /tkm-harness:config （設定の一覧から mode（進め方）を変えると .claude/settings.local.json の env TKM_HARNESS_MODE が書き換わる。このファイルは変わらない）
+# 一時的に : 環境変数 HC_MODE=loop (settings より優先される)
+# 置き場所 : 導入先リポジトリの .claude/mode.yml (/init が予備として置く)
 # 読む人   : プラグインの hooks/session-start.sh と scripts/statusline.sh
 # 設定の 3 項目 (tasks / worktree / notify) は、このファイルでなく .claude/settings.json の env に書く (下の案内)。
 # 会話の開始時に、版と効いている 3 項目が 1 行で出る。
-# 読む順 : 項目ごとに「環境変数 → プロジェクトのこのファイル → ホームの ~/.claude/mode.yml → 既定」。
+# 読む順 : 項目ごとに「HC_* → 環境変数 TKM_HARNESS_*（settings の env） → settings の file → このファイル（パッケージ → プロジェクト → ホームの ~/.claude/mode.yml） → 既定」。
 #          値は " や ' で囲んでもよく、行末に # のコメントを書いてもよい。
 mode: normal
 
-# auto_sync（更新後の入れ替え） — 値は on か off の 2 つだけ。**既定は off。**
+# auto_sync（更新後の入れ替え） — 値は on か off の 2 つだけ。**既定は off。** env の名前は TKM_HARNESS_AUTO_SYNC（.claude/settings.json）
 #
 #   off : 何もしない。更新は /tkm-harness:update で自分のタイミングで行う (最初はこちら)
 #   on  : プラグインの版が変わった回のセッション冒頭だけ、/init が導入先へ複製した
@@ -29,13 +33,13 @@ mode: normal
 #         決まりごと (rules) ・安全設定 (settings.json) ・CLAUDE.md ・やること管理の設定は
 #         **自動では一切書き換えない。** 版が同じ回は何もしない。
 #
-# 切り替え : /tkm-harness:config の項目 7
-# 一時的に : 環境変数 HC_AUTO_SYNC=off (このファイルより優先される)
+# 切り替え : /tkm-harness:config の項目 7（.claude/settings.json の env に書く）
+# 一時的に : 環境変数 HC_AUTO_SYNC=off (settings より優先される)
 #
 # プラグイン本体そのものの自動更新は **Claude Code 本体の機能**でここでは扱わない
 # (/plugin → Marketplaces → Enable auto-update。第三者マーケットプレイスは既定 off)。
 
-auto_sync: off
+# auto_sync: off   ← 値の行は予備として使うときだけ外す（既定は off。settings の env が先に効く）
 
 # 機能の切り替え（tasks / worktree / notify） — このファイルには書かない
 #
@@ -48,6 +52,12 @@ auto_sync: off
 #
 #   ci.yml : `hirai-task today` の先頭に、その workflow の直近の schedule の run の結果を 1 行出す。空なら何も出さず gh も呼ばない
 #
-# 一時的に : 無し (このファイルとホームの ~/.claude/mode.yml だけを読む)
+# env の名前 : TKM_HARNESS_NIGHTLY_CI（.claude/settings.json に手で書く）
+# 一時的に : 無し (settings の env が先。無ければこのファイルとホームの ~/.claude/mode.yml を読む)
+#
+# 進みの表の期限と本線（load_deadline: YYYY-MM-DD・load_deadline_label・load_mainline・load_mainline_label）も、
+# 4.1.0 から .claude/settings.json の env（TKM_HARNESS_LOAD_DEADLINE・TKM_HARNESS_LOAD_DEADLINE_LABEL・TKM_HARNESS_LOAD_MAINLINE・TKM_HARNESS_LOAD_MAINLINE_LABEL）に手で書く。
+# このファイルの load_*: は予備で、プロジェクトのものだけ読む（ホームの値は読まない）。
+# GitHub Project の番号（TKM_HARNESS_PROJECT）とリポ（TKM_HARNESS_REPO）は env だけ（このファイルには書かない。/tkm-harness:config の項目 8）。
 
 nightly_ci:

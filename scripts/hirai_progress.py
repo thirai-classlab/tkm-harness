@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 
 ORCA_TIMEOUT_SECONDS = 20
+LOAD_ORCA_SECONDS = 3  # hirai-task load が作業ツリーの一覧を待つ時間（TKS-R6.1）
 OWNER_MAX = 30
 SUBJECT_MAX = 40
 COMMIT_SUBJECT_MAX = 40
@@ -178,6 +181,64 @@ def _commit_part(path: str, git_runner, tz) -> str:
     return f"最後の commit {when} {clip(subject, COMMIT_SUBJECT_MAX)}".strip() if when else ''
 
 
+def live_trees(trees: list, repo: str = '') -> list[tuple[int, dict]]:
+    """作業ツリーの行のうち、担当を持ちうるもの（main・archived・path 無し・別のリポを除く）を (一覧での位置, 行) で返す。
+    collect（board --progress）と worktree_assign（load）が同じ読み方をする 1 本。"""
+    out = []
+    for index, tree in enumerate(t for t in trees if isinstance(t, dict)):
+        if tree.get('isMainWorktree') or tree.get('isArchived') or not (tree.get('path') or ''):
+            continue
+        project = str(tree.get('projectId') or '').lower()
+        if repo and project and project != f'github:{repo}'.lower():
+            continue
+        out.append((index, tree))
+    return out
+
+
+def limited_runner(seconds: float):
+    """seconds 秒で返らなければ process group ごと止める runner（孫が出力の口を持ち続けて待たされない）。
+    時間切れは TimeoutExpired（orca_json が「引けない」として扱う）。"""
+    def run(argv: list[str]) -> tuple[int, str]:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, start_new_session=True)
+        try:
+            out, _ = proc.communicate(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.communicate()
+            raise
+        return proc.returncode, out
+    return run
+
+
+def worktree_assign(repo: str = '', runner=None, seconds: float = LOAD_ORCA_SECONDS) -> dict:
+    """load の担当（TKS-R6.1）: `orca worktree list --json` だけを seconds 秒で引き、issue を紐づけた作業ツリーの
+    表示名を担当にする。{番号: {'owner': 表示名, 'order': None}}。引けない（orca が無い・exit が 0 でない・JSON が読めない・
+    時間切れ）ときは空。GitHub には出ない。"""
+    listing = orca_json(['worktree', 'list'], runner or limited_runner(seconds))
+    if listing is None or not isinstance(listing.get('worktrees'), list):
+        return {}
+    out: dict[int, dict] = {}
+    for _index, tree in live_trees(listing['worktrees'], repo):
+        name = one_line(tree.get('displayName')) or os.path.basename(str(tree.get('path') or '').rstrip('/'))
+        for number in linked_issue_numbers(tree.get('linkedIssue')):
+            out.setdefault(number, {'owner': name, 'order': None})
+    return out
+
+
+def merge_assign(orca: dict, saved: dict, known: set | None = None) -> dict:
+    """Orca の担当に、手元の控え（hirai-task assign）を補う。同じ番号は担当が Orca・順番が控え。
+    Orca だけの番号は known（板にある issue の番号）に載るものだけ（板に無い issue の行を出さない）。"""
+    merged = {n: dict(v) for n, v in saved.items()}
+    for number, entry in orca.items():
+        if number in merged or known is None or number in known:
+            merged[number] = {'owner': entry['owner'], 'order': (saved.get(number) or {}).get('order')}
+    return merged
+
+
 def collect(repo: str = '', runner=default_runner, git_runner=default_runner, tz=None) -> dict | None:
     """Orca の読み取りだけで担当を組む。作業ツリーの一覧が引けなければ None（呼ぶ側は PR・Assignees の道へ落ちる）。
     戻り: {'assignments': [...], 'assign': {番号: {owner, order}}, 'info': {番号: 担当}, 'tree_numbers': set}"""
@@ -198,13 +259,8 @@ def collect(repo: str = '', runner=default_runner, git_runner=default_runner, tz
             workers_by_path[path] = worker
     spoke = _messages_by_dispatch(inbox, {w.get('dispatchId'): w for w in workers_by_path.values()})
     assignments, tree_numbers = [], set()
-    for index, tree in enumerate(t for t in listing['worktrees'] if isinstance(t, dict)):
+    for index, tree in live_trees(listing['worktrees'], repo):
         path = tree.get('path') or ''
-        if tree.get('isMainWorktree') or tree.get('isArchived') or not path:
-            continue
-        project = str(tree.get('projectId') or '').lower()
-        if repo and project and project != f'github:{repo}'.lower():
-            continue
         tree_numbers |= {int(n) for n in _TREE_NUMBER_RE.findall(f"{path} {tree.get('branch') or ''} {tree.get('displayName') or ''}")}
         worker = workers_by_path.get(path)
         task = tasks.get((worker or {}).get('taskId')) or {}

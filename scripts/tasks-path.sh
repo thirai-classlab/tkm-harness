@@ -14,8 +14,8 @@
 #
 # 進め方 / ルールは配置先が 2 通りある (プロジェクト側 = .claude/ と 全プロジェクト共通 = $HOME/.claude/)。
 # どちらに置いたかを決め打ちすると、片方に置いた利用者に対して黙って外れる。**在る側**を選ぶ。
-#   進め方   : HC_MODE (env) > <root>/.claude/mode.yml の mode > $HOME/.claude/mode.yml の mode > normal (項目ごとに引く)
-#   入れ替え : HC_AUTO_SYNC (env) > 項目ごとに プロジェクト > ホーム の auto_sync > off (既定は入れ替えない)
+#   進め方   : harness_setting mode (一時の上書き HC_MODE > env TKM_HARNESS_MODE > settings の file の env > mode.yml の mode [パッケージ > toplevel > ホーム。移行用の予備] > normal)
+#   入れ替え : harness_setting auto_sync (HC_AUTO_SYNC > env TKM_HARNESS_AUTO_SYNC > settings の file の env > mode.yml の auto_sync > off。既定は入れ替えない)
 #   形       : harness_setting (下記「機能の切り替え」) の tasks (ledger / github-project) > ledger
 #   ルール   : HARNESS_RULES_DIR > <dir>/.claude/rules > <root>/.claude/rules > $HOME/.claude/rules > <root>/.claude/rules
 #
@@ -169,7 +169,7 @@ harness_incidents_file() {
 
 # _harness_yml_candidates <dir> <キー> -> そのキーを引く mode.yml のパスを _HY_PKG → _HY_TOP → _HY_HOME に入れる (無い所は空)。
 # mode:・tasks:・auto_sync: などは「パッケージ (dir から toplevel までで最初に .claude/mode.yml を持つ dir) → toplevel → ホーム」。
-# worktree:・notify:・nightly_ci: は「toplevel → ホーム」だけ (サブディレクトリのは読まない)。
+# worktree:・notify:・nightly_ci: は「toplevel → ホーム」だけ (サブディレクトリのは読まない)。load_*: は「パッケージ → toplevel」だけ (ホームは読まない)。
 # git でない・toplevel が HOME か HOME の祖先なら、toplevel の代わりに dir 自身。
 _harness_yml_candidates() {
   local d top pkg
@@ -184,6 +184,7 @@ _harness_yml_candidates() {
   [ -z "$pkg" ] || _HY_PKG="$pkg/.claude/mode.yml"
   [ "$top" = "$pkg" ] || _HY_TOP="$top/.claude/mode.yml"
   [ -z "${HOME:-}" ] || _HY_HOME="$HOME/.claude/mode.yml"
+  case "${2:-}" in load_*) _HY_HOME="" ;; esac   # 期限と本線はプロジェクトのものだけ (ホームの値を別のリポに効かせない)
 }
 
 # harness_mode_file [root] -> すでに在る mode.yml のパスを stdout。
@@ -200,29 +201,23 @@ harness_mode_file() {
   return 1
 }
 
-# harness_mode_write_file [root] -> /config が書き込むべきパスを stdout (常に rc 0)。
-# **すでに在る側に書く。** 両方に無いときだけプロジェクト側に作る。
-# (ホーム側に置いた人のプロジェクトへ mode.yml を新設すると、ホーム側を黙って覆い隠す)
+# harness_mode_write_file [root] -> /config が mode を書くパスを stdout (常に rc 0)。
+# Claude Code が最初に読む settings.local.json (F5)。git の worktree なら本体の checkout (git-common-dir の親) の .claude/settings.local.json、
+# そうでなければ toplevel の .claude/settings.local.json。mode は各自の好みなのでリポに入る settings.json には書かない。
+# (mode.yml は移行用の予備で、書き先ではない。すでに在る mode.yml の path は harness_mode_file)
 harness_mode_write_file() {
-  local root p
-  root="$(harness_root "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}")"
-  if p="$(harness_mode_file "$root")"; then
-    printf '%s' "$p"
-    return 0
-  fi
-  printf '%s' "$root/.claude/mode.yml"
+  local top main
+  top="$(harness_top "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}")"
+  main="$(_harness_main_dir "$top")"
+  printf '%s' "${main:-$top}/.claude/settings.local.json"
 }
 
 # harness_mode [root] -> いまの進め方 (normal / loop / 未知の値) を stdout。常に rc 0。
-# env HC_MODE > プロジェクトの mode.yml の mode: > ホームの mode.yml の mode: > normal。
-# 項目ごとに引く (プロジェクト側に mode: が無ければホーム側の値を使う)。読めない・空・壊れている場合も normal。
+# harness_setting mode (HC_MODE > env TKM_HARNESS_MODE > settings の file の env > mode.yml の mode: > 既定 normal)。
+# 読めない・空・壊れている場合も normal。未知の値はそのまま返す (見せる側が扱う)。
 harness_mode() {
-  local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" m=""
-  if [ -n "${HC_MODE:-}" ]; then
-    printf '%s' "$HC_MODE"
-    return 0
-  fi
-  m="$(harness_yml_value "$root" mode)"
+  local m
+  m="$(harness_setting mode "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}")"
   [ -n "$m" ] || m="normal"
   printf '%s' "$m"
 }
@@ -231,34 +226,74 @@ harness_mode() {
 # プラグイン所有の 3 ファイル (statusline.sh / tasks-path.sh / context-usage.sh) を、
 # プラグインが新しくなった後に自動で入れ替えるかどうか。**既定は off (入れ替えない)。**
 # 更新は挙動の変更なので、黙って書き換わると「昨日と違う動きをする理由」を追えなくなる。
-# 解決順: env HC_AUTO_SYNC > 在る側の mode.yml の auto_sync > off
+# 解決順: harness_setting auto_sync (HC_AUTO_SYNC > env TKM_HARNESS_AUTO_SYNC > settings の file の env > mode.yml の auto_sync > off)
 # 進め方 (mode) と同じ 1 本を通す (置き場を自分で組み立てない)。
 
 # harness_auto_sync [root] -> on / off (未知の値はそのまま) を stdout。常に rc 0。
 harness_auto_sync() {
-  local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" v=""
-  if [ -n "${HC_AUTO_SYNC:-}" ]; then
-    printf '%s' "$HC_AUTO_SYNC"
-    return 0
-  fi
-  v="$(harness_yml_value "$root" auto_sync)"
+  local v
+  v="$(harness_setting auto_sync "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}")"
   [ -n "$v" ] || v="off"
   printf '%s' "$v"
 }
 
-# --- 機能の切り替え (tasks・worktree・notify) ---------------------------------
-# 3 項目は各リポの .claude/settings.json の env (TKM_HARNESS_TASKS・TKM_HARNESS_WORKTREE・TKM_HARNESS_NOTIFY) で宣言する。
+# --- 設定の項目 (mode・auto_sync・tasks・worktree・notify・project・repo・load_*・nightly_ci) ---
+# 項目は各リポの .claude/settings.json の env (TKM_HARNESS_<項目>) で宣言する。mode だけは各自の .claude/settings.local.json (リポに入れない好み)。
 # プラグインがプロジェクトの settings.json から読めるのは env だけ (https://code.claude.com/docs/en/settings-reference.md#env)。
 # tasks は Project の有無・remote・gh の成否からは見分けない (見分けに失敗して尋ねて止まる道を無くすため。GraphQL を打つのは github-project のときだけ)。
-# 優先は上から:
-#   1. シェルの HC_TASKS・HC_WORKTREE・HC_NOTIFY (一時の上書き。コーディネーターは HC_NOTIFY=off claude で開く)
+# 優先は上から (TKS-R1.1):
+#   1. シェルの一時の上書き: HC_MODE・HC_AUTO_SYNC・HC_TASKS・HC_WORKTREE・HC_NOTIFY・HC_LOAD_ON_START、project・repo は HIRAI_TASK_PROJECT・HIRAI_TASK_REPO
+#      (コーディネーターは HC_NOTIFY=off claude で開く)。load_*・nightly_ci には無い
 #   2. 環境変数 TKM_HARNESS_<項目> (Claude Code の中では settings.local.json > settings.json の env が重なって届く。
-#      実測 2.1.312: 同じ名前ならシェルの値より settings の値が勝つ。だから 1 は別の名前 HC_* にしてある)
+#      実測 2.1.312: 同じ名前ならシェルの値より settings の値が勝つ。だから 1 は別の名前にしてある)
 #   3. Claude Code の外 (端末・CI) のための file 読み: 本体の checkout の settings.local.json → toplevel の settings.local.json
 #      → toplevel の settings.json → ~/.claude/settings.json の env.TKM_HARNESS_<項目> (python3 が無ければ飛ばす)。
 #      Claude Code の中でも 2 が空なら読む (開いたあとに書いた値と、移す前に開いた会話で既定に戻らないため)
-#   4. .claude/mode.yml の tasks:・worktree:・notify: (移行用。4.x の間だけ読む)
-#   5. 既定 (tasks=ledger・worktree=off・notify=off)。未知の値は既定に倒す
+#   4. .claude/mode.yml の <項目>: (移行用の予備。4.x の間だけ読む。project・repo は無い)
+#   5. 既定 (mode=normal・auto_sync=off・tasks=ledger・worktree=off・notify=off・ほかは空)。未知の値は読む側が既定に倒す
+
+# _harness_item_up <項目> -> env の名前の後ろ (TKM_HARNESS_ の次) を stdout。知らない項目は何も出さず rc 1。名前の組み立てはここだけ。
+_harness_item_up() {
+  case "${1:-}" in
+    mode|auto_sync|tasks|worktree|notify|load_on_start|project|repo|load_deadline|load_deadline_label|load_mainline|load_mainline_label|nightly_ci)
+      printf '%s' "$1" | tr '[:lower:]' '[:upper:]' ;;
+    *) return 1 ;;
+  esac
+}
+
+# _harness_item_hc <項目> -> 一時の上書きの名前を stdout。無い項目 (load_*・nightly_ci) は空。
+_harness_item_hc() {
+  case "${1:-}" in
+    project) printf 'HIRAI_TASK_PROJECT' ;;
+    repo) printf 'HIRAI_TASK_REPO' ;;
+    mode|auto_sync|tasks|worktree|notify|load_on_start) printf 'HC_%s' "$(_harness_item_up "$1")" ;;
+  esac
+  return 0
+}
+
+# _harness_getenv <名前> -> 環境変数 <名前> の値を stdout (無ければ空)。名前は [A-Z_][A-Z0-9_]* だけ。
+# ${!名前} は bash だけの書き方で zsh (Claude Code の Bash ツール) では「bad substitution」になるため、bash 3.2・bash 5・zsh のどれでも動くこの関数を通す。
+_harness_getenv() {
+  case "${1:-}" in
+    ''|[!A-Z_]*|*[!A-Z0-9_]*) return 0 ;;
+  esac
+  eval "printf '%s' \"\${$1:-}\""
+}
+
+# _harness_item_file_first <項目> -> project・repo・load_*・nightly_ci (TKS-R1.3) なら rc 0。この 4 種は環境変数 TKM_HARNESS_* を使わず、打ったリポの settings の file を先に読む。
+_harness_item_file_first() {
+  case "${1:-}" in
+    project|repo|load_deadline|load_deadline_label|load_mainline|load_mainline_label|nightly_ci) return 0 ;;
+  esac
+  return 1
+}
+
+# _harness_trim <値> -> 前後の空白 (タブ・改行を含む) を外して stdout (file 読み・hirai-task と同じ)。
+_harness_trim() {
+  local v="${1:-}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  printf '%s' "$v"
+}
 
 # harness_yml_file_value <file> <キー> -> その file の <キー>: の値を stdout。無ければ空。常に rc 0。
 # 値の前後の空白と引用符 (" と ') と、行末のコメント (空白のあとの # から) を外す。
@@ -288,26 +323,29 @@ harness_yml_value() {
 # _harness_setting_files <root> [nohome] -> 3 の file 読みで見る settings の path を 1 行ずつ stdout (在るかは見ない)。
 # 本体の checkout は git-common-dir の親 (harness_pm_install_dir の disabled() と同じ。worktree でも Claude Code は本体の settings.local.json を使う)。
 _harness_setting_files() {
-  local top common main=""
+  local top main
   top="$(harness_top "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}")"
-  common="$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  [ "${common##*/}" = ".git" ] && main="${common%/*}"
+  main="$(_harness_main_dir "$top")"
   [ -z "$main" ] || printf '%s\n' "$main/.claude/settings.local.json"
   printf '%s\n' "$top/.claude/settings.local.json" "$top/.claude/settings.json"
   [ "${2:-}" = "nohome" ] || [ -z "${HOME:-}" ] || printf '%s\n' "$HOME/.claude/settings.json"
 }
 
-# _harness_file_setting <項目> <root> [nohome] -> 3 の値 (settings の file の env.TKM_HARNESS_<項目>。最初に在った file の値)。無ければ空。
-# python3 が無ければ空。値は文字列だけ読む。
-_harness_file_setting() {
-  local up files="" f
+# _harness_main_dir <toplevel> -> 本体の checkout (git-common-dir の親) を stdout。git でない・.git でない所なら空。
+_harness_main_dir() {
+  local common
+  common="$(git -C "${1:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [ "${common##*/}" = ".git" ] && printf '%s' "${common%/*}"
+  return 0
+}
+
+# _harness_read_env <名前> <file を 1 行ずつ> -> 最初に値が在った file の env.<名前> を stdout (前後の空白を外す)。無ければ空。
+# python3 が無ければ空。値は文字列と、bool でない整数 (文字列にして読む。"TKM_HARNESS_PROJECT": 7) を読む。JSON が読めない file は飛ばす。
+# 7.0・true・[7] のような値は読めない値として飛ばし、標準エラーに 1 行出す (hirai-task は同じ値を exit 2 で断る)。
+_harness_read_env() {
   command -v python3 >/dev/null 2>&1 || return 0
-  case "${1:-}" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; load_on_start) up=LOAD_ON_START ;; *) return 0 ;; esac
-  while IFS= read -r f; do [ -f "$f" ] && files="${files}${f}"$'\n'; done <<EOF_F
-$(_harness_setting_files "${2:-}" "${3:-}")
-EOF_F
-  [ -n "$files" ] || return 0
-  printf '%s' "$files" | python3 -I -c 'import json,sys
+  [ -n "${2:-}" ] || return 0
+  printf '%s' "$2" | python3 -I -c 'import json,sys
 n = sys.argv[1]
 for p in sys.stdin.read().split("\n"):
     if not p:
@@ -316,38 +354,78 @@ for p in sys.stdin.read().split("\n"):
         v = (json.load(open(p, encoding="utf-8")).get("env") or {}).get(n)
     except Exception:
         continue
-    if isinstance(v, str) and v.strip():
-        print(v.strip(), end="")
-        break' "TKM_HARNESS_$up" 2>/dev/null
+    if v is None:
+        continue
+    if isinstance(v, bool) or not isinstance(v, (str, int)):
+        print("tkm-harness: " + n + " は文字列か整数で書いてください（" + p + " の値は読まずに飛ばしました）", file=sys.stderr)
+        continue
+    v = str(v).strip()
+    if v:
+        print(v, end="")
+        break' "$1"
 }
 
-# harness_setting <tasks|worktree|notify|load_on_start> [root] [files] -> 上の優先 1〜4 で決めた値をそのまま stdout (無ければ空。既定と未知の値の扱いは呼ぶ側)。常に rc 0。
+# _harness_file_setting <項目> <root> [nohome] -> 3 の値 (settings の file の env.TKM_HARNESS_<項目>。最初に在った file の値)。無ければ空。
+# python3 が無ければ空。値は文字列と bool でない整数を読む。
+_harness_file_setting() {
+  local up files="" f
+  command -v python3 >/dev/null 2>&1 || return 0
+  up="$(_harness_item_up "${1:-}")" || return 0
+  while IFS= read -r f; do [ -f "$f" ] && files="${files}${f}"$'\n'; done <<EOF_F
+$(_harness_setting_files "${2:-}" "${3:-}")
+EOF_F
+  [ -n "$files" ] || return 0
+  _harness_read_env "TKM_HARNESS_$up" "$files"
+}
+
+# harness_setting <項目> [root] [files] -> 上の優先 1〜4 で決めた値をそのまま stdout (無ければ空。既定と未知の値の扱いは呼ぶ側)。常に rc 0。
+# 項目は mode・auto_sync・tasks・worktree・notify・load_on_start・project・repo・load_deadline・load_deadline_label・load_mainline・load_mainline_label・nightly_ci。
 # 3 つ目の引数 files は「この root は会話のリポでない」の印 (worktree-guard が別のリポの対象を決めるとき): 2 を使わず 3 を読む。
 harness_setting() {
-  local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" up hc env v
-  case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; load_on_start) up=LOAD_ON_START ;; *) return 0 ;; esac
-  hc="HC_$up"; env="TKM_HARNESS_$up"
+  local item="${1:-}" root="${2:-${CLAUDE_PROJECT_DIR:-$PWD}}" up hc env v="" first=1
+  up="$(_harness_item_up "$item")" || return 0
+  hc="$(_harness_item_hc "$item")"; env="TKM_HARNESS_$up"
+  _harness_item_file_first "$item" || first=0   # 1: project・repo・load_*・nightly_ci (TKS-R1.3)
   # 値の前後の空白（タブ・改行を含む）は外す（file 読み・hirai-task の _harness_setting と同じ）
-  v="${!hc:-}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
-  if [ -z "$v" ] && [ "${3:-}" != "files" ]; then v="${!env:-}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; fi
+  [ -z "$hc" ] || v="$(_harness_trim "$(_harness_getenv "$hc")")"
+  if [ -z "$v" ] && [ "$first" = 0 ] && [ "${3:-}" != "files" ]; then v="$(_harness_trim "$(_harness_getenv "$env")")"; fi
   if [ -z "$v" ]; then   # Claude Code の中でも環境変数が空なら file を読む (会話を開いたあとに書いた値・開く前の env が古い会話に効かせる)
     v="$(_harness_file_setting "$item" "$root")"
   fi
-  [ -n "$v" ] || v="$(harness_yml_value "$root" "$item")"
+  # 4 種は file を読む手段 (python3) が無いときだけ環境変数を読む (会話のリポの値かもしれないが、読めないよりよい)
+  if [ -z "$v" ] && [ "$first" = 1 ] && [ "${3:-}" != "files" ] && ! command -v python3 >/dev/null 2>&1; then v="$(_harness_trim "$(_harness_getenv "$env")")"; fi
+  case "$item" in project|repo) ;; *) [ -n "$v" ] || v="$(harness_yml_value "$root" "$item")" ;; esac   # project・repo は mode.yml に無い
   printf '%s' "$v"
   return 0
 }
 
+# _harness_yml_project_value <root> <項目> -> プロジェクト (パッケージ → toplevel) の mode.yml の <項目>: の値。ホームの ~/.claude/mode.yml は読まない
+# (移せる値かの見分けと移行の写しが同じ読み先を使う。ホームの値は別のリポにも効くので、プロジェクトの settings へは写さない)。
+_harness_yml_project_value() {
+  local v=""
+  _harness_yml_candidates "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" "${2:-}"
+  [ -z "$_HY_PKG" ] || v="$(harness_yml_file_value "$_HY_PKG" "${2:-}")"
+  [ -n "$v" ] || { [ -z "$_HY_TOP" ] || v="$(harness_yml_file_value "$_HY_TOP" "${2:-}")"; }
+  printf '%s' "$v"
+}
+
 # harness_setting_from_yml_only <root> -> mode.yml にだけ値が在る項目 (1〜3 に無く 4 にだけ在る) を空白区切りで stdout。無ければ空。
-# 会話の開始時の移行の案内 (HM-R2.4) が使う。
+# 対象は mode・auto_sync・tasks・worktree・notify・load_*・nightly_ci (project・repo は mode.yml に無い)。
+# 「移せる」は harness_settings_migrate と同じ読み先 (パッケージと toplevel の mode.yml だけ。ホームの mode.yml は移せないので数えない)。
+# 会話の開始時の移行の案内 (HM-R2.4・TKS-R3.2) が使う。
 harness_setting_from_yml_only() {
-  local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" item up hc env out=""
-  for item in tasks worktree notify; do
-    case "$item" in tasks) up=TASKS ;; worktree) up=WORKTREE ;; notify) up=NOTIFY ;; esac
-    hc="HC_$up"; env="TKM_HARNESS_$up"
-    [ -z "${!hc:-}" ] && [ -z "${!env:-}" ] || continue
+  local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" item hc env out=""
+  for item in mode auto_sync tasks worktree notify load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci; do
+    hc="$(_harness_item_hc "$item")"; env="TKM_HARNESS_$(_harness_item_up "$item")"
+    [ -z "$hc" ] || [ -z "$(_harness_getenv "$hc")" ] || continue
+    # 4 種は環境変数を使わない (python3 が無いときだけ使う。harness_setting と同じ)
+    if _harness_item_file_first "$item" && command -v python3 >/dev/null 2>&1; then :; else [ -z "$(_harness_getenv "$env")" ] || continue; fi
     [ -z "$(_harness_file_setting "$item" "$root")" ] || continue
-    [ -z "$(harness_yml_value "$root" "$item")" ] || out="${out:+$out }$item"
+    if [ "$item" = tasks ]; then   # パッケージの tasks: は harness_settings_migrate が移さない (toplevel の env が先に効くため) ので数えない
+      _harness_yml_candidates "$root" tasks
+      if [ -n "$_HY_PKG" ] && [ "$_HY_PKG" != "$(harness_top "$root")/.claude/mode.yml" ] && [ -n "$(harness_yml_file_value "$_HY_PKG" tasks)" ]; then continue; fi
+    fi
+    [ -z "$(_harness_yml_project_value "$root" "$item")" ] || out="${out:+$out }$item"
   done
   printf '%s' "$out"
 }
@@ -392,7 +470,7 @@ harness_yml_unset() (
 )
 
 # _harness_yml_after_set <項目> <値> <root> -> settings へ書いたあとの mode.yml の行の扱い。
-# worktree は行を消す。tasks・notify は消さず値を settings と同じにそろえる (hirai-task の is_coordinator は今も mode.yml だけを読むため。読み先がそろうまで)。
+# worktree は行を消す。tasks・notify は消さず値を settings と同じにそろえる (settings を読まない古い会話・写しの予備として残す。hirai-task は settings も読む)。
 _harness_yml_after_set() {
   local item="$1" val="$2" p tmp
   _harness_yml_candidates "$3" "$item"
@@ -410,24 +488,11 @@ _harness_yml_after_set() {
   return 0
 }
 
-# harness_settings_set <tasks|worktree|notify> <値> [root] [local] -> プロジェクト (toplevel) の .claude/settings.json の env.TKM_HARNESS_<項目> に書く
-# (4 つ目の引数 local なら settings.local.json。自分だけ変えたいとき)。ほかのキーは触らない (python3 -I で読み、indent 2・ensure_ascii False で書き戻す)。
-# 書けたら (local でないとき)、同じ項目の行がプロジェクトの mode.yml (パッケージと toplevel) にあれば、worktree は消し、tasks・notify は値をそろえる
-# (hirai-task が今も mode.yml だけを読むため消さない)。JSON が読めない file は上書きしない (rc 1)。
-# 書いた path を stdout に 1 行。値は項目ごとの許す値だけ (rc 2)。
-harness_settings_set() {
-  local item="${1:-}" val="${2:-}" root top up f
-  root="${3:-${CLAUDE_PROJECT_DIR:-$PWD}}"
-  case "$item" in
-    tasks) up=TASKS; case "$val" in ledger|github-project) ;; *) return 2 ;; esac ;;
-    worktree) up=WORKTREE; case "$val" in off|warn|block) ;; *) return 2 ;; esac ;;
-    notify) up=NOTIFY; case "$val" in off|orca) ;; *) return 2 ;; esac ;;
-    *) return 2 ;;
-  esac
+# _harness_env_write <file> <env の名前> <値> -> file の env.<名前> に書く。ほかのキーは触らない (python3 -I で読み、indent 2・ensure_ascii False で書き戻す)。
+# JSON が読めない file・env が object でない file は上書きしない (rc 1)。python3 が無ければ rc 1。
+_harness_env_write() {
   command -v python3 >/dev/null 2>&1 || return 1
-  top="$(harness_top "$root")"
-  f="$top/.claude/settings.json"; [ "${4:-}" = "local" ] && f="$top/.claude/settings.local.json"
-  mkdir -p "$top/.claude" 2>/dev/null || return 1
+  mkdir -p "$(dirname "$1")" 2>/dev/null || return 1
   python3 -I -c 'import json,os,sys
 p, name, val = sys.argv[1:4]
 d = {}
@@ -449,19 +514,81 @@ tmp = p + ".tmp." + str(os.getpid())
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(d, fh, indent=2, ensure_ascii=False)
     fh.write("\n")
-os.replace(tmp, p)' "$f" "TKM_HARNESS_$up" "$val" 2>/dev/null || return 1
-  if [ "${4:-}" != "local" ]; then   # settings.local.json は自分だけの上書きなので、チームの mode.yml の行は残す
-    _harness_yml_after_set "$item" "$val" "$root"
+os.replace(tmp, p)' "$1" "$2" "$3" 2>/dev/null
+}
+
+# harness_settings_set <mode|auto_sync|tasks|worktree|notify|project|repo> <値> [root] [local] -> env.TKM_HARNESS_<項目> に 1 つだけ書く。
+#   mode              : harness_mode_write_file の settings.local.json (worktree なら本体の checkout の。TKS-R2.4・F5)。4 つ目の引数は見ない
+#   ほかの項目        : プロジェクト (toplevel) の .claude/settings.json (4 つ目の引数 local なら toplevel の settings.local.json。自分だけ変えたいとき)
+# ほかのキーは触らない。JSON が読めない file は上書きしない (rc 1)。書いた path を stdout に 1 行。値は項目ごとの許す値だけ (rc 2):
+#   mode=normal|loop・auto_sync=on|off・tasks=ledger|github-project・worktree=off|warn|block・notify=off|orca・project=正の整数・repo=<owner>/<name>
+# 書けたら (local でないとき)、tasks・worktree・notify だけ、同じ項目の行がプロジェクトの mode.yml (パッケージと toplevel) にあれば、worktree は消し、
+# tasks・notify は値をそろえる (settings を読まない古い会話・写しの予備として消さない)。mode・auto_sync・project・repo では mode.yml の行に触らない (TKS-R2.4)。
+harness_settings_set() {
+  local item="${1:-}" val="${2:-}" root top up f
+  local repo_re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' num_re='^[1-9][0-9]*$'
+  root="${3:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+  case "$item" in
+    mode) up=MODE; case "$val" in normal|loop) ;; *) return 2 ;; esac ;;
+    auto_sync) up=AUTO_SYNC; case "$val" in on|off) ;; *) return 2 ;; esac ;;
+    tasks) up=TASKS; case "$val" in ledger|github-project) ;; *) return 2 ;; esac ;;
+    worktree) up=WORKTREE; case "$val" in off|warn|block) ;; *) return 2 ;; esac ;;
+    notify) up=NOTIFY; case "$val" in off|orca) ;; *) return 2 ;; esac ;;
+    project) up=PROJECT; [[ "$val" =~ $num_re ]] || return 2 ;;
+    repo) up=REPO; [[ "$val" =~ $repo_re ]] || return 2 ;;
+    *) return 2 ;;
+  esac
+  command -v python3 >/dev/null 2>&1 || return 1
+  top="$(harness_top "$root")"
+  if [ "$item" = mode ]; then
+    f="$(harness_mode_write_file "$root")"
+  else
+    f="$top/.claude/settings.json"; [ "${4:-}" = "local" ] && f="$top/.claude/settings.local.json"
   fi
+  _harness_env_write "$f" "TKM_HARNESS_$up" "$val" || return 1
+  case "$item" in
+    tasks|worktree|notify)
+      if [ "${4:-}" != "local" ]; then   # settings.local.json は自分だけの上書きなので、チームの mode.yml の行は残す
+        _harness_yml_after_set "$item" "$val" "$root"
+      fi ;;
+  esac
   printf '%s' "$f"
+}
+
+# _harness_migrate_new <root> <項目> -> mode.yml の mode・auto_sync・load_*・nightly_ci を settings の env へ写す (TKS-R3.3)。1 項目 1 行。
+# 写す先: mode は settings.local.json (harness_mode_write_file)・ほかは toplevel の settings.json。settings の file (本体の checkout の local → toplevel の local → toplevel の settings.json)
+# にすでにその env が在れば写さない。mode.yml の行は消さない (チームの mode.yml の mode を消すと、settings.local.json を持たない人が normal に戻るため)。
+# 値はプロジェクトの mode.yml (読み先は harness_yml_value と同じ。ただしホームは読まない) から。rc 1 は写せなかった印。
+_harness_migrate_new() {
+  local root="$1" item="$2" top v cur dest
+  top="$(harness_top "$root")"
+  v="$(_harness_yml_project_value "$root" "$item")"
+  [ -n "$v" ] || return 0
+  cur="$(_harness_file_setting "$item" "$top" nohome)"
+  if [ -n "$cur" ]; then
+    [ "$v" = "$cur" ] || printf '%s: settings の env に %s が在るため、mode.yml の %s は写しません (mode.yml の行は残しました)\n' "$item" "$cur" "$v"
+    return 0
+  fi
+  if [ "$item" = mode ]; then dest="$(harness_mode_write_file "$root")"; else dest="$top/.claude/settings.json"; fi
+  case "$item" in
+    mode) case "$v" in normal|loop) ;; *) printf '%s: %s は知らない値なので移しません (mode.yml のまま残しています)\n' "$item" "$v"; return 1 ;; esac ;;
+    auto_sync) case "$v" in on|off) ;; *) printf '%s: %s は知らない値なので移しません (mode.yml のまま残しています)\n' "$item" "$v"; return 1 ;; esac ;;
+  esac
+  if _harness_env_write "$dest" "TKM_HARNESS_$(_harness_item_up "$item")" "$v"; then
+    printf '%s: %s を %s の env へ移しました (mode.yml の行は残しました)\n' "$item" "$v" "$dest"
+  else
+    printf '%s: %s を移せませんでした (%s が JSON として読めない・python3 が無い。mode.yml のまま残しています)\n' "$item" "$v" "$dest"
+    return 1
+  fi
 }
 
 # harness_settings_migrate [root] -> プロジェクトの mode.yml (パッケージと toplevel) の tasks:・worktree:・notify: を、settings.json の env へ移す
 # (/tkm-harness:update)。すでに settings の file (3 の file 読み) に値が在る項目は mode.yml 側だけ直す (worktree は行を消し、tasks・notify は値をそろえる。
-# hirai-task が今も mode.yml を読むため tasks・notify の行は残す)。パッケージの tasks: は移さない (toplevel の env が先に効くため)。許さない値の項目は動かさず 1 行で言う。
+# settings を読まない古い会話・写しの予備として tasks・notify の行は残す)。パッケージの tasks: は移さない (toplevel の env が先に効くため)。許さない値の項目は動かさず 1 行で言う。
+# 続けて、auto_sync・load_*・nightly_ci を settings.json の env へ、mode を settings.local.json の env へ写す (_harness_migrate_new。mode.yml の行は消さない)。
 # ホームの mode.yml は動かさない (ほかのリポにも効くため)。出力は項目ごとに 1 行。何も無ければ無出力。rc 0 (書けなかった項目があれば rc 1)。
 harness_settings_migrate() {
-  local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" top item v cur path rc=0
+  local root="${1:-${CLAUDE_PROJECT_DIR:-$PWD}}" top item v cur wrote_to rc=0
   top="$(harness_top "$root")"
   for item in tasks worktree notify; do
     _harness_yml_candidates "$root" "$item"
@@ -479,19 +606,22 @@ harness_settings_migrate() {
       _harness_yml_after_set "$item" "$cur" "$root"
       case "$item" in
         worktree) printf '%s: settings の env に %s が在るため、mode.yml の行だけ消しました\n' "$item" "$cur" ;;
-        *) printf '%s: settings の env に %s が在るため、mode.yml の値をそろえました (hirai-task が mode.yml を読むので行は残します)\n' "$item" "$cur" ;;
+        *) printf '%s: settings の env に %s が在るため、mode.yml の値をそろえました (mode.yml の行は settings を読まない古い会話・写しの予備に残しました)\n' "$item" "$cur" ;;
       esac
       continue
     fi
-    if path="$(harness_settings_set "$item" "$v" "$top")"; then
+    if wrote_to="$(harness_settings_set "$item" "$v" "$top")"; then
       case "$item" in
-        worktree) printf '%s: %s を %s の env へ移しました (mode.yml の行は消しました)\n' "$item" "$v" "$path" ;;
-        *) printf '%s: %s を %s の env へ移しました (mode.yml の行は hirai-task のために残しました)\n' "$item" "$v" "$path" ;;
+        worktree) printf '%s: %s を %s の env へ移しました (mode.yml の行は消しました)\n' "$item" "$v" "$wrote_to" ;;
+        *) printf '%s: %s を %s の env へ移しました (mode.yml の行は settings を読まない古い会話・写しの予備に残しました)\n' "$item" "$v" "$wrote_to" ;;
       esac
     else
       printf '%s: %s を移せませんでした (値が許す形でない・settings.json が JSON として読めない・python3 が無い。mode.yml のまま残しています)\n' "$item" "$v"
       rc=1
     fi
+  done
+  for item in mode auto_sync load_deadline load_deadline_label load_mainline load_mainline_label nightly_ci; do
+    _harness_migrate_new "$root" "$item" || rc=1
   done
   return "$rc"
 }
@@ -518,7 +648,7 @@ harness_tasks_slug() {
 # 出力は 1 行 (書いたら "tasks: <値> を <パス> に書きました (<理由>)"、書かなければ "tasks: 書きませんでした (<理由>)")。
 # プロジェクト側にすでに tasks の値があれば何もしない (無出力・rc 0)。書けなかったら rc 1。以後は自動で見分けない。
 harness_tasks_migrate() {
-  local root top cur slug cache val why path
+  local root top cur slug cache val why wrote_to
   root="$(harness_root "${1:-${CLAUDE_PROJECT_DIR:-$PWD}}")"
   top="$(harness_top "$root")"
   cur="$(_harness_file_setting tasks "$top" nohome)"
@@ -541,8 +671,8 @@ harness_tasks_migrate() {
       return 0
     fi
   fi
-  path="$(harness_settings_set tasks "$val" "$top")" || return 1
-  printf 'tasks: %s を %s の env に書きました (%s)\n' "$val" "$path" "$why"
+  wrote_to="$(harness_settings_set tasks "$val" "$top")" || return 1
+  printf 'tasks: %s を %s の env に書きました (%s)\n' "$val" "$wrote_to" "$why"
 }
 
 # harness_pm_install_dir [root] -> プラグイン tkm-harness の、このリポの行のうち版が最大の installPath を stdout。

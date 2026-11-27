@@ -45,7 +45,7 @@ description: GitHub Project でやること（wave・feature・task の issue �
 
 ### 会話の始まりに表が入る（コーディネーターの会話）
 
-親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
+親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほか、コーディネーターの会話では、振り出し（`orca orchestration worker-start`・`orca worktree set --issue`・`hirai-task` / `gh-task.sh` の `assign`・`start`）と完了（`done`・`after-merge`・`gh pr merge`）のあとに、hook が `hirai-task load --cached` の表を人の画面（systemMessage）と AI の context の両方へ出す（AI が出力を切っても人の画面に出る。同じ表を貼り直さない。GitHub は叩かず、load が失敗・空・8 秒で返らないときは出ない）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
 
 ### 担当を Orca で立てるとき（表の「担当」と「いまやっていること」の出どころ）
 
@@ -60,14 +60,18 @@ description: GitHub Project でやること（wave・feature・task の issue �
 - **担当の列**: 自分の作業のセッションの名前と順番は手元の控え（git の管理ディレクトリの下の `hirai-task/load-assign.json`）から、ほかの人の行は GitHub の Assignees の名前から出す（Project に「担当」の項目は足さない）。閉じた task は割り振りの順番の後ろの 3 つだけ
 - **進行中・レビュー中なのに担当の居ないもの**: 手元の控えに名前が無く、ほかの人だけの Assignees でもない 進行中・レビュー中の task（Assignees が自分だけの行も入る。ほかの開発者の開いている PR がある行は「ほかの開発者の PR」に出す）。残さない
 - **ほかの開発者の PR**: 割り振りもほかの人の Assignees も無い open の task を閉じる、自分でない人の開いている PR
-- 期限の行・本線の印は、**そのリポの** `.claude/mode.yml`（ホームの `~/.claude/mode.yml` は読まない）に設定があるときだけ出る:
+- 期限の行・本線の印は、設定があるときだけ出る。置き場は `.claude/settings.json` の `env`（読む順は settings の file（打ったリポの。環境変数は読まない）> そのリポの `.claude/mode.yml`。ホームの mode.yml は読まない）:
 
-```yaml
-load_deadline: 2026-12-15        # 本文に「期限: 2026-12-15」の行がある open の issue を数える（日付に触れただけの issue は数えない）
-load_deadline_label: ベータ（12/15・エージェントのオンボーディング）
-load_mainline: 営業の登録          # この語を含むセクションに印を付ける
-load_mainline_label: ベータの本線
+```json
+{"env": {
+  "TKM_HARNESS_LOAD_DEADLINE": "2026-12-15",
+  "TKM_HARNESS_LOAD_DEADLINE_LABEL": "ベータ（12/15・エージェントのオンボーディング）",
+  "TKM_HARNESS_LOAD_MAINLINE": "営業の登録",
+  "TKM_HARNESS_LOAD_MAINLINE_LABEL": "ベータの本線"
+}}
 ```
+
+`DEADLINE` は本文に「期限: 2026-12-15」の行がある open の issue を数える（日付に触れただけの issue は数えない）。`MAINLINE` はこの語を含むセクションに印を付ける。mode.yml の `load_deadline:` などは予備として今も読む。
 
 ### Assignees（だれの task か）
 

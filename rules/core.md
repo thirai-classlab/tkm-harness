@@ -5,7 +5,7 @@
 - **完了の定義**: メインエージェントは、commit 前に build・test・lint を通す ／ 例: `npm run build && npm test && npm run lint` ／ 失効: CI が必ず同等の検査で落ちる構成になったら
 - **commit 粒度**: メインエージェントは、1 commit = 1 機能または 1 修正で切り、各 commit を単体でテストが通る状態に保つ ／ 例: 実装と無関係な整形は別 commit にする ／ 失効: なし
 - **承認が要る操作**: メインエージェントは、main への push / PR merge / 本番 deploy / DB migration / secrets 操作の前にユーザー承認を取る（頼み方は「承認はカードで求める」参照） ／ 例: `git push origin main` は提案して止まる（`settings.json` の `ask` でも止まる） ／ 失効: なし
-- **`loop`（自動で進む）のとき**: メインエージェントは、`mode.yml` が `loop` のとき確認を求めず作業を続ける。
+- **`loop`（自動で進む）のとき**: メインエージェントは、mode が `loop`（settings の `TKM_HARNESS_MODE`）のとき確認を求めず作業を続ける。
   止まるのは 3 つ — ユーザーの停止指示 / タスク完了 / 続けられないエラー。
   新しい設計の追加・決めた内容の変更・元に戻せない操作は、`loop` でも承認を取る ／ 例: 実装中の方式選択は自律、新しい設計メモの起案は承認 ／ 失効: なし
 - **設計の起点**: メインエージェントは、現在形の文書（仕様・設計・規範）を変える依頼を、会話・会議・Slack・issue で決まったことも含めて、分かれ道（A 提案なし／B 決定だけ ADR／C 提案が要る。判定の表は `/tkm-harness:new-draft`）にかけ、C は `docs/draft/` に起こして承認後に task にする（台帳の形は `/tkm-harness:new-task`、GitHub Project の形は `hirai-task new`）

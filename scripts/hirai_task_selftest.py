@@ -43,6 +43,7 @@ import sys
 # 以降の import（自己検査・bin/hirai-task の読み込み）にも効かせるため import の直後に置く。
 sys.dont_write_bytecode = True
 import tempfile
+import time
 import urllib.parse
 from contextlib import redirect_stdout
 from importlib import machinery, util
@@ -69,10 +70,29 @@ def _load_tool():
     # 検査は呼び出し元のリポに依らない（git remote が無くても、別のリポでも同じ結果）。
     module.REPO = 'example-org/example-repo'
     module.OWNER, _, module.REPO_NAME = module.REPO.partition('/')
+    module._REPO_SETTING, module._REPO_SOURCE = '', ''
     return module
 
 
 gh_task = _load_tool()
+_REAL_SETTINGS_FILES = gh_task._settings_files  # _isolate_settings が差し替える前の、本物の settings の file の並べ方
+
+
+def _isolate_settings():
+    """設定の読み（TKS-R1）を、呼び出し環境から切り離す: HC_*・TKM_HARNESS_*・HIRAI_TASK_PROJECT・HIRAI_TASK_REPO を外し、
+    settings の file（本物の ~/.claude/settings.json など）を読まない。戻す関数を返す（selftest の結果が
+    Claude Code の中か外か・どのリポで回すかに左右されない）。"""
+    names = [k for k in os.environ if k.startswith(('HC_', 'TKM_HARNESS_')) or k in ('HIRAI_TASK_PROJECT', 'HIRAI_TASK_REPO')]
+    saved_env = {k: os.environ.pop(k) for k in names}
+    saved_files = gh_task._settings_files
+    gh_task._settings_files = lambda: []
+
+    def restore() -> None:
+        gh_task._settings_files = saved_files
+        for k in [k for k in os.environ if k.startswith(('HC_', 'TKM_HARNESS_')) or k in ('HIRAI_TASK_PROJECT', 'HIRAI_TASK_REPO')]:
+            os.environ.pop(k)
+        os.environ.update(saved_env)
+    return restore
 
 
 def _extract_flag(args: list[str], name: str) -> str | None:
@@ -1321,6 +1341,8 @@ def _load_checks(t, tmp_dir: str) -> None:
     modes: dict[str, str] = {}
     gh_task._mode_setting = lambda key, home=True: modes.get(key, '')
     gh_task.is_coordinator = lambda: False
+    real_orca_assignments = gh_task._orca_assignments
+    gh_task._orca_assignments = lambda progress: {}  # このマシンの Orca を読まない（TKS-R6 の検査だけが偽の orca を PATH に置いて戻す）
     load = gh_task._load_module()
 
     def write_assign(rows) -> None:
@@ -1530,7 +1552,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             orig_ensure, seen = gh_task.ensure_assignee, []
             gh_task._require_item = lambda pn, n: {'number': n, 'found': True, 'state': 'OPEN', 'fields': {}}
             orig_rej = gh_task._reject_wave_feature
-            gh_task._reject_wave_feature = lambda item, number, verb: None
+            gh_task._reject_wave_feature = lambda item, number, verb, **kw: None
             gh_task.discover_project_number = lambda: 7
             gh_task.ensure_assignee = lambda number: seen.append(number)
             try:
@@ -1804,7 +1826,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                 rc, _ = _run_main(['after-merge', '146'])
                 assert rc == 0 and seen == [], f'閉じる issue の無い PR で表: {seen}'
                 gh_task._require_item = lambda pn, n: {'number': n, 'found': True, 'state': 'OPEN', 'fields': {}}
-                gh_task._reject_wave_feature = lambda item, number, verb: None
+                gh_task._reject_wave_feature = lambda item, number, verb, **kw: None
                 rc, _ = _run_main(['assign', '40', '甲'])
                 assert rc == 0 and seen[:1] == [('ensure', 40)] and seen[-1] == ('table', False), f'assign の順が違う: {seen}'
             finally:
@@ -1996,10 +2018,16 @@ def _load_checks(t, tmp_dir: str) -> None:
                 gh_task._require_item = not_found
                 rc, _ = _run_main(['assign', '40', '甲'])
                 assert rc == 1, rc
-                gh_task._require_item = lambda pn, n: {'number': n, 'found': True, 'state': 'OPEN', 'fields': {gh_task.KIND_FIELD: 'feature'}}
                 gh_task._reject_wave_feature = orig_rej
+                gh_task._require_item = lambda pn, n: {'number': n, 'found': True, 'state': 'OPEN', 'fields': {gh_task.KIND_FIELD: 'wave'}}
                 rc, _ = _run_main(['assign', '40', '甲'])
-                assert rc == 2, f'feature に割り振れた: {rc}'
+                assert rc == 2, f'wave に割り振れた: {rc}'
+                gh_task._require_item = lambda pn, n: {'number': n, 'found': True, 'state': 'CLOSED', 'fields': {gh_task.KIND_FIELD: 'feature'}}
+                rc, _ = _run_main(['assign', '40', '甲'])
+                assert rc == 2, f'閉じた feature に割り振れた: {rc}'
+                gh_task._require_item = lambda pn, n: {'number': n, 'found': True, 'state': 'OPEN', 'fields': {gh_task.KIND_FIELD: 'feature'}}
+                rc, _ = _run_main(['assign', '40', '甲'])  # TKS-R4.1: 種別=feature の open の issue は受け付ける
+                assert rc == 0 and gh_task._load_shared_json(gh_task.LOAD_ASSIGN)['assign']['40']['owner'] == '甲', f'feature を控えに書けない: {rc}'
                 gh_task._save_shared_json(gh_task.LOAD_ASSIGN, {'assign': {'40': {'owner': '甲', 'order': 1}, '41': {'owner': '乙', 'order': None}}})
                 rc, out = _run_main(['assign', '40', '--clear'])
                 assert rc == 0 and list(gh_task._load_shared_json(gh_task.LOAD_ASSIGN)['assign']) == ['41'], out
@@ -2009,7 +2037,143 @@ def _load_checks(t, tmp_dir: str) -> None:
             finally:
                 for n, v in saved.items():
                     setattr(gh_task, n, v)
-        t('assign: 長さ・制御文字・- 始まり・無限大・閉じた・feature・載っていない を断り、--clear はほかの行を残して外す', _assign_edges)
+        t('assign: 長さ・制御文字・- 始まり・無限大・閉じた・wave・載っていない を断り、feature は受け付け、--clear はほかの行を残して外す', _assign_edges)
+
+        def _assign_feature_in_load() -> None:
+            # TKS-R4.2: 控えに載った feature は、assign のあとの進みの表の担当の行に出る。段は task と同じ決め方（Closes する PR の実物）。
+            base_model = model_of()
+            rows = _load_rows()
+            rows[3]['owner'], rows[3]['order'] = '丙', 1.0                       # feature #20（F2）を丙に割り振る
+            prs = _load_default_prs()
+            prs['open'].append(_load_pr(170, [20], draft=True))                   # feature #20 を Closes する draft の PR
+            prs['open'].append(_load_pr(171, [10], checks='SUCCESS'))             # feature #10 は割り振らない（行に出ない）
+            model = model_of(rows=rows, prs=prs)
+            mine = [p for p in model['people'] if p['owner'] == '丙']
+            assert len(mine) == 1 and [t['number'] for t in mine[0]['tasks']] == [20], f'feature が担当の行に出ない: {model["people"]}'
+            assert mine[0]['tasks'][0]['pct'] == 50 and 'draft' in mine[0]['tasks'][0]['note'] and mine[0]['tasks'][0]['pr'] == 170, mine
+            assert 10 not in stage_map(model), '割り振っていない feature が出た'
+            assert (model['total'], model['done'], model['held']) == (base_model['total'], base_model['done'], base_model['held']), \
+                f'feature を足して全体の数がずれた: {(model["total"], model["done"])} vs {(base_model["total"], base_model["done"])}'
+            assert [s['total'] for s in model['sections']] == [s['total'] for s in base_model['sections']], 'セクションの数がずれた'
+            rows[3]['owner'] = ''
+            assert 20 not in stage_map(model_of(rows=rows, prs=prs)), '割り振りを外しても feature が残る'
+        t('TKS-R4.2 load: 控えに載った feature が担当の行に出て、段は PR の実物で決まり、全体の数は task だけで数える', _assign_feature_in_load)
+
+        # ── TKS-R6: 担当を Orca の作業ツリーから取り、feature の行と進捗を出す ──
+        orca_dir = tempfile.mkdtemp(dir=tmp_dir)
+        orca_json_file = os.path.join(orca_dir, 'trees.json')
+        with open(os.path.join(orca_dir, 'orca'), 'w', encoding='utf-8') as f:
+            f.write('#!/bin/sh\ncase "${FAKE_ORCA_MODE:-ok}" in\n  exit1) exit 1 ;;\n  badjson) echo not-json ;;\n  sleep) sleep 30 ;;\n'
+                    '  *) cat "$FAKE_ORCA_JSON" ;;\nesac\n')
+        os.chmod(os.path.join(orca_dir, 'orca'), 0o755)
+
+        def tree(name, issue, *, path=None, project='github:example-org/example-repo', main=False, archived=False) -> dict:
+            return {'path': path or f'/w/{name}', 'displayName': name, 'linkedIssue': issue, 'isMainWorktree': main,
+                    'isArchived': archived, 'projectId': project, 'branch': 'x'}
+
+        def with_orca(trees, mode='ok', *, present=True):
+            """load が引く orca を偽物にして model_of する（終わると PATH・環境変数・読み口を戻す）。"""
+            class Ctx:
+                def __enter__(self_):
+                    with open(orca_json_file, 'w', encoding='utf-8') as f:
+                        json.dump({'ok': True, 'result': {'worktrees': trees}}, f)
+                    self_.saved = {k: os.environ.get(k) for k in ('PATH', 'FAKE_ORCA_MODE', 'FAKE_ORCA_JSON')}
+                    os.environ.update({'PATH': (orca_dir + ':' if present else '') + '/usr/bin:/bin',  # 本物の orca の場所は入れない
+                                       'FAKE_ORCA_MODE': mode, 'FAKE_ORCA_JSON': orca_json_file})
+                    self_.prev = gh_task._orca_assignments
+                    gh_task._orca_assignments = real_orca_assignments
+
+                def __exit__(self_, *exc):
+                    gh_task._orca_assignments = self_.prev
+                    for k, v in self_.saved.items():
+                        if v is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = v
+            return Ctx()
+
+        def owners_of(model: dict) -> dict:
+            return {t_['number']: p['owner'] for p in model['people'] for t_ in p['tasks']}
+
+        def _orca_owners() -> None:
+            baseline = owners_of(model_of())
+            trees = [tree('セッション甲', 40), tree('セッション乙', '41'), tree('単独', {'number': 49}),
+                     tree('別リポ', 43, project='github:other/repo'), tree('終わった', 44, archived=True),
+                     tree('本体', 45, main=True), tree('番号なし', None), tree('wave', 1)]
+            with with_orca(trees):
+                model = model_of()
+            owners = owners_of(model)
+            assert owners[40] == 'セッション甲' and owners[41] == 'セッション乙', f'担当が Orca の表示名にならない: {owners}'
+            assert owners[49] == '単独', f'控えに無い番号（Orca だけ）が出ない: {owners}'
+            assert owners[42] == baseline[42] == '甲', f'Orca に紐づきの無い番号の担当が控えのまま残らない: {owners}'
+            assert owners[43] == baseline[43] and owners[44] == baseline[44] and owners[45] == baseline[45], \
+                f'別のリポ・archived・main の作業ツリーを読んだ: {owners}'
+            assert 1 not in owners and 'wave' not in owners.values(), f'wave に紐づく作業ツリーが行になった: {owners}'
+            mine = [p for p in model['people'] if p['owner'] == 'セッション甲'][0]
+            assert [t_['number'] for t_ in mine['tasks']] == [40], mine
+            order = {p['owner']: [t_['number'] for t_ in p['tasks']] for p in model['people']}
+            assert order['セッション乙'] == [41], order
+        t('TKS-R6.1 load: 担当は Orca の作業ツリーの表示名・控えだけの番号は残り・別のリポ/archived/main/番号なし/wave は読まない', _orca_owners)
+
+        def _orca_order_from_saved() -> None:
+            rows = _load_rows()
+            # 控えは 甲: 40(順 1)・41(順 2)・42(順 3)。40 と 41 を Orca が同じ名前で取る
+            with with_orca([tree('甲の作業ツリー', 41), tree('甲の作業ツリー2', 40)]):
+                model = model_of(rows=rows)
+            mine = [p for p in model['people'] if p['owner'] == '甲の作業ツリー2']
+            assert mine and [t_['number'] for t_ in mine[0]['tasks']] == [40], model['people']
+            first = [p for p in model['people'] if p['owner'] == '甲の作業ツリー'][0]
+            assert [t_['number'] for t_ in first['tasks']] == [41], first
+            people = [p['owner'] for p in model['people']]
+            assert people.index('甲の作業ツリー2') < people.index('甲の作業ツリー'), f'順番が控え（40 が 1・41 が 2）でない: {people}'
+        t('TKS-R6.1 load: 同じ番号が Orca と控えの両方にあれば、担当は Orca・順番は控え', _orca_order_from_saved)
+
+        def _orca_fallback_to_saved() -> None:
+            baseline = owners_of(model_of())
+            trees = [tree('セッション甲', 40)]
+            for label, mode, present in (('orca が無い', 'ok', False), ('exit 1', 'exit1', True), ('壊れた JSON', 'badjson', True)):
+                with with_orca(trees, mode, present=present):
+                    assert owners_of(model_of()) == baseline, f'{label}のとき控えだけの表にならない'
+            started = time.monotonic()
+            with with_orca(trees, 'sleep'):
+                owners = owners_of(model_of())
+            spent = time.monotonic() - started
+            assert owners == baseline and spent < 6, f'時間切れで load が止まった/控えに落ちない（{spent:.1f} 秒）'
+        t('TKS-R6.1 load: orca が無い・exit 1・壊れた JSON・眠る（3 秒で切る）ときは控えだけの表で、load は止まらない', _orca_fallback_to_saved)
+
+        def _feature_rows_from_orca() -> None:
+            base = model_of()
+            base_total = (base['total'], base['done'], base['held'], [s['total'] for s in base['sections']])
+            expected = {'承認待ち': 0, '着手可': 0, '進行中': 20, 'レビュー中': 60, '完了': 100}
+            for status, pct in expected.items():
+                rows = _load_rows()
+                rows[3]['status'] = status  # feature #20
+                with with_orca([tree('F の担当', 20)]):
+                    model = model_of(rows=rows)
+                if pct == 100:  # 完了の feature だけが担当の行なら、行ごと畳まれる（古い担当の行を出さない）
+                    assert 20 not in stage_map(model), f'完了の feature の行が残った: {stage_map(model).get(20)}'
+                    continue
+                mine = [p for p in model['people'] if p['owner'] == 'F の担当']
+                assert mine and mine[0]['tasks'][0]['number'] == 20, f'{status}: feature の行が出ない: {model["people"]}'
+                row = mine[0]['tasks'][0]
+                assert row['pct'] == pct and status in row['note'], f'{status}: 段が違う: {row}'
+                assert row['section'] == '営業の登録', f'セクションが親の wave の名前でない: {row["section"]!r}'
+                assert (model['total'], model['done'], model['held'], [s['total'] for s in model['sections']]) == base_total, \
+                    f'{status}: feature を足して全体の数がずれた'
+            rows = _load_rows()
+            rows[3]['status'], rows[3]['state'] = '完了', 'CLOSED'
+            with with_orca([tree('F の担当', 20), tree('F の続き', 40)]):
+                model = model_of(rows=rows)
+            assert stage_map(model)[40][0] == 0 and 20 not in stage_map(model), '閉じた feature の行の扱いが違う'
+            prs = _load_default_prs()
+            prs['open'].append(_load_pr(171, [20], draft=True))
+            rows = _load_rows()
+            rows[3]['status'] = '進行中'
+            with with_orca([tree('F の担当', 20)]):
+                model = model_of(rows=rows, prs=prs)
+            row = [p for p in model['people'] if p['owner'] == 'F の担当'][0]['tasks'][0]
+            assert row['pct'] == 50 and row['pr'] == 171, f'feature を Closes する PR があるのに Status の段になった: {row}'
+        t('TKS-R6.2・R6.3 load: Orca の linkedIssue が feature なら行が出て、PR があれば PR の段・無ければ Status の段（5 通り）・セクションは親の wave・全体の数は task だけ', _feature_rows_from_orca)
 
         def _ensure_edges() -> None:
             def run(assignees, *, user='me', prs=None, post_add=None, prs_fail=False, fail_user=False):
@@ -2333,6 +2497,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             setattr(gh_task, n, v)
         gh_task.run_gh, gh_task.PROJECT_NUMBER_OVERRIDE, gh_task._mode_setting = orig_run, orig_override, orig_mode
         gh_task.is_coordinator, gh_task.ensure_assignee, gh_task._local_state_dir = entry_coord, entry_ensure, orig_local
+        gh_task._orca_assignments = real_orca_assignments
 
 
 def _card_field_defs(*, with_card_fields: bool = True) -> list[dict]:
@@ -2817,15 +2982,11 @@ def _progress_checks(t, tmp_dir: str) -> None:
         orig = gh_task._mode_setting
         gh_task._mode_setting = lambda key, home=True: {'load_mainline': '土台', 'load_mainline_label': 'mode 側'}.get(key, '')
         try:
-            os.environ['TKM_HARNESS_LOAD_MAINLINE'] = '環境'
+            os.environ['TKM_HARNESS_LOAD_MAINLINE'] = '環境'  # 会話のリポの値。別のリポで打っても持ち込まない（TKS-R1.3）
             os.environ['TKM_HARNESS_LOAD_MAINLINE_LABEL'] = '本命'
             os.environ.pop('TKM_HARNESS_LOAD_DEADLINE', None)
             s = gh_task._load_settings(None, network=False)
-            assert s['mainline'] == '環境' and s['mainline_label'] == '本命', s
-            os.environ.pop('TKM_HARNESS_LOAD_MAINLINE')
-            os.environ.pop('TKM_HARNESS_LOAD_MAINLINE_LABEL')
-            s = gh_task._load_settings(None, network=False)
-            assert s['mainline'] == '土台' and s['mainline_label'] == 'mode 側', s
+            assert s['mainline'] == '土台' and s['mainline_label'] == 'mode 側', f'環境変数 TKM_HARNESS_LOAD_* を読んだ: {s}'
         finally:
             gh_task._mode_setting = orig
             for k, v in saved.items():
@@ -2833,7 +2994,7 @@ def _progress_checks(t, tmp_dir: str) -> None:
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
-    t('progress: 期限・本線の設定は環境変数 TKM_HARNESS_LOAD_* が先・無ければ mode.yml', _env_settings)
+    t('progress: 期限・本線の設定は環境変数 TKM_HARNESS_LOAD_* を読まず mode.yml へ落ちる（TKS-R1.3）', _env_settings)
 
     def _args() -> None:
         opts = gh_task.parse_board_args(['--progress', '--json'])
@@ -3270,6 +3431,299 @@ def _feature_checks(t, tmp_dir: str) -> None:
     t('HM-R4.5 after-merge: PR が Closes で閉じた feature（進行中・レビュー中）の Status を 完了 にする。open のまま・着手可のままは書かない', _after_merge_done_feature)
 
 
+# ── 設定の読み（TKS-R1・R2.2・R2.3）の検査 ─────────────────────────
+def _settings_checks(t, tmp_dir: str) -> None:
+    """設定の順（一時の上書き > 環境変数 > settings の file > mode.yml > 空）・Project の指定・リポの決め方・
+    前夜の CI と load の期限が同じ読みを通ること。偽の gh・使い捨ての HOME と git のリポで見る（実物の設定を読まない）。"""
+    import subprocess
+    from contextlib import contextmanager
+
+    def put(path: str, text: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    def put_env(path: str, **env) -> None:
+        put(path, json.dumps({'env': env}))
+
+    def make_repos() -> tuple[str, str, str]:
+        """(本体の checkout, 作業ツリー, HOME)。本体の origin は acme/widgets。"""
+        main_repo = os.path.realpath(tempfile.mkdtemp(dir=tmp_dir))
+        git = ['git', '-C', main_repo, '-c', 'user.name=t', '-c', 'user.email=t@example.com']
+        subprocess.run(git + ['init', '-q'], check=True, capture_output=True)
+        subprocess.run(git + ['remote', 'add', 'origin', 'https://github.com/acme/widgets.git'], check=True, capture_output=True)
+        subprocess.run(git + ['commit', '-q', '--allow-empty', '-m', 'x'], check=True, capture_output=True)
+        worktree = main_repo + '-wt'
+        subprocess.run(git + ['worktree', 'add', '-q', worktree, '-b', 'wt'], check=True, capture_output=True)
+        return main_repo, os.path.realpath(worktree), os.path.realpath(tempfile.mkdtemp(dir=tmp_dir))
+
+    @contextmanager
+    def setting_env(root: str, home: str, env: dict | None = None, cwd: str | None = None):
+        """作業ツリーを root・HOME を home にし、env だけを環境変数に置く。終わると全部戻し、REPO・Project も決め直す。"""
+        saved = {k: os.environ.get(k) for k in ('HIRAI_TASK_ROOT', 'HOME')}
+        saved_files, saved_cwd = gh_task._settings_files, os.getcwd()
+        saved_globals = {n: getattr(gh_task, n) for n in ('REPO', 'OWNER', 'REPO_NAME', 'PROJECT_NUMBER_OVERRIDE', 'PROJECT_SOURCE', '_REPO_SETTING', '_REPO_SOURCE')}
+        added = dict(env or {})
+        gh_task._settings_files = _real_settings_files
+        os.environ.update({'HIRAI_TASK_ROOT': root, 'HOME': home, **added})
+        if cwd:
+            os.chdir(cwd)
+        try:
+            yield
+        finally:
+            os.chdir(saved_cwd)
+            for k in added:
+                os.environ.pop(k, None)
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            gh_task._settings_files = saved_files
+            for n, v in saved_globals.items():
+                setattr(gh_task, n, v)
+
+    _real_settings_files = _REAL_SETTINGS_FILES
+
+    def _order() -> None:
+        main_repo, wt, home = make_repos()
+        file_home = os.path.join(home, '.claude', 'settings.json')
+        file_shared = os.path.join(wt, '.claude', 'settings.json')
+        file_local = os.path.join(wt, '.claude', 'settings.local.json')
+        file_main_local = os.path.join(main_repo, '.claude', 'settings.local.json')
+        yml = os.path.join(wt, '.claude', 'mode.yml')
+        put(yml, 'mode: yml\n')
+        with setting_env(wt, home):
+            assert gh_task._harness_setting('mode') == 'yml', 'file も環境変数も無ければ mode.yml（予備）'
+            put_env(file_home, TKM_HARNESS_MODE='home')
+            assert gh_task._harness_setting('mode') == 'home', '~/.claude/settings.json の env は mode.yml に勝つ'
+            put_env(file_shared, TKM_HARNESS_MODE=' shared ')
+            assert gh_task._harness_setting('mode') == 'shared', 'settings.json は ~/.claude/settings.json に勝ち、前後の空白は外す'
+            put_env(file_local, TKM_HARNESS_MODE='wt-local')
+            assert gh_task._harness_setting('mode') == 'wt-local', 'settings.local.json は settings.json に勝つ'
+            put_env(file_main_local, TKM_HARNESS_MODE='main-local')
+            assert gh_task._harness_setting('mode') == 'main-local', '本体の checkout の settings.local.json は worktree の local に勝つ'
+            os.environ['TKM_HARNESS_MODE'] = 'env'
+            assert gh_task._harness_setting('mode') == 'env', '環境変数は file に勝つ'
+            os.environ['HC_MODE'] = 'hc'
+            assert gh_task._harness_setting('mode') == 'hc', 'HC_MODE は環境変数に勝つ'
+            os.environ.pop('HC_MODE'); os.environ.pop('TKM_HARNESS_MODE')
+            put_env(file_local, TKM_HARNESS_MODE='  ')
+            put_env(file_main_local)
+            assert gh_task._harness_setting('mode') == 'shared', '空白だけの値は無いものとして次の層を読む'
+        with setting_env(wt, home, {'HC_AUTO_SYNC': 'on'}):
+            assert gh_task._harness_setting('auto_sync') == 'on', 'auto_sync にも HC_ の上書きがある'
+
+    def _per_key_rules() -> None:
+        main_repo, wt, home = make_repos()
+        put(os.path.join(wt, '.claude', 'mode.yml'), 'project: 5\nrepo: yml/repo\nload_deadline: 2026-12-01\nnightly_ci: own.yml\n')
+        put(os.path.join(home, '.claude', 'mode.yml'), 'load_mainline: ホーム\nnightly_ci: home.yml\nmode: home-yml\n')
+        with setting_env(wt, home):
+            assert gh_task._harness_setting('project') == '' and gh_task._harness_setting('repo') == '', 'project・repo は mode.yml を読まない'
+            assert gh_task._harness_setting('load_deadline') == '2026-12-01', 'load_* はプロジェクトの mode.yml'
+            assert gh_task._harness_setting('load_mainline') == '', 'load_* はホームの mode.yml を読まない'
+            assert gh_task._harness_setting('nightly_ci') == 'own.yml', 'nightly_ci はプロジェクトの mode.yml が先'
+            os.remove(os.path.join(wt, '.claude', 'mode.yml'))
+            assert gh_task._harness_setting('nightly_ci') == 'home.yml', 'nightly_ci はホームの mode.yml へ続く'
+            assert gh_task._harness_setting('mode') == 'home-yml', 'mode はホームの mode.yml へ続く'
+        with setting_env(wt, home, {'HC_NIGHTLY_CI': 'x.yml', 'HC_PROJECT': '9', 'HC_LOAD_DEADLINE': '2026-01-01', 'HIRAI_TASK_PROJECT': '4', 'TKM_HARNESS_PROJECT': '8'}):
+            assert gh_task._harness_setting('nightly_ci') == 'home.yml', 'nightly_ci に一時の上書きは無い'
+            assert gh_task._harness_setting('project') == '4', 'HIRAI_TASK_PROJECT は TKM_HARNESS_PROJECT に勝ち、HC_PROJECT は読まない'
+            assert gh_task._harness_setting('load_deadline') == '', 'load_deadline に HC_ の上書きは無い'
+
+    def _project() -> None:
+        main_repo, wt, home = make_repos()
+        calls: list[str] = []
+
+        def fake(args, input_text=None):
+            calls.append(' '.join(args))
+            return _discovery_response(3)
+        saved_run = gh_task.run_gh
+        gh_task.run_gh = fake
+        try:
+            put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='7')
+            with setting_env(wt, home):
+                gh_task._apply_repo_project_settings()
+                assert gh_task.discover_project_number() == 7 and calls == [], f'設定の Project 番号があるのに探しに行った: {calls}'
+                assert gh_task.PROJECT_SOURCE.endswith('TKM_HARNESS_PROJECT') and 'settings.json' in gh_task.PROJECT_SOURCE, gh_task.PROJECT_SOURCE
+            with setting_env(wt, home, {'HIRAI_TASK_PROJECT': '12'}):
+                gh_task._apply_repo_project_settings()
+                assert gh_task.discover_project_number() == 12 and calls == [], '一時の上書きが settings に勝たない'
+            for bad in ('abc', '0', '-3', '7x', '1.5'):
+                put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT=bad)
+                with setting_env(wt, home):
+                    gh_task._apply_repo_project_settings()
+                    try:
+                        gh_task.discover_project_number()
+                    except gh_task.GhError as exc:
+                        assert exc.code == 2 and 'TKM_HARNESS_PROJECT' in str(exc) and repr(bad) in str(exc), (bad, exc.code, str(exc))
+                    else:
+                        raise AssertionError(f'{bad!r} を Project の番号として受け付けた')
+                    assert calls == [], f'{bad!r} のとき黙って探しに行った: {calls}'
+            os.remove(os.path.join(wt, '.claude', 'settings.json'))
+            with setting_env(wt, home):  # 設定が無ければ今まで通り Repository.projectsV2 を引く
+                gh_task._apply_repo_project_settings()
+                assert gh_task.PROJECT_NUMBER_OVERRIDE == '' and gh_task.discover_project_number() == 3 and any('projectsV2' in c for c in calls), calls
+        finally:
+            gh_task.run_gh = saved_run
+
+        def _project_choice_sentence() -> None:
+            two = {'data': {'repository': {'projectsV2': {'nodes': [
+                {'number': 7, 'title': 'A', 'fields': {'nodes': []}}, {'number': 8, 'title': 'B', 'fields': {'nodes': []}}]}}}}
+            saved = gh_task.run_gh
+            gh_task.run_gh = lambda args, input_text=None: (0, json.dumps(two), '')
+            try:
+                with setting_env(wt, home):
+                    gh_task._apply_repo_project_settings()
+                    try:
+                        gh_task.discover_project_number()
+                    except gh_task.GhError as exc:
+                        assert exc.code == 2 and '`TKM_HARNESS_PROJECT`' in str(exc) and 'settings.json' in str(exc) and 'HIRAI_TASK_PROJECT' in str(exc), str(exc)
+                        return
+                    raise AssertionError('候補が 2 件で決まらないのに通った')
+            finally:
+                gh_task.run_gh = saved
+        t('TKS-R2.2 Project: 候補が複数のときの文は settings.json の env の TKM_HARNESS_PROJECT で選ぶと言う', _project_choice_sentence)
+
+        def _board_key() -> None:
+            put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='7')
+            with setting_env(wt, home):
+                gh_task._apply_repo_project_settings()
+                assert gh_task._board_key().endswith('#7'), gh_task._board_key()
+        t('TKS-R2.2 board の控えの鍵は解決した Project の番号で作る', _board_key)
+
+    def _repo() -> None:
+        main_repo, wt, home = make_repos()
+        elsewhere = os.path.realpath(tempfile.mkdtemp(dir=tmp_dir))  # git のリポでないディレクトリ
+        with setting_env(wt, home, cwd=elsewhere):
+            gh_task._apply_repo_project_settings()
+            assert gh_task.REPO == 'acme/widgets', f'別のディレクトリから打つと _root() の remote を引かない: {gh_task.REPO!r}'
+            assert (gh_task.OWNER, gh_task.REPO_NAME) == ('acme', 'widgets')
+        put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_REPO='o/r')
+        with setting_env(wt, home, cwd=elsewhere):
+            gh_task._apply_repo_project_settings()
+            assert gh_task.REPO == 'o/r' and (gh_task.OWNER, gh_task.REPO_NAME) == ('o', 'r'), '設定の repo が git remote に勝たない'
+        with setting_env(wt, home, {'HIRAI_TASK_REPO': 'x/y'}):
+            gh_task._apply_repo_project_settings()
+            assert gh_task.REPO == 'x/y', '一時の上書きが settings に勝たない'
+
+        def _repo_shape() -> None:
+            saved_run, seen = gh_task.run_gh, []
+            gh_task.run_gh = lambda args, input_text=None: seen.append(args) or (1, '', 'must not be called')
+            try:
+                for bad in ('noslash', 'a/b/c', '/r', 'o/', 'o r/x'):
+                    put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_REPO=bad)
+                    with setting_env(wt, home):
+                        gh_task._apply_repo_project_settings()
+                        rc, out = _run_main(['ready'])
+                        assert rc == 2 and 'owner/name' in out and 'TKM_HARNESS_REPO' in out and repr(bad) in out, (bad, rc, out)
+                assert seen == [], f'形の誤りなのに gh を呼んだ: {seen}'
+            finally:
+                gh_task.run_gh = saved_run
+        t('TKS-R2.3 リポ: 設定の値が owner/name の形でなければ exit 2 で「owner/name で書く」と出し、gh を呼ばない', _repo_shape)
+
+    def _load_and_nightly() -> None:
+        main_repo, wt, home = make_repos()
+        put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_LOAD_DEADLINE='2026-12-15', TKM_HARNESS_LOAD_DEADLINE_LABEL='ベータ',
+                TKM_HARNESS_LOAD_MAINLINE='営業', TKM_HARNESS_NIGHTLY_CI='nightly.yml')
+        calls: list[list[str]] = []
+        saved_run, saved_now = gh_task.run_gh, gh_task._now_utc
+
+        def fake(args, input_text=None):
+            calls.append(list(args))
+            return 0, json.dumps([{'conclusion': 'success', 'status': 'completed', 'createdAt': '2026-11-23T18:17:09Z', 'url': 'u'}]), ''
+        gh_task.run_gh = fake
+        gh_task._now_utc = lambda: datetime.datetime.fromisoformat('2026-11-23T20:00:00+00:00')
+        try:
+            with setting_env(wt, home):
+                s = gh_task._load_settings(None, network=False)
+                assert (s['deadline_date'], s['deadline_label'], s['mainline']) == ('2026-12-15', 'ベータ', '営業'), f'期限・本線を settings の file から読めない: {s}'
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    gh_task.print_nightly_ci()
+                assert out.getvalue().startswith('前夜の CI（nightly.yml'), out.getvalue()
+                assert calls and calls[0][calls[0].index('--workflow') + 1] == 'nightly.yml', calls
+        finally:
+            gh_task.run_gh, gh_task._now_utc = saved_run, saved_now
+
+    t('TKS-R1.1 _harness_setting: HC_MODE > 環境変数 > 本体の local > worktree の local > settings.json > ~/.claude/settings.json > mode.yml（空白は外す）', _order)
+    t('TKS-R1 項目ごとの決まり: project・repo は mode.yml を読まず、load_* はプロジェクトだけ、nightly_ci はプロジェクト → ホーム、HC_ は決まった項目だけ', _per_key_rules)
+    t('TKS-R2.2 Project: 設定の番号なら projectsV2 を打たず、一時の上書きが勝ち、正の整数でなければ exit 2 で名前と値を出す', _project)
+    t('TKS-R2.3 リポ: 設定の repo > git remote（今いるディレクトリでなく _root() で引く）', _repo)
+    t('TKS-R1 load の期限・本線と前夜の CI は、settings の file の env から読める（同じ 1 本の読み）', _load_and_nightly)
+
+    def _file_first() -> None:
+        """TKS-R1.3: project・repo・load_*・nightly_ci は環境変数を読まず、打ったリポの settings の file を先に読む。"""
+        main_repo, wt, home = make_repos()
+        other_main, other_wt, _ = make_repos()  # 会話のリポとは別のリポ（settings の file が無い）
+        stale = {'TKM_HARNESS_PROJECT': '7', 'TKM_HARNESS_REPO': 'conv/repo', 'TKM_HARNESS_LOAD_MAINLINE': '会話', 'TKM_HARNESS_NIGHTLY_CI': 'conv.yml'}
+        with setting_env(other_wt, home, stale):
+            assert gh_task._harness_setting('project') == '', '別のリポで会話の env の TKM_HARNESS_PROJECT が効いた'
+            assert gh_task._harness_setting('repo') == '' and gh_task._harness_setting('load_mainline') == '' and gh_task._harness_setting('nightly_ci') == '', '別のリポで会話の env の repo・load・nightly_ci が効いた'
+            gh_task._apply_repo_project_settings()
+            assert gh_task.PROJECT_NUMBER_OVERRIDE == '' and gh_task.REPO == 'acme/widgets', (gh_task.PROJECT_NUMBER_OVERRIDE, gh_task.REPO)
+        put_env(os.path.join(other_wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='5', TKM_HARNESS_REPO='o/r')
+        with setting_env(other_wt, home, stale):
+            assert gh_task._harness_setting('project') == '5' and gh_task._harness_setting('repo') == 'o/r', '別のリポは自分の settings の file に従う'
+        put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='7')
+        with setting_env(wt, home, {'TKM_HARNESS_PROJECT': '7'}):
+            assert gh_task._harness_setting('project') == '7', '同じリポでは値が変わらない'
+        os.remove(os.path.join(wt, '.claude', 'settings.json'))
+        with setting_env(wt, home, {'TKM_HARNESS_PROJECT': '7'}):
+            assert gh_task._harness_setting('project') == '', '会話の途中で file から消したら、古い env でなく file に従う'
+        put_env(os.path.join(wt, '.claude', 'settings.json'), TKM_HARNESS_PROJECT='3', TKM_HARNESS_MODE='file')
+        with setting_env(wt, home, {'HIRAI_TASK_PROJECT': '9', 'TKM_HARNESS_PROJECT': '7', 'TKM_HARNESS_MODE': 'env'}):
+            assert gh_task._harness_setting('project') == '9', '一時の上書きは file に勝つ'
+            assert gh_task._harness_setting('mode') == 'env', 'mode は 4 種でなく、env が file より先のまま'
+        put(os.path.join(wt, '.claude', 'mode.yml'), 'load_mainline: yml\nnightly_ci: y.yml\n')
+        with setting_env(wt, home, {'TKM_HARNESS_LOAD_MAINLINE': '会話'}):
+            assert gh_task._harness_setting('load_mainline') == 'yml', 'env を飛ばして mode.yml へ落ちる'
+
+    def _int_value() -> None:
+        main_repo, wt, home = make_repos()
+        put(os.path.join(wt, '.claude', 'settings.json'), json.dumps({'env': {'TKM_HARNESS_PROJECT': 7, 'TKM_HARNESS_LOAD_MAINLINE': True}}))
+        with setting_env(wt, home):
+            assert gh_task._harness_setting('project') == '7', '数値の 7 を黙って捨てた（TKS-R1.2）'
+            assert gh_task._harness_setting('load_mainline') == '', 'bool は文字列にして読まない'
+
+    FILE_FIRST_ALL = ('project', 'repo', 'load_deadline', 'load_deadline_label', 'load_mainline', 'load_mainline_label', 'nightly_ci')
+
+    def _file_first_all() -> None:
+        """TKS-R1.3: 4 種の全項目（7 つ）で、環境変数を読まず file を読む。一覧が 1 項目でも欠ければ落ち、tasks-path.sh の一覧とも同じであること。"""
+        assert set(gh_task._FILE_FIRST_KEYS) == set(FILE_FIRST_ALL), f'_FILE_FIRST_KEYS が 4 種の全項目でない: {gh_task._FILE_FIRST_KEYS}'
+        text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tasks-path.sh'), encoding='utf-8').read()
+        m = re.search(r'_harness_item_file_first\(\) \{\n  case "\$\{1:-\}" in\n    ([^)]*)\) return 0', text)
+        assert m and set(m.group(1).split('|')) == set(gh_task._FILE_FIRST_KEYS), f'tasks-path.sh の _harness_item_file_first と一覧が違う: {m and m.group(1)}'
+        main_repo, wt, home = make_repos()
+        for key in FILE_FIRST_ALL:
+            put_env(os.path.join(wt, '.claude', 'settings.json'), **{'TKM_HARNESS_' + key.upper(): 'o/file'})
+            with setting_env(wt, home, {'TKM_HARNESS_' + key.upper(): 'o/env'}):
+                assert gh_task._harness_setting(key) == 'o/file', f'{key} が環境変数を読んだ（file を先に読まない）'
+
+    def _bad_type_value() -> None:
+        """TKS-R2.2: project・repo の値が 7.0・true・[7] のときは黙って捨てず、形の誤りとして出す（exit 2 の道へ）。"""
+        main_repo, wt, home = make_repos()
+        for raw in ('7.0', 'true', '[7]'):
+            for key in ('project', 'repo'):
+                put(os.path.join(wt, '.claude', 'settings.json'), '{"env": {"TKM_HARNESS_%s": %s}}' % (key.upper(), raw))
+                with setting_env(wt, home):
+                    value, source = gh_task._harness_setting_source(key)
+                assert value and not re.fullmatch(r'[1-9][0-9]*|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+', value) and '文字列か整数で書く' in source, (key, raw, value, source)
+
+    def _remote_trailing_slash() -> None:
+        main_repo, wt, home = make_repos()
+        for url, want in (('https://github.com/o/r/', 'o/r'), ('https://github.com/o/r.git/', 'o/r'), ('git@github.com:o/r.git', 'o/r')):
+            subprocess.run(['git', '-C', wt, 'remote', 'set-url', 'origin', url], check=True, capture_output=True)
+            with setting_env(wt, home):
+                assert gh_task._repo_from_git_remote() == want, (url, gh_task._repo_from_git_remote())
+
+    t('TKS-R1.3 project・repo・load_*・nightly_ci は環境変数を読まず打ったリポの file を先に読む（別のリポ・同じリポ・file から消した後・mode は env が先）', _file_first)
+    t('TKS-R1.2 settings の file の値が数値（bool でない整数）なら文字列にして読む', _int_value)
+    t('TKS-R1.3 4 種の全項目（project・repo・load_* 4・nightly_ci）が環境変数を読まず file を読み、一覧は tasks-path.sh と同じ', _file_first_all)
+    t('TKS-R2.2 project・repo の値が 7.0・true・[7] なら黙って捨てず、形の誤りとして文字列か整数で書くと出す', _bad_type_value)
+    t('TKS-R2.3 origin の URL の末尾が / でも owner/name を読める', _remote_trailing_slash)
+
+
 def main() -> int:
     fail = 0
     results: list[str] = []
@@ -3298,10 +3752,12 @@ def main() -> int:
         results.append(f'  FAIL {label}（落ちるべきなのに通った）')
 
     print('gh_task_selftest.py')
+    restore_settings = _isolate_settings()
 
     if os.environ.get('HIRAI_SELFTEST_ONLY') == 'progress':  # 手早く回すための絞り込み（smoke は絞らない）
         _progress_checks(t, tempfile.mkdtemp())
         print('\n'.join(results))
+        restore_settings()
         return 1 if fail else 0
 
     orig_run_gh = gh_task.run_gh
@@ -11004,7 +11460,9 @@ def main() -> int:
         _load_checks(t, cache_tmp_dir)
         _progress_checks(t, cache_tmp_dir)
         _feature_checks(t, cache_tmp_dir)
+        _settings_checks(t, cache_tmp_dir)
     finally:
+        restore_settings()
         gh_task.run_gh = orig_run_gh
         gh_task.PROJECT_NUMBER_OVERRIDE = orig_override
         gh_task.FIELDS_CACHE = orig_cache_path

@@ -91,7 +91,7 @@ branch="$(jqf '.workspace.repo.branch')"
 [ -n "$branch" ] || branch="-"
 
 
-# mode: 解決順は harness_mode (env HC_MODE > プロジェクトの mode.yml > ホームの mode.yml > normal)。
+# mode: 解決順は harness_mode (HC_MODE > env TKM_HARNESS_MODE > settings の file の env > mode.yml [予備。プロジェクト > ホーム] > normal)。
 # SessionStart (hooks/session-start.sh) と /config も同じ関数を通す。ここで独自に解決しない。
 # 表示は「正式名（解説）」に整える (未知の値はそのまま出す)。色は補助で、文字だけでも区別できる。
 if command -v harness_mode >/dev/null 2>&1; then
