@@ -148,6 +148,8 @@ Claude Code で次の 2 行を順に実行します。
 
 **効く順（上が先）**: ① シェルの一時の上書き（`HC_MODE`・`HC_AUTO_SYNC`・`HC_TASKS`・`HC_WORKTREE`・`HC_NOTIFY`・`HIRAI_TASK_PROJECT`・`HIRAI_TASK_REPO`） → ② 環境変数 `TKM_HARNESS_<項目>`（Claude Code の中では `settings.local.json` > `settings.json` の `env` が重なって届きます） → ③ settings の file の `env`（本体の checkout の `settings.local.json` → toplevel の `settings.local.json` → toplevel の `settings.json` → `~/.claude/settings.json`。Claude Code の外の端末・CI と、②が空のときに読みます） → ④ `.claude/mode.yml` の `<項目>:`（移行用の予備） → ⑤ 既定。保存すると同じ会話の次の Bash・hook から新しい値が効きます（消したときだけ、開き直すまで古い値が残ります）。
 
+**4 種だけ例外（project・repo・期限と本線の 4 つ・前夜の CI）**: 同じ会話から別のリポで打つと、②（会話のリポの値）が別のリポの Project を持ち込むため、①の次に③（**打ったリポ**の settings の file）を読み、②は使いません（file を読む python3 が無いときだけ②）。順は ①（`HIRAI_TASK_PROJECT`・`HIRAI_TASK_REPO`）→ ③ → ④（期限と本線・前夜の CI だけ） → ⑤。mode・auto_sync・tasks・worktree・notify は上の順のままです。
+
 ## やることの形と Orca の設定（`.claude/settings.json` の `env`）
 
 効かせる機能は、各リポの `.claude/settings.json` の `env` の 3 項目で選びます。**自動では見分けません**（会話の開始時の 1 行目に、版と今の値が出ます。例: `tkm-harness v<版>・tasks: ledger・worktree: off・notify: off`）。変えるときは `/tkm-harness:config`（項目 8。`env` の 1 つのキーだけを書きます）。プラグインがプロジェクトの `settings.json` から読めるのは `env` だけです（[公式: settings の env](https://code.claude.com/docs/en/settings-reference.md#env)）。
@@ -197,7 +199,7 @@ Claude Code で次の 2 行を順に実行します。
 | `hirai-task today` の `nightly_ci` の 1 行 | `.claude/settings.json` の `env` `TKM_HARNESS_NIGHTLY_CI`（予備: `.claude/mode.yml` の `nightly_ci: <workflow のファイル名>`）があるときだけ、`gh run list --event schedule -L 1` の結果を先頭に 1 行出す |
 | `scripts/ghp-path.sh` | 件数の控え（`~/.claude/plugins/data/tkm-harness-tkm-harness/`）を読み書きするシェル関数 |
 
-- 確かめるのは `bash tests/smoke-tasks.sh`（タスク管理の機能と進みの表の入れ方の 12 case）
+- 確かめるのは `bash tests/smoke-tasks.sh`（タスク管理の機能と進みの表の入れ方の 13 case）
 - 全体の進みに期限の行や本線の印を出すときは、`.claude/settings.json` の `env`（`TKM_HARNESS_LOAD_DEADLINE`・`TKM_HARNESS_LOAD_DEADLINE_LABEL`・`TKM_HARNESS_LOAD_MAINLINE`・`TKM_HARNESS_LOAD_MAINLINE_LABEL`）に書く（予備: `.claude/mode.yml` の `load_deadline`・`load_deadline_label`・`load_mainline`・`load_mainline_label`。`env` が先。書き方は `skills/github-project/SKILL.md`）
 - 夜間に回す CI の赤を見逃さないときは、`.claude/settings.json` の `env` に `TKM_HARNESS_NIGHTLY_CI=ci.yml`（workflow のファイル名。予備: `.claude/mode.yml` の `nightly_ci: ci.yml`）を足す。`hirai-task today` の先頭に、その workflow の直近の schedule の run の結果を 1 行出す。空か無ければ何も出さず gh も呼ばない
 
@@ -354,7 +356,7 @@ GitHub Project でやることを管理するリポでは、**着手の承認は
 | 3 | Claude Code を閉じて開き直す | ここで入れ替えが実際に効きます |
 | 4 | `/tkm-harness:update` | プロジェクト側にコピーされているスクリプトを最新にし、旧版で `.claude/` に作った書類を `docs/` へ移します |
 
-**4 を飛ばすと、画面下部の表示が古いままになります。** ステップ 1〜3 で新しくなるのはコマンド・自動処理・エージェント・外部ツール接続だけで、`/tkm-harness:init` のときにプロジェクトへ**コピーされた**ファイル（画面下部の表示スクリプトなど）は、その場に残った古いコピーのままだからです。
+**4 を飛ばすと、画面下部の表示が古いままになります。**（auto_sync が `off` の導入先で 4.0.0 の写しのまま 4.1.0 に上げたときも、`/tkm-harness:config` で mode を変えたあと、画面下は `/tkm-harness:update` で写しを入れ替えるまで `mode.yml` の古い値を出します。4.0.0 の写しは `TKM_HARNESS_MODE` を読みません。） ステップ 1〜3 で新しくなるのはコマンド・自動処理・エージェント・外部ツール接続だけで、`/tkm-harness:init` のときにプロジェクトへ**コピーされた**ファイル（画面下部の表示スクリプトなど）は、その場に残った古いコピーのままだからです。
 
 ステップ 4 が入れ替えるのは、あなたが編集する前提でない 3 本（`statusline.sh` / `tasks-path.sh` / `context-usage.sh`）だけです。手を入れていた場合は、元の内容を `.bak` という名前で残してから入れ替えます。**決まりごと（ルール）・安全設定・mode（進め方）の設定・やること（GitHub の issue と Project。台帳の形のリポでは list.md）には触りません。**
 
@@ -682,7 +684,7 @@ tkm-harness は、そのまま fork して自分の owner で配れるように�
 | `scripts/` | hook / statusline が source する共通ライブラリ（パス解決 `tasks-path.sh` / context 使用率 `context-usage.sh` / 更新検知 `update-check.sh` / GitHub Project の控え `ghp-path.sh`）+ `hirai-task` の部品（`hirai_*.py`）+ `/init` の二重ロード検査 |
 | `templates/` | `settings.json` / `mode.yml` / `CLAUDE.md` / draft / `pull_request_template.md`（PR の本文の 4 種別の型。`/init` が導入先の `.github/` に、無ければ置く）の雛形（`CLAUDE.md` は `/init` が導入先へ置く。プラグイン直下に置くと `validate --strict` が警告するため `templates/` に置いている） |
 | `tests/smoke.sh` | 自己検証 10 case（予算監査を含む。hook 6 / skill 3 / case 10 の上限も case 6 が見る。command は数だけ出す） |
-| `tests/smoke-tasks.sh` | タスク管理の機能（`hirai-task`・`ghp-path.sh`・`coordinator-load.sh`）の自己検証 12 case |
+| `tests/smoke-tasks.sh` | タスク管理の機能（`hirai-task`・`ghp-path.sh`・`coordinator-load.sh`）の自己検証 13 case |
 | `CHANGELOG.md` | 版ごとの変更点。v0.6.0 以前の既知の不具合もここに記録 |
 | `CONTRIBUTING.md` | 開発の進め方。**`main` 1 本で配る**（プラグイン `tkm-harness` 1 つ。旧 `hirai-lite` の `v2` は凍結） |
 
