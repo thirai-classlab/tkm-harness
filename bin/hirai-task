@@ -42,6 +42,8 @@ hirai-task — リポに紐づいた GitHub Project のタスクを読み書き�
   設定の読みは 1 本の順: 一時の上書き > 環境変数 `TKM_HARNESS_<項目>` > settings の file の env
   （本体の checkout の settings.local.json → このリポの settings.local.json → settings.json →
   ~/.claude/settings.json）> mode.yml（予備。project・repo は読まない）> 空。Project の owner を別に持たない。
+  ただし project・repo・load_*（期限と本線の 4 つ）・nightly_ci の 4 種は環境変数を読まず、
+  打ったリポの settings の file を先に読む（別のリポの会話の値を持ち込まないため。TKS-R1.3）。
 
   一覧の頁ごとの問い合わせ（ITEMS_QUERY）は fieldValues だけを引き、blockedBy と
   closingIssuesReferences を持たない。この 2 つは点数式（各 connection の要求数は
@@ -294,7 +296,7 @@ def _repo_from_git_remote() -> str:
         )
     except Exception:
         return ''
-    match = re.search(r'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$', proc.stdout.strip())
+    match = re.search(r'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/*$', proc.stdout.strip())
     return f'{match.group(1)}/{match.group(2)}' if match else ''
 
 
@@ -5873,15 +5875,21 @@ def _settings_files() -> list[str]:
 _HC_KEYS = ('mode', 'auto_sync', 'tasks', 'worktree', 'notify', 'load_on_start')  # 一時の上書き HC_<KEY>
 _TEMP_OVERRIDES = {'project': 'HIRAI_TASK_PROJECT', 'repo': 'HIRAI_TASK_REPO'}  # 一時の上書きの別名
 _NO_MODE_YML_KEYS = ('project', 'repo')  # mode.yml に項目が無い
+# 4 種（project・repo・load_*・nightly_ci）は、環境変数を使わず対象のリポの settings の file を先に読む（TKS-R1.3）。
+# 環境変数は Claude Code が会話のリポの settings から入れた値で、別のリポで打つと別のリポの Project を持ち込むため。
+_FILE_FIRST_KEYS = ('project', 'repo', 'load_deadline', 'load_deadline_label', 'load_mainline', 'load_mainline_label', 'nightly_ci')
 
 
 def _harness_setting_source(key: str) -> tuple[str, str]:
     """設定 1 項目の (値, どこから読んだか) を、土台の harness_setting と同じ順に引く:
     一時の上書き（HC_<KEY>・HIRAI_TASK_PROJECT・HIRAI_TASK_REPO）> 環境変数 TKM_HARNESS_<KEY> >
     settings の file の env > mode.yml（予備。project・repo は無い。load_* はプロジェクトだけ）。無ければ ('', '')。
+    ただし _FILE_FIRST_KEYS の 4 種は環境変数を読まない（一時の上書き > 対象のリポの settings の file > mode.yml。TKS-R1.3）。
     値の前後の空白は外す。mode.yml が読めないときは RuntimeError。"""
     up = key.upper()
-    names = (['HC_' + up] if key in _HC_KEYS else []) + ([_TEMP_OVERRIDES[key]] if key in _TEMP_OVERRIDES else []) + ['TKM_HARNESS_' + up]
+    names = (['HC_' + up] if key in _HC_KEYS else []) + ([_TEMP_OVERRIDES[key]] if key in _TEMP_OVERRIDES else [])
+    if key not in _FILE_FIRST_KEYS:
+        names.append('TKM_HARNESS_' + up)
     for name in names:
         value = os.environ.get(name, '').strip()
         if value:
@@ -5892,6 +5900,8 @@ def _harness_setting_source(key: str) -> tuple[str, str]:
                 value = ((json.load(f) or {}).get('env') or {}).get('TKM_HARNESS_' + up)
         except (OSError, ValueError, AttributeError):
             continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)  # 数値で書かれた値（"TKM_HARNESS_PROJECT": 7）は文字列にして読む（TKS-R1.2）
         if isinstance(value, str) and value.strip():
             return value.strip(), f'{path} の env の TKM_HARNESS_{up}'
     if key in _NO_MODE_YML_KEYS:

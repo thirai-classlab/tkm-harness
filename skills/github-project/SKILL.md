@@ -60,7 +60,7 @@ description: GitHub Project でやること（wave・feature・task の issue �
 - **担当の列**: 自分の作業のセッションの名前と順番は手元の控え（git の管理ディレクトリの下の `hirai-task/load-assign.json`）から、ほかの人の行は GitHub の Assignees の名前から出す（Project に「担当」の項目は足さない）。閉じた task は割り振りの順番の後ろの 3 つだけ
 - **進行中・レビュー中なのに担当の居ないもの**: 手元の控えに名前が無く、ほかの人だけの Assignees でもない 進行中・レビュー中の task（Assignees が自分だけの行も入る。ほかの開発者の開いている PR がある行は「ほかの開発者の PR」に出す）。残さない
 - **ほかの開発者の PR**: 割り振りもほかの人の Assignees も無い open の task を閉じる、自分でない人の開いている PR
-- 期限の行・本線の印は、設定があるときだけ出る。置き場は `.claude/settings.json` の `env`（読む順は 環境変数 > settings の file > そのリポの `.claude/mode.yml`。ホームの mode.yml は読まない）:
+- 期限の行・本線の印は、設定があるときだけ出る。置き場は `.claude/settings.json` の `env`（読む順は settings の file（打ったリポの。環境変数は読まない）> そのリポの `.claude/mode.yml`。ホームの mode.yml は読まない）:
 
 ```json
 {"env": {
