@@ -2138,7 +2138,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             with with_orca(trees, 'sleep'):
                 owners = owners_of(model_of())
             spent = time.monotonic() - started
-            assert owners == baseline and spent < 8, f'時間切れで load が止まった/控えに落ちない（{spent:.1f} 秒）'
+            assert owners == baseline and spent < 4, f'時間切れで load が止まった/控えに落ちない（{spent:.1f} 秒）'
         t('TKS-R6.1 load: orca が無い・exit 1・壊れた JSON・眠る（3 秒で切る）ときは控えだけの表で、load は止まらない', _orca_fallback_to_saved)
 
         def _feature_rows_from_orca() -> None:
