@@ -97,7 +97,7 @@ f="$(harness_settings_set mode normal "$PWD")" && echo "変えたファイル: $
 # 確かめは保存した file の値を読む。保存した値が会話の環境変数に入るのは次の Bash から (設計メモ F4) なので、この Bash の harness_mode は開く前の値を出す
 m="$(env -u TKM_HARNESS_MODE bash -c '. "$0/scripts/tasks-path.sh"; harness_mode "$PWD"' "$P")"; echo "$m"   # HC_MODE を打ったシェルでは、その値が先に出る
 y="$(harness_yml_value "$PWD" mode)"; [ -z "$y" ] || [ "$y" = "$m" ] || echo "mode.yml の mode: は $y のまま（settings が先に効きます）"
-D="$(dirname "$(harness_rules_dir "$PWD")")"; [ -f "$D/tasks-path.sh" ] && ! grep -q '_harness_item_up' "$D/tasks-path.sh" && echo "画面下の表示は、/tkm-harness:update で写しを入れ替えるまで古い値（mode.yml の値）のままです"
+D="$(dirname "$(harness_rules_dir "$PWD")")"; if [ -f "$D/tasks-path.sh" ] && ! grep -q '_harness_item_up' "$D/tasks-path.sh"; then echo "画面下の表示は、/tkm-harness:update で写しを入れ替えるまで古い値（mode.yml の値）のままです"; fi
 ```
 
 報告書式: `normal（確認あり）にしました → <パス>。重要な分かれ道でひとこと確認してから進みます` ／ `loop（自動で進む）にしました → <パス>。確認を求めず最後まで進みます。止めたいときは「stop」`。書き込み先が `~/.claude/` の下だったときだけ 1 行足す: `この設定はすべてのプロジェクトに効きます`（mode はふつうホームに書かないので出ない）。worktree の会話から本体の checkout の settings.local.json に書いたときは 1 行足す: `本体と全部の作業ツリーに効きます`。`mode.yml` の値が違って残っているときは、上の最後の行を 1 行で知らせる。保存すると同じ会話の次の Bash・hook から新しい値が効く（開き直しは要らない。同じ Bash の中の確かめは、上のとおり file の値を読む）。画面下の表示が古い値のままだと上の最後の 1 行が出る（4.0.0 の写しは `TKM_HARNESS_MODE` を読まないため。`/tkm-harness:update` で直る）ので、そのまま利用者に伝える。

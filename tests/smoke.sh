@@ -1305,7 +1305,32 @@ if [ -x /bin/zsh ]; then
   zr -- harness_settings_migrate "$P" >/dev/null
   chk tks-zsh-migrate "loop/on/0" "$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_MODE"])' "$P/.claude/settings.local.json" 2>/dev/null)/$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["env"]["TKM_HARNESS_AUTO_SYNC"])' "$P/.claude/settings.json" 2>/dev/null)/$(wc -c < "$ze" | tr -d ' ')"
   rm_cfg
+  # /config の 1・7-b・8 が zsh で打つ harness_settings_set（local path を足すと zsh では PATH が空になり書けない）
+  zo="$(zr -- harness_settings_set worktree warn "$P")"; zrc=$?
+  zo2="$(zr -- harness_settings_set mode loop "$P")"; zrc2=$?
+  chk tks-zsh-set "0/0/1/1/0" "$zrc/$zrc2/$(grep -c '"TKM_HARNESS_WORKTREE": "warn"' "$P/.claude/settings.json" 2>/dev/null)/$(grep -c '"TKM_HARNESS_MODE": "loop"' "$P/.claude/settings.local.json" 2>/dev/null)/$(wc -c < "$ze" | tr -d ' ')"
+  rm_cfg
 fi
+
+# /config の 1（mode）の塊（commands/config.md）は、画面下の写しが新しい・古い・無いのどれでも exit 0 で終わる
+# （最後の行が && の連鎖の偽で終わると、書けているのに Bash ツールが失敗と返す）。塊は config.md から取り出して回す
+python3 -I - "$ROOT_T/commands/config.md" > "$T/cfg-mode-block.sh" <<'PYX'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"### 1\. mode.*?```bash\n(.*?)```", s, re.S)
+print(m.group(1) if m else "exit 99")
+PYX
+mkdir -p "$T/cfgd-new" "$T/cfgd-old" "$T/cfgd-none"
+cp "$S/scripts/tasks-path.sh" "$T/cfgd-new/tasks-path.sh"; grep -v '_harness_item_up' "$S/scripts/tasks-path.sh" > "$T/cfgd-old/tasks-path.sh"
+cfg_block() { # cfg_block <写しを置いた dir> <shell> -> exit code と出力の行数
+  local out rc; rm -f "$P/.claude/settings.local.json"
+  out="$(run_in "$P" CLAUDE_PLUGIN_ROOT="$S" HARNESS_RULES_DIR="$1/rules" TKM_HARNESS_MODE= "$2" -c 'eval "$(cat "$0")"' "$T/cfg-mode-block.sh" 2>&1)"; rc=$?
+  printf '%s/%s' "$rc" "$(printf '%s\n' "$out" | grep -c '古い値')"
+}
+rm_cfg
+chk tks-config-exit "0/0 0/1 0/0" "$(cfg_block "$T/cfgd-new" bash) $(cfg_block "$T/cfgd-old" bash) $(cfg_block "$T/cfgd-none" bash)"
+if [ -x /bin/zsh ]; then chk tks-config-exit-zsh "0/0 0/1 0/0" "$(cfg_block "$T/cfgd-new" /bin/zsh) $(cfg_block "$T/cfgd-old" /bin/zsh) $(cfg_block "$T/cfgd-none" /bin/zsh)"; fi
+rm_cfg
 
 # --- 雛形 ---
 chk hm-template "0/1" "$(grep -cE '^(tasks|worktree|notify):' "$ROOT_T/templates/mode.yml" 2>/dev/null || true)/$([ "$(grep -c 'TKM_HARNESS_TASKS' "$ROOT_T/templates/mode.yml")" -ge 1 ] && echo 1 || echo 0)"
@@ -1497,6 +1522,8 @@ tks-migrate-lines|scripts/tasks-path.sh|s/for item in mode auto_sync load_deadli
 tks-zsh-mode|scripts/tasks-path.sh|s/v="\$(_harness_trim "\$(_harness_getenv "\$hc")")"/v="$(_harness_trim "${!hc:-}")"/
 tks-zsh-setting|scripts/tasks-path.sh|s/then v="\$(_harness_trim "\$(_harness_getenv "\$env")")"; fi$/then v="${!env}"; fi/
 tks-zsh-migrate|scripts/tasks-path.sh|s/wrote_to/path/g
+tks-zsh-set|scripts/tasks-path.sh|s/^  local item="\${1:-}" val="\${2:-}" root top up f$/  local item="${1:-}" val="${2:-}" root top up f path/
+tks-config-exit|commands/config.md|/^D=/{s/; if \[ -f "\$D\/tasks-path.sh" \] \&\& ! grep -q '_harness_item_up' "\$D\/tasks-path.sh"; then echo /; [ -f "$D\/tasks-path.sh" ] \&\& ! grep -q '_harness_item_up' "$D\/tasks-path.sh" \&\& echo /;s/; fi$//;}
 X
       ;;
     worktrees)
