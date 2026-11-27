@@ -388,8 +388,8 @@ case_9() {
   local bad d m
   bad="$(check9 "$ROOT")"
   [ -z "$bad" ] || { fail 9 "is-coordinator は親がいるかで決まる" "$bad"; return; }
-  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e" "$d/f"
-  for m in a b c d e f; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
+  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c"
+  for m in a b c; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
   sed "s|cursor = page.get('nextCursor') or ''|cursor = ''|" "$ROOT/bin/hirai-task" > "$d/a/bin/hirai-task"
   sed "s|^ROLE_LIMIT_SECONDS = 2 |ROLE_LIMIT_SECONDS = 60 |" "$ROOT/bin/hirai-task" > "$d/b/bin/hirai-task"
   python3 -I - "$ROOT/bin/hirai-task" "$d/c/bin/hirai-task" <<'PY'
@@ -450,8 +450,8 @@ case_10() {
   local bad d m
   bad="$(check10 "$ROOT")"
   [ -z "$bad" ] || { fail 10 "hirai-notify の note・comment・親の判定" "$bad"; return; }
-  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c" "$d/d" "$d/e" "$d/f"
-  for m in a b c d e f; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
+  d="$(mk)"; mkdir -p "$d/a" "$d/b" "$d/c"
+  for m in a b c; do cp -R "$ROOT/bin" "$ROOT/scripts" "$d/$m/"; done
   sed 's|^  if \[ "\$role" = "coordinator" \]; then|  if false; then|' "$ROOT/bin/hirai-notify" > "$d/a/bin/hirai-notify"
   sed 's|^  worktree_comment "完了報告済み"|  true|' "$ROOT/bin/hirai-notify" > "$d/b/bin/hirai-notify"
   sed 's|^NOTE_MAX_CHARS=60|NOTE_MAX_CHARS=600|' "$ROOT/bin/hirai-notify" > "$d/c/bin/hirai-notify"
