@@ -417,6 +417,10 @@ harness_setting_from_yml_only() {
     # 4 種は環境変数を使わない (python3 が無いときだけ使う。harness_setting と同じ)
     if _harness_item_file_first "$item" && command -v python3 >/dev/null 2>&1; then :; else [ -z "$(_harness_getenv "$env")" ] || continue; fi
     [ -z "$(_harness_file_setting "$item" "$root")" ] || continue
+    if [ "$item" = tasks ]; then   # パッケージの tasks: は harness_settings_migrate が移さない (toplevel の env が先に効くため) ので数えない
+      _harness_yml_candidates "$root" tasks
+      if [ -n "$_HY_PKG" ] && [ "$_HY_PKG" != "$(harness_top "$root")/.claude/mode.yml" ] && [ -n "$(harness_yml_file_value "$_HY_PKG" tasks)" ]; then continue; fi
+    fi
     [ -z "$(_harness_yml_project_value "$root" "$item")" ] || out="${out:+$out }$item"
   done
   printf '%s' "$out"
@@ -598,7 +602,7 @@ harness_settings_migrate() {
       _harness_yml_after_set "$item" "$cur" "$root"
       case "$item" in
         worktree) printf '%s: settings の env に %s が在るため、mode.yml の行だけ消しました\n' "$item" "$cur" ;;
-        *) printf '%s: settings の env に %s が在るため、mode.yml の値をそろえました (hirai-task が mode.yml を読むので行は残します)\n' "$item" "$cur" ;;
+        *) printf '%s: settings の env に %s が在るため、mode.yml の値をそろえました (mode.yml の行は settings を読まない古い会話・写しの予備に残しました)\n' "$item" "$cur" ;;
       esac
       continue
     fi

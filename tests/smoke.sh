@@ -1109,6 +1109,8 @@ K="$T/K"; git init -q "$K"; mkdir -p "$K/.claude" "$K/apps/api/.claude"
 printf 'tasks: ledger\n' > "$K/.claude/mode.yml"; printf 'tasks: github-project\n' > "$K/apps/api/.claude/mode.yml"
 fn "$K/apps/api" -- harness_settings_migrate "$K/apps/api" >/dev/null
 chk hm-migrate-package "github-project/ledger" "$(fn "$K/apps/api" -- harness_tasks_form "$K/apps/api")/$(fn "$K" -- harness_tasks_form "$K")"
+# 移さないパッケージの tasks: は、開始時の移行の案内にも数えない（案内が消えなくならない）
+chk hm-yml-only-package "" "$(fn "$K/apps/api" -- harness_setting_from_yml_only "$K/apps/api")"
 # 設定を書いたあとも tasks: は mode.yml と env が同じ値になる
 chk hm-set-sync "ledger" "$(fn "$K/apps/api" -- harness_settings_set tasks ledger "$K/apps/api" >/dev/null 2>&1; fn "$K/apps/api" -- harness_yml_file_value "$K/apps/api/.claude/mode.yml" tasks)"
 # orca-context は settings の env だけの worktree: warn を言う
@@ -1475,6 +1477,7 @@ hm-claudecode|scripts/tasks-path.sh|s/^  if \[ -z "\$v" \]; then   # Claude Code
 hm-nopython|scripts/tasks-path.sh|s/^  command -v python3 >\/dev\/null 2>\&1 || return 0$/  command -v python3 >\/dev\/null 2>\&1 || { printf zzz; return 0; }/
 hm-migrate-keep-tasks|scripts/tasks-path.sh|s/^      tasks|notify)$/      zzz)/
 hm-migrate-package|scripts/tasks-path.sh|s/if \[ "\$item" = tasks \] \&\& \[ -n "\$v" \] \&\& .*; then/if false; then/
+hm-yml-only-package|scripts/tasks-path.sh|s/^    if \[ "\$item" = tasks \]; then   # パッケージの tasks:/    if false; then   # パッケージの tasks:/
 hm-guard-linked-main|hooks/worktree-guard.sh|s/^      linked_main_blocks "\$d" \&\& return 0$/      :/
 hm-orca-context|scripts/orca-context.sh|s/^if \[ -f "\$here\/tasks-path.sh" \]/if false \&\& [ -f "$here\/tasks-path.sh" ]/
 hm-main-local|scripts/tasks-path.sh|s/^  \[ "\${common##\*\/}" = ".git" \] \&\& printf .*$/  :/
