@@ -38,6 +38,7 @@ merged_into:
 - heyapro-app の `scripts/gh-task.sh` の扱い（A 今のまま／B 薄い入口にして残す／C なくす）に「B」
 - 「`hirai-task assign` が feature を受け付けない」穴に「#2052に含めて対応して下さい。」
 - 振り出しのあとに進みの表が出なかった件（AI が出力を切り、出し忘れた）に「仕組みで解決しておいて下さい。」
+- 2026-11-27、会話のリポの env が別のリポで打った hirai-task にも効く件（案 A: 4 種だけ対象のリポの settings の file を先に／B: 今のまま・手順で env -u／C: 全項目で file を先に）に「A」
 
 ## 2. 確かめた事実（Claude Code 2.1.312）
 
@@ -64,7 +65,8 @@ F4 から、`/tkm-harness:config` で settings の file に書いた値は、開
   3. settings の file の `env.TKM_HARNESS_<項目>`: 本体の checkout の settings.local.json → toplevel の settings.local.json → toplevel の settings.json → `~/.claude/settings.json`（F5 と同じ向き。Claude Code の外の端末・CI と、2 が空のときに読む）
   4. `.claude/mode.yml` の `<項目>:`（mode・auto_sync・tasks・worktree・notify・load_*・nightly_ci。project・repo は無い）
   5. 既定
-- TKS-R1.2 値の前後の空白は外す。許す値の決まった項目（mode・auto_sync・tasks・worktree・notify）で知らない値は、読む側が今までどおり扱う（mode は値をそのまま見せ、ほかは既定に倒す）
+- TKS-R1.3 例外（テックリード 2026-11-27「A」）: `project`・`repo`・`load_*`（期限と本線の 4 つ）・`nightly_ci` の 4 種は、1 の次に 3（**打った作業ツリーのリポ**の settings の file）を読み、2（環境変数）を使わない。file を読む手段が無いとき（tasks-path.sh で python3 が無い）だけ 2 を読む。Claude Code が環境変数に入れる値は会話のリポのもので、同じ会話から別のリポで打つと別のリポの Project を持ち込むため。Claude Code の Bash ツールには `CLAUDE_PROJECT_DIR` が入らず、env だけでは会話のリポか見分けられない（2026-11-27 に有無だけ確かめた）。同じリポでは 2 と 3 は同じ file を重ねた値なので変わらない（違うのは会話の途中で key を消したとき。3 が正しい）。mode・auto_sync・tasks・worktree・notify・load_on_start は 1 > 2 > 3 のまま
+- TKS-R1.2 値の前後の空白は外す。settings の file の値は文字列と、bool でない整数（文字列にして読む）を受ける。許す値の決まった項目（mode・auto_sync・tasks・worktree・notify）で知らない値は、読む側が今までどおり扱う（mode は値をそのまま見せ、ほかは既定に倒す）
 
 ### 要件 TKS-R2: 項目と置き場
 
