@@ -5902,6 +5902,9 @@ def _harness_setting_source(key: str) -> tuple[str, str]:
             continue
         if isinstance(value, int) and not isinstance(value, bool):
             value = str(value)  # 数値で書かれた値（"TKM_HARNESS_PROJECT": 7）は文字列にして読む（TKS-R1.2）
+        elif value is not None and not isinstance(value, str) and key in _NO_MODE_YML_KEYS:
+            # 7.0・true・[7] は黙って捨てず、そのままの文字で返す。project・repo の形の検査（_require_repo・discover_project_number）が exit 2 で断る
+            return json.dumps(value, ensure_ascii=False), f'{path} の env の TKM_HARNESS_{up}（文字列か整数で書く）'
         if isinstance(value, str) and value.strip():
             return value.strip(), f'{path} の env の TKM_HARNESS_{up}'
     if key in _NO_MODE_YML_KEYS:
@@ -6062,7 +6065,7 @@ def fetch_deadline_open(date: str) -> int | None:
 
 def _load_settings(prs: dict | None, *, network: bool) -> dict:
     """設定の load_deadline（YYYY-MM-DD）・load_deadline_label・load_mainline・load_mainline_label
-    （環境変数 TKM_HARNESS_LOAD_*、無ければ settings の file の env、無ければプロジェクトの mode.yml。_harness_setting の順）。
+    （環境変数 TKM_HARNESS_LOAD_* は読まず、打ったリポの settings の file の env、無ければプロジェクトの mode.yml。TKS-R1.3 の順。_harness_setting と同じ）。
     無い設定は空にして、その行・印を出さない。日付の形が違う・mode.yml を読めないときは、標準エラーに 1 行で期限の行を出さない。"""
     settings = {'deadline_date': '', 'deadline_label': '期限', 'deadline_open': None, 'mainline': '', 'mainline_label': '本線'}
     try:

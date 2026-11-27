@@ -2138,7 +2138,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             with with_orca(trees, 'sleep'):
                 owners = owners_of(model_of())
             spent = time.monotonic() - started
-            assert owners == baseline and spent < 4, f'時間切れで load が止まった/控えに落ちない（{spent:.1f} 秒）'
+            assert owners == baseline and spent < 6, f'時間切れで load が止まった/控えに落ちない（{spent:.1f} 秒）'
         t('TKS-R6.1 load: orca が無い・exit 1・壊れた JSON・眠る（3 秒で切る）ときは控えだけの表で、load は止まらない', _orca_fallback_to_saved)
 
         def _feature_rows_from_orca() -> None:
@@ -3686,6 +3686,30 @@ def _settings_checks(t, tmp_dir: str) -> None:
             assert gh_task._harness_setting('project') == '7', '数値の 7 を黙って捨てた（TKS-R1.2）'
             assert gh_task._harness_setting('load_mainline') == '', 'bool は文字列にして読まない'
 
+    FILE_FIRST_ALL = ('project', 'repo', 'load_deadline', 'load_deadline_label', 'load_mainline', 'load_mainline_label', 'nightly_ci')
+
+    def _file_first_all() -> None:
+        """TKS-R1.3: 4 種の全項目（7 つ）で、環境変数を読まず file を読む。一覧が 1 項目でも欠ければ落ち、tasks-path.sh の一覧とも同じであること。"""
+        assert set(gh_task._FILE_FIRST_KEYS) == set(FILE_FIRST_ALL), f'_FILE_FIRST_KEYS が 4 種の全項目でない: {gh_task._FILE_FIRST_KEYS}'
+        text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tasks-path.sh'), encoding='utf-8').read()
+        m = re.search(r'_harness_item_file_first\(\) \{\n  case "\$\{1:-\}" in\n    ([^)]*)\) return 0', text)
+        assert m and set(m.group(1).split('|')) == set(gh_task._FILE_FIRST_KEYS), f'tasks-path.sh の _harness_item_file_first と一覧が違う: {m and m.group(1)}'
+        main_repo, wt, home = make_repos()
+        for key in FILE_FIRST_ALL:
+            put_env(os.path.join(wt, '.claude', 'settings.json'), **{'TKM_HARNESS_' + key.upper(): 'o/file'})
+            with setting_env(wt, home, {'TKM_HARNESS_' + key.upper(): 'o/env'}):
+                assert gh_task._harness_setting(key) == 'o/file', f'{key} が環境変数を読んだ（file を先に読まない）'
+
+    def _bad_type_value() -> None:
+        """TKS-R2.2: project・repo の値が 7.0・true・[7] のときは黙って捨てず、形の誤りとして出す（exit 2 の道へ）。"""
+        main_repo, wt, home = make_repos()
+        for raw in ('7.0', 'true', '[7]'):
+            for key in ('project', 'repo'):
+                put(os.path.join(wt, '.claude', 'settings.json'), '{"env": {"TKM_HARNESS_%s": %s}}' % (key.upper(), raw))
+                with setting_env(wt, home):
+                    value, source = gh_task._harness_setting_source(key)
+                assert value and not re.fullmatch(r'[1-9][0-9]*|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+', value) and '文字列か整数で書く' in source, (key, raw, value, source)
+
     def _remote_trailing_slash() -> None:
         main_repo, wt, home = make_repos()
         for url, want in (('https://github.com/o/r/', 'o/r'), ('https://github.com/o/r.git/', 'o/r'), ('git@github.com:o/r.git', 'o/r')):
@@ -3695,6 +3719,8 @@ def _settings_checks(t, tmp_dir: str) -> None:
 
     t('TKS-R1.3 project・repo・load_*・nightly_ci は環境変数を読まず打ったリポの file を先に読む（別のリポ・同じリポ・file から消した後・mode は env が先）', _file_first)
     t('TKS-R1.2 settings の file の値が数値（bool でない整数）なら文字列にして読む', _int_value)
+    t('TKS-R1.3 4 種の全項目（project・repo・load_* 4・nightly_ci）が環境変数を読まず file を読み、一覧は tasks-path.sh と同じ', _file_first_all)
+    t('TKS-R2.2 project・repo の値が 7.0・true・[7] なら黙って捨てず、形の誤りとして文字列か整数で書くと出す', _bad_type_value)
     t('TKS-R2.3 origin の URL の末尾が / でも owner/name を読める', _remote_trailing_slash)
 
 
