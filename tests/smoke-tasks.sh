@@ -86,8 +86,22 @@ case_4() {
 
 # case 5: hirai-task line の出し分け (実物の ghp-path.sh と偽の HOME・偽の gh)
 #   控え無し=空 / 控えあり=1 行 / 引数なしは gh を呼ばない / --refresh は背景で gh を呼ぶ / form が ghp でない=空
+# check5b <scripts のある dir>: 設定の Project の番号（settings.json の env）があれば projectsV2 を打たず、番号から引いて form=ghp にする
+check5b() {
+  local sd="$1" h r bin log f
+  h="$(mk)"; r="$(mk)"; bin="$(mk)"; log="$h/gh-log"
+  git -C "$r" init -q && git -C "$r" remote add origin https://github.com/acme/widgets.git
+  mkdir -p "$r/.claude"; printf '%s\n' '{"env":{"TKM_HARNESS_PROJECT":"7"}}' > "$r/.claude/settings.json"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncase "$*" in *"projectV2(number"*) echo PVT_abc ;; esac\nexit 0\n' "$log" > "$bin/gh"; chmod +x "$bin/gh"
+  HOME="$h" PATH="$bin:$PATH" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_refresh now \"$r\"" >/dev/null 2>&1
+  f="$(HOME="$h" bash -c ". \"$sd/ghp-path.sh\"; harness_ghp_cache_file \"$r\"")"
+  [ -f "$log" ] || { printf '%s' "gh を 1 回も呼ばない"; return; }
+  ! grep -q 'projectsV2' "$log" || { printf '%s' "設定の Project の番号があるのに projectsV2 を打った"; return; }
+  grep -q 'projectV2(number' "$log" || { printf '%s' "番号から Project を引く問い合わせを打たない"; return; }
+  grep -q '"form": *"ghp"' "$f" && grep -q 'PVT_abc' "$f" && grep -Eq '"project_number": *"?7' "$f" || printf '%s' "form=ghp・id・番号 7 を控えに書かない($(tr '\n' ' ' < "$f" 2>/dev/null | head -c 200))"
+}
 case_5() {
-  local h r bin calls out i
+  local h r bin calls out i d
   h="$(mk)"; r="$(mk)"; bin="$(mk)"; calls="$h/gh-calls"
   git -C "$r" init -q && git -C "$r" remote add origin https://github.com/acme/widgets.git
   printf '#!/usr/bin/env bash\necho call >> "%s"\nexit 1\n' "$calls" > "$bin/gh"; chmod +x "$bin/gh"
@@ -107,7 +121,13 @@ case_5() {
   # form が none なら出さない
   HOME="$h" bash -c ". \"$ROOT/scripts/ghp-path.sh\"; f=\"\$(harness_ghp_cache_file \"$r\")\"; harness_ghp_write_probe \"\$f\" none"
   out="$(run_line)"; [ -z "$out" ] || { fail 5 "form が ghp でなければ出さない" "out=$out"; return; }
-  pass 5 "line: 控え無し=空・控えあり=1 行・引数なしは gh 不使用・--refresh は背景で gh・form none=空"
+  # 設定の Project の番号があるとき（#1）。壊した写し（番号の分岐を外す）で FAIL する
+  out="$(check5b "$ROOT/scripts")"; [ -z "$out" ] || { fail 5 "設定の Project の番号で projectsV2 を飛ばす" "$out"; return; }
+  d="$(mk)"; mkdir -p "$d/scripts"; cp "$ROOT"/scripts/*.sh "$d/scripts/"
+  sed 's/if \[ -n "\$set_proj" \]; then$/if false; then/' "$ROOT/scripts/ghp-path.sh" > "$d/scripts/ghp-path.sh"
+  cmp -s "$ROOT/scripts/ghp-path.sh" "$d/scripts/ghp-path.sh" && { fail 5 "壊した写しを作れた" "sed が当たらず元と同じ"; return; }
+  [ -n "$(check5b "$d/scripts")" ] || { fail 5 "壊した写しで検査が FAIL する" "壊したのに通った"; return; }
+  pass 5 "line: 控え無し=空・控えあり=1 行・引数なしは gh 不使用・--refresh は背景で gh・form none=空・設定の Project の番号なら projectsV2 を打たない（壊した写しで FAIL）"
 }
 
 # case 6: 土台との境目 (土台の smoke が見る範囲の逆側) — 土台の source を要らず、ghp-path.sh が bash 3.2 の書き方 (連想配列なし)
