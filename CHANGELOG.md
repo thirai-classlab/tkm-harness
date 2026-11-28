@@ -4,6 +4,17 @@
 
 更新のしかたは [README の「更新する」](README.md#更新する既定では自動で新しくなりません)。**既定では自動更新しない**（v1.13.0 から opt-in で自動にできる）。
 
+## 4.3.0
+テックリードが 2026-11-28 に、進みの表を見ても「その task が誰の持ち物か」が分からないと指摘した（「いま動いている」は PR の作者と作業ツリーから読んでいて、GitHub Project の担当者〔Assignees〕が出ない。そのため AI のコーディネーターがほかの開発者の task を引き取りかけた）。「人からタスクは取らないで下さい」。案 A（4 つ全部）を承認。**担当者を表に出し、ほかの人が担当の task を AI の候補から外した**。
+
+- **担当の列**: 「次のタスク」の行の末尾に「誰の番」の右へ「担当」の列（無ければ「—」・複数なら「・」でつなぐ）。桁は見出しとそろう
+- **人ごとの段**: 「いま動いている」のあと・「あなたの番」の前に「人ごと（開いている task）」。担当者ごと（ほかの人 → 自分 → 担当なし）に状態（進行中・レビュー中・止まり〔CI 赤・衝突〕・判断待ち・人の作業・着手可・ほか）の順。PR があれば `（PR #n・CI 緑）` の段つき。状態ごとに 3 件までは 1 件 1 行、超えたら番号だけ先頭 3 件と「ほか N」。自分のアカウント（`gh` の今のユーザー。控えの PR の問い合わせが持つ `me`）の行は「AI の担当」（作業ツリーがある task）と「人の作業」に分ける。担当なしは状態ごとの数 1 行
+- **名前の対応表**: `TKM_HARNESS_PEOPLE`（`skawashimaclasslab-ai=川嶋,thirai-classlab=平井`）。環境変数 > settings の file の `env` の順（他の設定と同じ）。大文字小文字を分けず、対応表に無い人は GitHub の名前のまま。「いま動いている」のほかの開発者の行の右端も表示名にした
+- **ほかの人が担当の task を取らない**: `hirai-task ready` は、Assignees に自分以外が居て自分が居ない task を一覧から外し、末尾に `ほかの人が担当（取らない）: #n（川嶋）、…` の 1 行を出す。`start` は同じ task を `#n は <名前> が担当。取るなら --take` と断って exit 2（何も書かない）。`--take` を付けたときだけ通る。Assignees なし・自分が入っている task はこれまでどおり。自分のアカウントを引けないときは、`start` は断り、`ready` は外さずに標準エラーへ 1 行
+- **担当者の出どころ**: 板の控え（`gh-board-cache.json`）の issue ごとに `assignees` を持つようにした（板を取る GraphQL に `assignees(first: 10)` を 1 つ足しただけ。問い合わせの本数は同じ）。`--cached` と hook は GitHub を叩かないまま。**鍵の無い古い控えでも落ちず**、担当の列を「—」で出し、先頭に「控えに担当者が無い。取り直す: hirai-task load」の 1 行を出す（`hirai-task load` の普通の呼び出しは、10 分以内の控えでも鍵が無ければ取り直す）
+- **そのまま**: `--json` の鍵は消さず足すだけ（`me`・`assignees_known`・`by_assignee`・`unassigned`、`sections[].next` に `assignees`・`assignee_names`、`others[]` に `author_name`、`settings` に `people`）。表の見出しは `セクション 完了 次のタスク 誰の番 担当` になった
+- **試験**: `HIRAI_SELFTEST_ONLY=assignees`（ready・start の検査）と `load`（表の検査。assignees も回る）で絞って回せる
+
 ## 4.2.0
 テックリードが 2026-11-28 に、進みの表（`hirai-task load`）を「わかりにくい」と指摘し、案 A を承認した。**表を Markdown の表から、桁をそろえた平文の 3 段にした**。hook の出力（PostToolUse の additionalContext・systemMessage）では Markdown が描かれず `|` と `---` がそのまま見えていた。全角の幅は 2 で数えて桁を合わせ、長い題は幅で切って「…」にする（`unicodedata.east_asian_width`）。
 

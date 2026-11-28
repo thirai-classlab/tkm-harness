@@ -144,6 +144,7 @@ Claude Code で次の 2 行を順に実行します。
 | project（GitHub Project の番号） | `TKM_HARNESS_PROJECT` | 正の整数 | 無し（リポに紐づいた Project を探す） | `settings.json` |
 | repo（owner/リポ） | `TKM_HARNESS_REPO` | `<owner>/<name>` | `git remote get-url origin` | `settings.json` |
 | 進みの表の期限と本線 | `TKM_HARNESS_LOAD_DEADLINE`・`_LOAD_DEADLINE_LABEL`・`_LOAD_MAINLINE`・`_LOAD_MAINLINE_LABEL` | 期限は `YYYY-MM-DD` | 空 | `settings.json`（手で書く） |
+| 進みの表の名前の対応表 | `TKM_HARNESS_PEOPLE` | `GitHub の名前=表示名,…`（例 `skawashimaclasslab-ai=川嶋,thirai-classlab=平井`） | 空（GitHub の名前のまま） | `settings.json`（手で書く） |
 | 前夜の CI | `TKM_HARNESS_NIGHTLY_CI` | workflow のファイル名 | 空 | `settings.json`（手で書く） |
 
 **効く順（上が先）**: ① シェルの一時の上書き（`HC_MODE`・`HC_AUTO_SYNC`・`HC_TASKS`・`HC_WORKTREE`・`HC_NOTIFY`・`HIRAI_TASK_PROJECT`・`HIRAI_TASK_REPO`） → ② 環境変数 `TKM_HARNESS_<項目>`（Claude Code の中では `settings.local.json` > `settings.json` の `env` が重なって届きます） → ③ settings の file の `env`（本体の checkout の `settings.local.json` → toplevel の `settings.local.json` → toplevel の `settings.json` → `~/.claude/settings.json`。Claude Code の外の端末・CI と、②が空のときに読みます） → ④ `.claude/mode.yml` の `<項目>:`（移行用の予備） → ⑤ 既定。保存すると同じ会話の次の Bash・hook から新しい値が効きます（消したときだけ、開き直すまで古い値が残ります）。
@@ -201,6 +202,7 @@ Claude Code で次の 2 行を順に実行します。
 
 - 確かめるのは `bash tests/smoke-tasks.sh`（タスク管理の機能と進みの表の入れ方の 13 case）
 - 全体の進みに期限の行や本線の印を出すときは、`.claude/settings.json` の `env`（`TKM_HARNESS_LOAD_DEADLINE`・`TKM_HARNESS_LOAD_DEADLINE_LABEL`・`TKM_HARNESS_LOAD_MAINLINE`・`TKM_HARNESS_LOAD_MAINLINE_LABEL`）に書く（予備: `.claude/mode.yml` の `load_deadline`・`load_deadline_label`・`load_mainline`・`load_mainline_label`。`env` が先。書き方は `skills/github-project/SKILL.md`）
+- 進みの表の「担当」の列・「人ごと」の段に出す名前は、`.claude/settings.json` の `env` の `TKM_HARNESS_PEOPLE`（`skawashimaclasslab-ai=川嶋,thirai-classlab=平井`）で GitHub の名前から表示名に直す（無い人は GitHub の名前のまま）。`hirai-task ready` は Assignees に自分以外が居て自分が居ない task を一覧から外し（末尾に `ほかの人が担当（取らない）: #n（川嶋）` の 1 行）、`hirai-task start` はその task を断る（`取るなら --take`）
 - 夜間に回す CI の赤を見逃さないときは、`.claude/settings.json` の `env` に `TKM_HARNESS_NIGHTLY_CI=ci.yml`（workflow のファイル名。予備: `.claude/mode.yml` の `nightly_ci: ci.yml`）を足す。`hirai-task today` の先頭に、その workflow の直近の schedule の run の結果を 1 行出す。空か無ければ何も出さず gh も呼ばない
 
 ### Orca で並行に進める（選べる機能）

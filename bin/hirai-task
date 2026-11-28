@@ -139,6 +139,8 @@ hirai-task — リポに紐づいた GitHub Project のタスクを読み書き�
     目印は書き換えない。目印の書き直し → Status の順（Status が落ちても次の start が通る）。
     `--approved` は `[操作]` の task に限り、着手可・承認待ちからだけ進行中にでき、本文に
     出どころを 1 行残す。
+    ほかの人だけが担当の task（Assignees に自分以外が居て自分が居ない。4.3.0）は、どの start でも exit 2 で
+    「#n は <名前> が担当。取るなら --take」と断る。`--take` を付けたときだけ通る。`ready` はその task を一覧から外し、末尾に 1 行で出す。
   - reopen: 閉じた issue だけを受け付ける。着手可へは set と同じ判定を通し、進行中へは自分の
     未完了の blocked by があれば断る（完了から戻す用途のため、親は見ない）。
 
@@ -1082,6 +1084,7 @@ def _extras_query(numbers: list[int]) -> str:
       closedByPullRequestsReferences(first: 5, includeClosedPrs: false) {{
         nodes {{ number state }}
       }}
+      assignees(first: 10) {{ nodes {{ login }} }}
     }}
   }}'''
         for i, number in enumerate(numbers)
@@ -1101,7 +1104,8 @@ def fetch_extras(numbers: list[int]) -> dict[int, dict]:
     blockedBy が 30 件を超える行は truncated として警告に回す（数を切り詰めない）。
     blocked_by_open_numbers は align 以下が使う（unblocked・align・wave-holds が、どの番号に
     止められているかを知る必要があるため。ready 側は件数だけ見るので互換のまま）。
-    blocked_by_numbers は open/closed を問わない全番号。"""
+    blocked_by_numbers は open/closed を問わない全番号。assignees は担当者の login（進みの表・ready・start がだれの task かを見る）。
+    担当者を一覧の問い合わせ（ITEMS_QUERY）に足さないのは、その connection が頁ごとに点数を倍にするため（ここは 1 issue 1 alias）。"""
     unique = sorted({int(n) for n in numbers if n is not None})
     result: dict[int, dict] = {}
     for start in range(0, len(unique), _EXTRAS_CHUNK_SIZE):
@@ -1125,6 +1129,7 @@ def fetch_extras(numbers: list[int]) -> dict[int, dict]:
                 'blocked_by_numbers': [b.get('number') for b in blockers],
                 'blocked_by_truncated': isinstance(total, int) and total > len(blockers),
                 'open_pr_numbers': open_prs,
+                'assignees': _assignee_logins(node),
             }
     return result
 
@@ -1392,8 +1397,9 @@ def cmd_ready() -> int:
         and i.get('state') != 'CLOSED'
     ]
     extras = fetch_extras(ready_numbers + review_numbers + parent_numbers + feature_numbers)
-    rows = ready_rows(items, extras)
-    feature_rows = ready_feature_rows(items, extras)
+    with_who = lambda rows: [{**i, 'assignees': (extras.get(i['number']) or {}).get('assignees') or []} for i in rows]
+    rows, others_rows = split_others_tasks(with_who(ready_rows(items, extras)))
+    feature_rows, others_features = split_others_tasks(with_who(ready_feature_rows(items, extras)))
     if not rows and not feature_rows:
         print('着手可の issue は 0 件')
     else:
@@ -1412,7 +1418,30 @@ def cmd_ready() -> int:
             print(f"  #{i['number']:<4} [feature]{order_text} チェックリスト未完 {open_lines} 行 {i['title'][:64]}")
     for line in ready_warnings(items, extras):
         print(line)
+    taken = sorted(others_rows + others_features, key=lambda i: i['number'])
+    if taken:
+        people = _people_map()
+        print('ほかの人が担当（取らない）: ' + '、'.join(
+            f"#{i['number']}（{'・'.join(_display_name(x, people) for x in i['assignees'])}）" for i in taken))
     return 0
+
+
+def split_others_tasks(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(自分が取れる行, ほかの人だけが担当の行)。Assignees に自分以外が居て自分が居ない行を、AI の候補から外す
+    （「人からタスクは取らない」）。Assignees なし・自分が入っている行はそのまま。担当者のいる行があるときだけ自分の
+    GitHub アカウントを引き、引けなければ外さず標準エラーに 1 行出す。"""
+    held = [r for r in rows if r.get('assignees')]
+    if not held:
+        return rows, []
+    try:
+        me = viewer_login().casefold()
+    except Exception:  # noqa: BLE001 - アカウントが引けなくても一覧は出す
+        me = ''
+    if not me:
+        print('（担当者の確かめ: 自分の GitHub アカウントが分からず、ほかの人の担当を外せていない）', file=sys.stderr)
+        return rows, []
+    others = [r for r in held if me not in {x.casefold() for x in r['assignees']}]
+    return [r for r in rows if r not in others], others
 
 
 # ── pending（承認待ちの feature。ボードで着手可にすると子の task が ready に出る） ──
@@ -1567,6 +1596,7 @@ query($owner:String!, $name:String!, $number:Int!) {{
       body
       state
       parent {{ number }}
+      assignees(first: 10) {{ nodes {{ login }} }}
       blockedBy(first: 30) {{ totalCount nodes {{ number state repository {{ nameWithOwner }} }} }}
 {_PROJECT_ITEM_FRAGMENT}
     }}
@@ -1600,6 +1630,7 @@ def fetch_write_item(project_number: int, number: int) -> dict:
         'body': issue.get('body') or '',
         'state': issue.get('state'),
         'parent_number': (parent or {}).get('number'),
+        'assignees': _assignee_logins(issue),
         'blocked_by': blockers,
         'blocked_by_open': [n for n, s in blockers if s != 'CLOSED'],
         'blocked_by_foreign': foreign,
@@ -1868,11 +1899,12 @@ def _start_feature(project_number: int, number: int, item: dict, approved: str |
 
 # ── start（着手可から。目印なしで親の feature が着手可なら承認待ちからも。
 #    `[操作]` は --approved で承認待ちからも） ──
-def cmd_start(number: int, approved: str | None, reread: bool = False) -> int:
+def cmd_start(number: int, approved: str | None, reread: bool = False, take: bool = False) -> int:
     project_number = discover_project_number()
     item = _require_item(project_number, number)
     _reject_wave_feature(item, number, 'start', allow_feature=True)
     _reject_closed(item, number, 'start')
+    _reject_others_task(item, number, take)
     warn_if_kind_empty(project_number, item, number)
     if item['fields'].get(KIND_FIELD, '') == FEATURE_KIND:
         return _start_feature(project_number, number, item, approved, reread)
@@ -1942,6 +1974,24 @@ def cmd_start(number: int, approved: str | None, reread: bool = False) -> int:
     print(f'#{number} Status={IN_PROGRESS_STATUS}')
     print_reading_bundle(item.get('body') or '')
     return 0
+
+
+def _reject_others_task(item: dict, number: int, take: bool) -> None:
+    """ほかの人だけが担当の task は取らない（Assignees に自分以外が居て自分が居ない）。取るなら --take（exit 2）。
+    自分のアカウントが引けないときも、ほかの人の task かもしれないので断る。"""
+    logins = item.get('assignees') or []
+    if take or not logins:
+        return
+    try:
+        me = viewer_login().casefold()
+    except Exception:  # noqa: BLE001 - 引けなければ断る側に倒す
+        me = ''
+    if me and me in {x.casefold() for x in logins}:
+        return
+    people = _people_map()
+    names = '・'.join(_display_name(x, people) for x in logins)
+    unknown = '' if me else '（自分の GitHub アカウントを確かめられなかった）'
+    die(f'#{number} は {names} が担当{unknown}。取るなら --take', 2)
 
 
 # ── review（予備。今は Status を書くだけ） ───────────────────────────
@@ -5632,7 +5682,8 @@ def board_view(snap: dict, how: str) -> dict:
     items, repo = snap['items'], snap['repo']
     extras = {int(k): v for k, v in snap['extras'].items()}
     bodies = {int(k): v for k, v in snap['bodies'].items()}
-    issues = [i for i in items if i.get('type') == 'Issue' and i.get('number') is not None and _same_repo(i, repo)]
+    issues = [{**i, 'assignees': list(extras[i['number']]['assignees'])} if 'assignees' in (extras.get(i['number']) or {}) else i
+              for i in items if i.get('type') == 'Issue' and i.get('number') is not None and _same_repo(i, repo)]
     skipped = {
         'PR': sum(1 for i in items if i.get('type') == 'PullRequest'),
         '番号の無い行（下書き）': sum(1 for i in items if i.get('number') is None),
@@ -5761,7 +5812,7 @@ def cmd_board_progress(opts: dict) -> int:
     """進みの表。計算は load と同じ（hirai_load.build）。担当と「いまやっていること」は Orca の読み取りから、
     引けなければ PR の branch 名・Assignees から。読むだけ。"""
     load, progress = _load_module(), _load_progress_module()
-    snap, how = _board_snapshot(opts)
+    snap, how = _board_snapshot_with_assignees(opts)
     view = board_view(snap, how)
     _apply_overlay(view, snap['fetched_epoch'])
     orca = progress.collect(REPO)
@@ -6063,11 +6114,40 @@ def fetch_deadline_open(date: str) -> int | None:
     return None
 
 
+def _people_map() -> dict:
+    """設定 TKM_HARNESS_PEOPLE（`GitHub の名前=表示名,…`。環境変数 > settings の file の env の順）。{小文字の名前: 表示名}。
+    無い・読めないときは空（GitHub の名前のまま出す）。"""
+    try:
+        text = _harness_setting('people')
+    except RuntimeError:
+        return {}
+    return _load_module().parse_people(text)
+
+
+def _display_name(login: str, people: dict) -> str:
+    return people.get(str(login).casefold(), login)
+
+
+def _board_snapshot_with_assignees(opts: dict) -> tuple[dict, str]:
+    """_board_snapshot。ただし、新しい控え（10 分以内）でも担当者の鍵が無い古い形なら、取り直す（--from は指定どおり）。"""
+    snap, how = _board_snapshot(opts)
+    if how == 'cached' and not _snapshot_has_assignees(snap):
+        return _board_snapshot({**opts, 'refresh': True})
+    return snap, how
+
+
+def _snapshot_has_assignees(snap: dict) -> bool:
+    """板の控えが担当者（extras の 'assignees'）を持つか。開いている issue が 1 件も無い控えは持つとみなす。"""
+    live = [i for i in snap['items'] if i.get('type') == 'Issue' and i.get('state') != 'CLOSED']
+    return not live or any('assignees' in (snap['extras'].get(str(i['number'])) or {}) for i in live)
+
+
 def _load_settings(prs: dict | None, *, network: bool) -> dict:
     """設定の load_deadline（YYYY-MM-DD）・load_deadline_label・load_mainline・load_mainline_label
     （環境変数 TKM_HARNESS_LOAD_* は読まず、打ったリポの settings の file の env、無ければプロジェクトの mode.yml。TKS-R1.3 の順。_harness_setting と同じ）。
     無い設定は空にして、その行・印を出さない。日付の形が違う・mode.yml を読めないときは、標準エラーに 1 行で期限の行を出さない。"""
-    settings = {'deadline_date': '', 'deadline_label': '期限', 'deadline_open': None, 'mainline': '', 'mainline_label': '本線'}
+    settings = {'deadline_date': '', 'deadline_label': '期限', 'deadline_open': None, 'mainline': '', 'mainline_label': '本線',
+                'people': _people_map()}
     try:
         date = _harness_setting('load_deadline')
         settings['mainline'] = _harness_setting('load_mainline')
@@ -6182,7 +6262,7 @@ def load_model(opts: dict) -> dict:
         if snap is None or prs is None:
             raise GhError('控えが無い', LOAD_EXIT_UNCHANGED)
         return _model_of(load, snap, 'cached', prs=prs, network=False)
-    snap, how = _board_snapshot({'from': None, 'refresh': opts['refresh'], 'publish': None})
+    snap, how = _board_snapshot_with_assignees({'from': None, 'refresh': opts['refresh'], 'publish': None})
     return _model_of(load, snap, how, prs=None, network=True)
 
 
@@ -6813,7 +6893,7 @@ def main(argv: list[str]) -> int:
         'hirai-task ready|pending|blocked|show <issue>\n'
         '           new <title> --parent N [--kind ...] ...\n'
         '           new --from-table <draft の path> [--dry-run]\n'
-        '           add <issue> | approve <issue> | start <issue> [--reread] [--approved <出どころ>]\n'
+        '           add <issue> | approve <issue> | start <issue> [--reread] [--take] [--approved <出どころ>]\n'
         '           review <issue> | done <issue> [--not-planned <理由>] | reopen <issue> <status>\n'
         '           set <issue> <field> <value> | sync\n'
         '           coverage | impact <draft の path> | design-merge <draft の path>\n'
@@ -6880,19 +6960,21 @@ def main(argv: list[str]) -> int:
             _record_overlay(number, tail[2])
         return rc
     if sub == 'start':
-        usage_start = '使い方: hirai-task start <issue> [--reread] [--approved <出どころ>]'
+        usage_start = '使い方: hirai-task start <issue> [--reread] [--take] [--approved <出どころ>]'
         if not tail:
             die(usage_start, 2)
-        flags, approved, reread = tail[1:], None, False
+        flags, approved, reread, take = tail[1:], None, False, False
         while flags:
             if flags[0] == '--reread' and not reread:
                 reread, flags = True, flags[1:]
+            elif flags[0] == '--take' and not take:
+                take, flags = True, flags[1:]
             elif flags[0] == '--approved' and approved is None and len(flags) >= 2 and not flags[1].startswith('--'):
                 approved, flags = flags[1], flags[2:]
             else:
                 die(usage_start, 2)
         number = _parse_issue_number(tail[0])
-        rc = cmd_start(number, approved, reread)
+        rc = cmd_start(number, approved, reread, take)
         if rc == 0:
             _record_overlay(number, IN_PROGRESS_STATUS)
             ensure_assignee(number)
