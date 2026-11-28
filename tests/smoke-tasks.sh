@@ -579,6 +579,7 @@ case "$1" in
       ok) printf '%s\n' '全体 40% (2/5)' '| 担当 | 進捗 |' '| a | 60% |' ;;
       fail) printf '%s\n' '全体 40% (2/5)' '| a | 60% |'; echo 'エラー' >&2; exit 1 ;;
       empty) : ;;
+      unchanged) exit 3 ;;
       sleep) exec python3 -c 'import time; time.sleep(15); print("全体 40% (2/5)"); print("| a | 60% |")' ;;
       big) python3 -c 'print("あ" * 12000)' ;;
     esac ;;
@@ -637,7 +638,7 @@ assert set(d)=={"systemMessage","hookSpecificOutput"}, list(d)
 h=d["hookSpecificOutput"]; assert h["hookEventName"]=="PostToolUse" and set(h)=={"hookEventName","additionalContext"}, h
 assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalContext"] and "人の画面にも出ています" in h["additionalContext"] and "人の画面にも出ています" not in d["systemMessage"]
 ' 2>/dev/null; } || bad="$bad [$c] で表が両方に出ない(rc=$rc);"
-    grep -qx 'load --cached' "$s/log" && ! grep -q 'GH\|--refresh' "$s/log" || bad="$bad [$c] で load --cached だけを呼んでいない($(tr '\n' ' ' < "$s/log"));"
+    grep -qx 'load --cached --changed' "$s/log" && ! grep -q 'GH\|--refresh' "$s/log" || bad="$bad [$c] で load --cached --changed だけを呼んでいない($(tr '\n' ' ' < "$s/log"));"
   done
   for c in "hirai-task ready" "hirai-task show 1" "git status" "echo hirai-task start 1" "hirai-task start --help" "hirai-task done -h" "gh pr view 5" "orca worktree set --worktree id:1 --display-name x" "orca worktree list" \
     "orca orchestration send --body \"着手は hirai-task start 12\"" "orca terminal send --text \"gh pr merge はしない\"" \
@@ -648,6 +649,7 @@ assert "| a | 60% |" in d["systemMessage"] and "| a | 60% |" in h["additionalCon
   done
   run13 "$s" 1 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ] && ! grep -q '^load' "$s/log"; } || bad="$bad 担当の会話（is-coordinator=1）で出たか load を呼んだ;"
   run13 "$s" 3 ok "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad 判定できない（3）で出た;"
+  run13 "$s" 0 unchanged "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad 段・担当・順番が動いていない（load が exit 3）のに出たか exit が 0 でない;"
   for c in fail empty; do run13 "$s" 0 "$c" "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が $c なのに出たか exit が 0 でない;"; done
   t0="$(python3 -c 'import time;print(time.time())')"
   run13 "$s" 0 sleep "hirai-task start 1"; { [ -z "$out" ] && [ "$rc" = 0 ]; } || bad="$bad load が時間切れなのに出たか exit が 0 でない;"
@@ -671,9 +673,9 @@ case_13() {
   s="$(mk)"; mk13 "$s" "$h"
   bad="$(check13 "$s")"
   [ -z "$bad" ] || { fail 13 "進みの表の hook" "$bad"; return; }
-  # 壊した写し 9 つ: gh pr merge の判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない・時間切れで切らない・exit の検査を外す・heredoc の本文を除かない・制御の語を飛ばさない・bash -c の文を見ない
+  # 壊した写し 10 個（10 は --changed を外す）: gh pr merge の判定を外す・systemMessage を出さない・is-coordinator を見ない・表を切らない・時間切れで切らない・exit の検査を外す・heredoc の本文を除かない・制御の語を飛ばさない・bash -c の文を見ない
   local k="$ROOT/scripts/hirai_hook_kind.py" src
-  for v in 1 2 3 4 5 6 7 8 9; do
+  for v in 1 2 3 4 5 6 7 8 9 10; do
     d="$(mk)"; mk13 "$d" "$h"; src="$h"; dst="$d/hooks/coordinator-load.sh"
     case "$v" in
       1) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return rest\[:2\] == \["pr", "merge"\]/return False/' "$src" > "$dst" ;;
@@ -685,13 +687,14 @@ case_13() {
       7) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/^    return "".join(out)$/    return cmd/' "$src" > "$dst" ;;
       8) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/^CTRL = .*$/CTRL = ()/' "$src" > "$dst" ;;
       9) src="$k"; dst="$d/scripts/hirai_hook_kind.py"; sed 's/return starts(r\[1\], depth + 1)/return False/' "$src" > "$dst" ;;
+      10) sed 's/"load", "--cached", "--changed"/"load", "--cached"/' "$src" > "$dst" ;;
     esac
     cmp -s "$src" "$dst" && { fail 13 "壊した写し $v を作れた" "sed が当たらず元と同じ"; return; }
     [ -n "$(check13 "$d")" ] || { fail 13 "壊した写し $v で検査が FAIL する" "壊したのに通った"; return; }
   done
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["hooks"]; assert len(d["PostToolUse"])==1 and d["PostToolUse"][0]["hooks"][0]["timeout"]==10' "$ROOT/hooks/hooks.json" 2>/dev/null \
     || { fail 13 "hooks.json の PostToolUse は 1 本・timeout 10 秒（load の 8 秒より長い）" "形が違う"; return; }
-  pass 13 "振り出し・完了の 31 通り（bash -c・for・while・if・{ }・( )・!・env・timeout・time・nice・command・exec・sudo・heredoc を含む）で表が systemMessage と additionalContext の両方に出る（load --cached だけ）。対象外（引用の中の文・閉じない引用を含む）・担当・判定不能・load 失敗（表を出して exit 1 も）/空/時間切れでは出ず、時間切れは 8 秒で切り、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 9 つで FAIL）"
+  pass 13 "振り出し・完了の 31 通り（bash -c・for・while・if・{ }・( )・!・env・timeout・time・nice・command・exec・sudo・heredoc を含む）で表が systemMessage と additionalContext の両方に出る（load --cached --changed だけ。動いていない表は出さない）。対象外（引用の中の文・閉じない引用を含む）・担当・判定不能・load 失敗（表を出して exit 1 も）/空/時間切れでは出ず、時間切れは 8 秒で切り、10,000 字で切る。知らせの 1 行は従来どおり（壊した写し 10 個で FAIL）"
 }
 
 for n in ${SMOKE_CASES:-1 2 3 4 5 6 7 8 9 10 11 12 13}; do "case_$n"; done

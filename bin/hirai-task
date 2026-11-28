@@ -6147,6 +6147,12 @@ def _orca_assignments(progress) -> dict:
     return progress.worktree_assign(REPO)
 
 
+def _tree_info(progress) -> dict:
+    """作業ツリー（Orca・git worktree）の {'numbers': 名前に現れる番号, 'names': {番号: 作業ツリーの名前}}。
+    numbers は担当の居ない行から作業ツリーの担当が動いている task を外し、names は「いま動いている」の担当の列に使う。"""
+    return progress.worktree_info(REPO)
+
+
 def _model_of(load, snap: dict, how: str, *, prs: dict | None, network: bool):
     """板（snap）から表の材料を組む。start・done の変更を重ね、PR と Assignees を引く（network のとき）。"""
     view = board_view(snap, how)
@@ -6161,7 +6167,7 @@ def _model_of(load, snap: dict, how: str, *, prs: dict | None, network: bool):
         _safe_write(LOAD_PR_CACHE, json.dumps(prs, ensure_ascii=False))
     else:
         settings = _load_settings(prs, network=False)
-    model = load.build(view, prs, assign, settings)
+    model = load.build(view, prs, assign, settings, _tree_info(progress))
     now = time.time()
     ages = [max(0, int((now - snap['fetched_epoch']) // 60)), max(0, int((now - prs['fetched_epoch']) // 60))]
     model['age_minutes'] = max(ages)
@@ -6207,9 +6213,13 @@ def parse_load_args(tail: list[str]) -> dict:
     return opts
 
 
-def _age_note(model: dict, *, always: bool = False) -> str:
-    """控えの古さの 1 行。10 分より古いときだけ出す（always は新しくても出す。--cached は控えだけで描くので、古さを毎回言う）。"""
-    return f"（控え: {model['age_minutes']} 分前）" if always or model['age_minutes'] >= BOARD_CACHE_SECONDS // 60 else ''
+def _stale_minutes(model: dict, *, always: bool = False) -> int | None:
+    """表の先頭に「控えは N 分前の数です」を出すときの N。10 分より古いときだけ（always は新しくても出す。--cached は控えだけで
+    描くので、古さを言う。ただし 0 分前は言わない）。出さないときは None。"""
+    minutes = model['age_minutes']
+    if minutes >= BOARD_CACHE_SECONDS // 60 or (always and minutes > 0):
+        return minutes
+    return None
 
 
 def cmd_load(opts: dict) -> int:
@@ -6229,10 +6239,7 @@ def cmd_load(opts: dict) -> int:
     if opts['json']:
         print(json.dumps(model, ensure_ascii=False, indent=2))
         return 0
-    print(load.render(model), end='')
-    note = _age_note(model, always=opts['cached'])
-    if note:
-        print(note)
+    print(load.render(model, _stale_minutes(model, always=opts['cached'])), end='')
     _save_load_state(model)
     return 0
 
@@ -6384,10 +6391,7 @@ def print_load_after(items: list[dict] | None = None) -> None:
             load = _load_module()
             model = _model_of(load, snap, 'cached', prs=None, network=True)
             print()
-            print(load.render(model), end='')
-            note = _age_note(model)
-            if note:
-                print(note)
+            print(load.render(model, _stale_minutes(model)), end='')
             _save_load_state(model)
     except Exception as exc:  # noqa: BLE001 - 表が出せないことで、書いた操作の結果を変えない
         print(f'（進みの表を出せなかった: {type(exc).__name__}: {exc}）', file=sys.stderr)

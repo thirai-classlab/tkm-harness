@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import subprocess
+import time
 
 ORCA_TIMEOUT_SECONDS = 20
 LOAD_ORCA_SECONDS = 3  # hirai-task load が作業ツリーの一覧を待つ時間（TKS-R6.1）
@@ -36,6 +37,7 @@ STATE_RANK = {'worktree': 0, 'reported': 1, 'active': 2}
 _HEAD_NUMBERS_RE = re.compile(r'^\s*((?:#\d+\s*[・,、]?\s*)+)')
 _ISSUE_REF_RE = re.compile(r'#(\d+)')
 _TREE_NUMBER_RE = re.compile(r'(?<!\d)(\d{3,6})(?!\d)')
+_LEADING_NUMBER_RE = re.compile(r'^(\d{2,6})(?!\d)')
 _BRANCH_NUMBER_RE = re.compile(r'^(?:[^/\s]+/)?(\d+)(?!\d)')
 
 
@@ -181,6 +183,29 @@ def _commit_part(path: str, git_runner, tz) -> str:
     return f"最後の commit {when} {clip(subject, COMMIT_SUBJECT_MAX)}".strip() if when else ''
 
 
+def tree_name(path: str) -> str:
+    return os.path.basename(str(path or '').rstrip('/'))
+
+
+def leading_numbers(*texts: str) -> list[int]:
+    """作業ツリーの名前（フォルダ名・branch の最後の段）の頭の番号。feature のことも task のこともある（`656-hardening-a`）。"""
+    out: list[int] = []
+    for text in texts:
+        match = _LEADING_NUMBER_RE.match(str(text or '').rsplit('/', 1)[-1])
+        if match and int(match.group(1)) not in out:
+            out.append(int(match.group(1)))
+    return out
+
+
+def tree_issue_numbers(tree: dict) -> list[int]:
+    """その作業ツリーの担当の番号。linkedIssue が先、無ければ表示名の頭の `#番号`・フォルダ名と branch の頭の番号。"""
+    linked = linked_issue_numbers(tree.get('linkedIssue'))
+    if linked:
+        return linked
+    found = head_numbers(str(tree.get('displayName') or ''))
+    return found + [n for n in leading_numbers(tree_name(tree.get('path')), tree.get('branch')) if n not in found]
+
+
 def live_trees(trees: list, repo: str = '') -> list[tuple[int, dict]]:
     """作業ツリーの行のうち、担当を持ちうるもの（main・archived・path 無し・別のリポを除く）を (一覧での位置, 行) で返す。
     collect（board --progress）と worktree_assign（load）が同じ読み方をする 1 本。"""
@@ -214,19 +239,71 @@ def limited_runner(seconds: float):
     return run
 
 
+_LISTING_MEMO: dict = {'at': 0.0, 'listing': None}
+LISTING_MEMO_SECONDS = 10  # worktree_assign が引いた一覧を、worktree_numbers が引き直さずに使える長さ
+
+
 def worktree_assign(repo: str = '', runner=None, seconds: float = LOAD_ORCA_SECONDS) -> dict:
     """load の担当（TKS-R6.1）: `orca worktree list --json` だけを seconds 秒で引き、issue を紐づけた作業ツリーの
     表示名を担当にする。{番号: {'owner': 表示名, 'order': None}}。引けない（orca が無い・exit が 0 でない・JSON が読めない・
     時間切れ）ときは空。GitHub には出ない。"""
     listing = orca_json(['worktree', 'list'], runner or limited_runner(seconds))
+    _LISTING_MEMO.update(at=time.monotonic(), listing=listing)
     if listing is None or not isinstance(listing.get('worktrees'), list):
         return {}
     out: dict[int, dict] = {}
     for _index, tree in live_trees(listing['worktrees'], repo):
         name = one_line(tree.get('displayName')) or os.path.basename(str(tree.get('path') or '').rstrip('/'))
-        for number in linked_issue_numbers(tree.get('linkedIssue')):
+        for number in tree_issue_numbers(tree):
             out.setdefault(number, {'owner': name, 'order': None})
     return out
+
+
+def worktree_info(repo: str = '', runner=None, git_runner=None, seconds: float = LOAD_ORCA_SECONDS) -> dict:
+    """作業ツリー（Orca の一覧と `git worktree list`）から {'numbers': 名前に現れる番号の集合, 'names': {番号: 作業ツリーの名前}}。
+    numbers は担当の居ない行から「作業ツリーの担当が実際に動いている task」を外すのに、names は「いま動いている」の担当の列に使う。
+    読み取りだけで、GitHub には出ない。引けないもの（orca が無い・git が失敗・時間切れ）は黙って飛ばす。"""
+    numbers: set[int] = set()
+    names: dict[int, str] = {}
+
+    def note(name: str, found: list[int]) -> None:
+        for n in found:
+            names.setdefault(n, name)
+
+    memo_fresh = _LISTING_MEMO['listing'] is not None and time.monotonic() - _LISTING_MEMO['at'] < LISTING_MEMO_SECONDS
+    if runner is None and memo_fresh:
+        listing = _LISTING_MEMO['listing']
+    else:
+        listing = orca_json(['worktree', 'list'], runner or limited_runner(seconds))
+    if listing is not None and isinstance(listing.get('worktrees'), list):
+        for _index, tree in live_trees(listing['worktrees'], repo):
+            name = str(tree.get('displayName') or '')
+            numbers |= {int(n) for n in _TREE_NUMBER_RE.findall(f"{tree.get('path') or ''} {tree.get('branch') or ''} {name}")}
+            found = tree_issue_numbers(tree)
+            numbers |= set(found)
+            note(tree_name(tree.get('path')), found)
+    try:
+        rc, out = (git_runner or limited_runner(seconds))(['git', 'worktree', 'list', '--porcelain'])
+    except (OSError, subprocess.SubprocessError):
+        return {'numbers': numbers, 'names': names}
+    if rc != 0:
+        return {'numbers': numbers, 'names': names}
+    blocks = [b for b in (out or '').split('\n\n') if b.strip()][1:]  # 先頭は本体の checkout（担当ではない）
+    for block in blocks:
+        path = branch = ''
+        for line in block.splitlines():
+            if line.startswith(('worktree ', 'branch ')):
+                numbers |= {int(n) for n in _TREE_NUMBER_RE.findall(line.split(' ', 1)[1])}
+            if line.startswith('worktree '):
+                path = line.split(' ', 1)[1]
+            elif line.startswith('branch '):
+                branch = line.split(' ', 1)[1]
+        note(tree_name(path), leading_numbers(tree_name(path), branch))
+    return {'numbers': numbers, 'names': names}
+
+
+def worktree_numbers(repo: str = '', runner=None, git_runner=None, seconds: float = LOAD_ORCA_SECONDS) -> set[int]:
+    return worktree_info(repo, runner, git_runner, seconds)['numbers']
 
 
 def merge_assign(orca: dict, saved: dict, known: set | None = None) -> dict:
@@ -272,6 +349,8 @@ def collect(repo: str = '', runner=default_runner, git_runner=default_runner, tz
                 if one_line(candidate) and _ISSUE_REF_RE.search(str(candidate)):
                     numbers, title = [int(n) for n in _ISSUE_REF_RE.findall(str(candidate))], str(candidate)
                     break
+        if not numbers:  # linkedIssue も表示名の番号も無い作業ツリーは、フォルダ名・branch の頭の番号で引く（`656-hardening-a`）
+            numbers = tree_issue_numbers(tree)
         if not numbers:
             continue
         said = spoke.get((worker or {}).get('dispatchId'), {})
@@ -294,7 +373,8 @@ def collect(repo: str = '', runner=default_runner, git_runner=default_runner, tz
     for a in sorted(assignments, key=lambda a: (STATE_RANK[a['state']], -a['order'])):  # 強い状態が後から上書きする
         for n in a['numbers']:
             assign[n], info[n] = {'owner': a['owner'], 'order': a['order']}, a
-    return {'assignments': assignments, 'assign': assign, 'info': info, 'tree_numbers': tree_numbers}
+    tree_names = {n: tree_name(a['path']) for a in assignments for n in a['numbers']}
+    return {'assignments': assignments, 'assign': assign, 'info': info, 'tree_numbers': tree_numbers, 'tree_names': tree_names}
 
 
 # ── Orca が無いときの落ちる道 ─────────────────────────────────
@@ -351,7 +431,8 @@ def build(load, view: dict, prs: dict, settings: dict, orca: dict | None) -> dic
     """進みの表の材料（JSON にできる形）。orca が None なら PR・Assignees の道。"""
     assign = orca['assign'] if orca else fallback_assign(view, prs)
     info = orca['info'] if orca else {}
-    model = load.build(view, prs, assign, settings)
+    tree_numbers = (orca or {}).get('tree_numbers', set())
+    model = load.build(view, prs, assign, settings, {'numbers': tree_numbers, 'names': (orca or {}).get('tree_names', {})})
     rows = []
     for person in model['people']:
         for entry in person['tasks']:
@@ -366,49 +447,19 @@ def build(load, view: dict, prs: dict, settings: dict, orca: dict | None) -> dic
                 {'numbers': g['numbers'], 'pr': g['pr'], 'pct': g['pct']} for g in run], 'now': NOW_SEPARATOR.join(nows)})
     taken = set(assign) | {n for pr in prs.get('open', []) for n in pr.get('closes') or []}
     model['rows'] = rows
-    model['upcoming'] = upcoming_rows(view, prs, taken, (orca or {}).get('tree_numbers', set()))
+    model['running'] = load.running_rows(model)  # now を足したあとで組み直す
+    model['upcoming'] = upcoming_rows(view, prs, taken, tree_numbers)
     model['source'] = 'orca' if orca else 'fallback'
     return model
 
 
-def render(load, model: dict) -> str:
-    """3 部の Markdown（全体の 1 行と期限の行・セクションの表・進行中のタスクの表と、担当の居ないもの・これから立てる）。"""
-    s = model['settings']
-    first = f"{model['done']} / {model['total']} 完了（{load.pct_of(model['done'], model['total'])}%）。"
-    if model['held']:
-        first += f"保留の {model['held']} 件を除くと {load.pct_of(model['done'], model['total'] - model['held'])}% です。"
-    out = [first]
-    deadline = load.deadline_sentence(s)
-    if deadline:
-        out.append(deadline)
-    out.append('')
-    mainline = s.get('mainline') or ''
-    cells = [(x['name'] + (f"（{load.one_line(s.get('mainline_label') or '本線')}）" if mainline and mainline in x['name'] else ''),
-              f"{load.pct_of(x['done'], x['total'])}%") for x in model['sections'] if x['done'] < x['total']]
-    if cells:
-        out += ['| セクション | 進み | セクション | 進み |', '|---|---|---|---|']
-    half = (len(cells) + 1) // 2
-    for i in range(half):
-        right = cells[half + i] if half + i < len(cells) else ('', '')
-        out.append(f'| {load.cell(cells[i][0])} | {cells[i][1]} | {load.cell(right[0])} | {right[1]} |')
-    out += ['', '**進行中のタスク**', '', load.STAGE_SENTENCE, '',
-            '| 担当 | セクション | 順番 | 進捗 | いまやっていること |', '|---|---|---|---|---|']
-    previous = None
-    for row in model['rows']:
-        chain = ' → '.join('・'.join(f'#{n}' for n in g['numbers']) + (f"（PR #{g['pr']}）" if g['pr'] else '') for g in row['groups'])
-        pcts = ' → '.join(f"{g['pct']}%" for g in row['groups'])
-        owner = load.cell(row['owner']) if row['owner'] != previous else ''
-        out.append(f"| {owner} | {load.cell(row['section'])} | {chain} | {pcts} | {load.cell(row['now'])} |")
-        previous = row['owner']
-    if not model['rows']:
-        out.append('| — | — | 割り振りがありません | — | — |')
-    if model['stuck']:
-        out += ['', '止まっているもの: ' + ', '.join(f"#{t['number']}（{t['stuck']}）" for t in model['stuck'])]
-    if model['stray']:
-        out += ['', '進行中・レビュー中なのに担当の居ないもの: ' + ', '.join(f'#{n}' for n in model['stray'])]
+def render(load, model: dict, age_minutes: int | None = None) -> str:
+    """load と同じ平文の 3 段。「いま動いている」の行に いまやっていること を添え、あとに「これから立てる」と
+    担当の引き方の断りを足す。"""
+    extra = []
     if model['upcoming']:
-        out += ['', 'これから立てる（着手可で、作業ツリーも割り当ても無いもの）: ' + ', '.join(
-            f"#{u['number']} {load.cell(clip(u['title'], 30))}" for u in model['upcoming'])]
+        extra.append('これから立てる（着手可で、作業ツリーも割り当ても無いもの）: ' + '、'.join(
+            f"#{u['number']} {load.clip_width(u['title'], 30)}" for u in model['upcoming']))
     if model['source'] == 'fallback':
-        out += ['', '担当は Orca から引けなかったので、PR の branch 名と Assignees から出しています。']
-    return '\n'.join(out) + '\n'
+        extra.append('担当は Orca から引けなかったので、PR の branch 名と Assignees から出しています。')
+    return load.render(model, age_minutes, extra)
