@@ -6147,9 +6147,10 @@ def _orca_assignments(progress) -> dict:
     return progress.worktree_assign(REPO)
 
 
-def _tree_numbers(progress) -> set:
-    """作業ツリー（Orca・git worktree）の名前に現れる番号。担当の居ない行から、作業ツリーの担当が動いている task を外す。"""
-    return progress.worktree_numbers(REPO)
+def _tree_info(progress) -> dict:
+    """作業ツリー（Orca・git worktree）の {'numbers': 名前に現れる番号, 'names': {番号: 作業ツリーの名前}}。
+    numbers は担当の居ない行から作業ツリーの担当が動いている task を外し、names は「いま動いている」の担当の列に使う。"""
+    return progress.worktree_info(REPO)
 
 
 def _model_of(load, snap: dict, how: str, *, prs: dict | None, network: bool):
@@ -6166,7 +6167,7 @@ def _model_of(load, snap: dict, how: str, *, prs: dict | None, network: bool):
         _safe_write(LOAD_PR_CACHE, json.dumps(prs, ensure_ascii=False))
     else:
         settings = _load_settings(prs, network=False)
-    model = load.build(view, prs, assign, settings, _tree_numbers(progress))
+    model = load.build(view, prs, assign, settings, _tree_info(progress))
     now = time.time()
     ages = [max(0, int((now - snap['fetched_epoch']) // 60)), max(0, int((now - prs['fetched_epoch']) // 60))]
     model['age_minutes'] = max(ages)

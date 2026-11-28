@@ -12,7 +12,7 @@ hirai_load.py — `hirai-task load` が描く、全体の進みと、振って�
 渡される形:
   view: bin/hirai-task の board_view（issues・open_prs など。木の組み方は hirai_board.build と同じ）
   prs: {'open': [PR], 'merged': [PR], 'me': 自分の login, 'assignees': {番号: [login]}}（PR は bin の fetch_load_prs の形）
-  tree_numbers: 作業ツリー（Orca・git worktree）の path・branch・表示名に現れる番号（担当の居ない行から外す。無ければ空）
+  trees: {'numbers': 作業ツリー（Orca・git worktree）の名前に現れる番号（担当の居ない行から外す）, 'names': {番号: 作業ツリーの名前}}（無ければ空）
   assign: {番号: {'owner': 自分の作業のセッションの名前, 'order': 順（数値か None）}}（手元の控え）
   settings: {'deadline_label': …, 'deadline_date': …, 'deadline_open': 件数か None, 'mainline': …, 'mainline_label': …}
             （無い設定は '' で、その行・印を出さない）
@@ -32,7 +32,7 @@ CLOSED_SHOWN = 3  # 担当の行に出す、閉じた task の数（割り振り
 TITLE_WIDTH = 34  # 次のタスクの題の幅（全角 2・半角 1）
 NAME_WIDTH = 30  # セクション名の幅
 FEATURE_TITLE_WIDTH = 22
-TASKS_WIDTH = 26
+TASKS_WIDTH = 48
 OWNER_WIDTH = 30
 NOW_WIDTH = 60
 TURN_MAX = 3  # あなたの番の 判断 に番号を並べる数（残りは「ほか N」）
@@ -194,13 +194,27 @@ def stage_word(pct: int, stuck: str) -> str:
     return stuck or STAGE_WORDS.get(pct, f'{pct}%')
 
 
+_NUMBER_PREFIX_RE = re.compile(r'^\d+(?:\.\d+)*\.?\s*')
+_TRAILING_PAREN_RE = re.compile(r'\s*[（(]([^（）()]*)[）)]\s*$')
+
+
+def strip_section_suffix(title: str, wave_title: str) -> str:
+    """feature の題の末尾の括弧が、親のセクション名（番号つきでも）と同じなら外す（「堅牢化（13 本番環境の構築）」→「堅牢化」）。"""
+    match = _TRAILING_PAREN_RE.search(title)
+    if not match:
+        return title
+    bare = lambda x: _NUMBER_PREFIX_RE.sub('', one_line(x))
+    return title[:match.start()] if bare(match.group(1)) and bare(match.group(1)) == bare(wave_title) else title
+
+
 def _ticket(model: dict, n: int) -> dict:
     """行に付ける feature の情報（親の feature が分からない task は番号なし）。"""
-    _wave, feat = hirai_board.locate(model, n)
-    return {'feature': feat, 'feature_title': one_line((model['by_number'].get(feat) or {}).get('title')) if feat else ''}
+    wave, feat = hirai_board.locate(model, n)
+    title = one_line((model['by_number'].get(feat) or {}).get('title')) if feat else ''
+    return {'feature': feat, 'feature_title': strip_section_suffix(title, (model['by_number'].get(wave) or {}).get('title') or '')}
 
 
-def build(view: dict, prs: dict, assign: dict, settings: dict, tree_numbers=()) -> dict:
+def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | None = None) -> dict:
     """表の材料（JSON にできる形）を組む。"""
     model = hirai_board.build(view)
     # 担当の行は task と、控え（assign）に載った feature（割り振りの単位は feature。ADR-0815）。
@@ -271,7 +285,7 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, tree_numbers=()) 
                                  **_ticket(model, n)}
     others = sorted(others.values(), key=lambda o: (o['pr'], o['number']))
     other_numbers = {o['number'] for o in others}
-    in_trees = {int(x) for x in tree_numbers}
+    in_trees = {int(x) for x in (trees or {}).get('numbers', ())}
 
     def has_worker(n: int) -> bool:  # 作業ツリーの名前に task か親の feature の番号がある = 担当が動いている
         return n in in_trees or _ticket(model, n)['feature'] in in_trees
@@ -288,6 +302,7 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, tree_numbers=()) 
                  'stray': sorted(stray), 'others': others, 'stuck': stuck_tasks, 'settings': settings,
                  'truncated': open_total if isinstance(open_total, int) and open_total > len(prs['open']) else 0,
                  'unknown_assignees': prs.get('unknown_assignees') or 0,
+                 'tree_names': {int(k): v for k, v in ((trees or {}).get('names') or {}).items()},
                  'signature': signature(people), 'fetched_at': view.get('fetched_at', ''), 'how': view.get('how', '')}
     model_out['running'] = running_rows(model_out)
     model_out['turn'] = turn_rows(view, prs, tasks)
@@ -325,23 +340,45 @@ def group_rows(entries: list) -> list[list[dict]]:
     return runs
 
 
+_OWNER_PREFIX_RE = re.compile(r'^#\d+\s*')
+
+
+def join_owners(owners: list[str], width: int) -> str:
+    """担当（task の番号も同じ）を「・」でつなぐ。幅を超えるときは後ろを落として「・ほか N」にする。"""
+    for shown in range(len(owners), 0, -1):
+        text = '・'.join(owners[:shown]) + (f'・ほか {len(owners) - shown}' if shown < len(owners) else '')
+        if disp_width(text) <= width:
+            return text
+    return clip_width(owners[0], width) if owners else ''
+
+
 def running_rows(model: dict) -> list[dict]:
-    """「いま動いている」の行。feature が同じで担当と段の語も同じ task は 1 行にまとめる（番号は「・」でつなぐ）。
-    ほかの開発者の PR（担当の控えに無いもの）は GitHub の名前で最後に足す。親の feature が分からない task は feature なし。"""
+    """「いま動いている」の行。同じ feature は 1 行にまとめる（task の番号は「・」でつなぎ、段はいちばん遅れている段で、
+    止まり〔CI 赤・衝突〕が 1 つでもあればそれ。担当は重ならないものを順に並べる）。親の feature が分からない task は担当ごと。
+    担当は作業ツリーの名前（無ければ控えの名前から先頭の `#番号 ` を落としたもの）。ほかの開発者の PR は GitHub の名前で最後に足す。"""
+    names = {int(k): v for k, v in (model.get('tree_names') or {}).items()}
     rows: list[dict] = []
     index: dict[tuple, dict] = {}
 
     def add(owner: str, entry: dict, numbers: list[int], pct: int, stuck: str) -> None:
-        stage = stage_word(pct, stuck)
-        key = (entry.get('feature'), owner, stage)
+        key = (entry.get('feature'), '' if entry.get('feature') else owner)
         row = index.get(key)
         if row is None:
             row = index[key] = {'feature': entry.get('feature'), 'feature_title': entry.get('feature_title') or '',
-                                'numbers': [], 'stage': stage, 'owner': owner, 'pct': pct}
+                                'numbers': [], 'stage': '', 'owner': '', 'owners': [], 'pct': pct, 'stuck': ''}
             if 'now' in entry:
                 row['now'] = ''
             rows.append(row)
-        row['numbers'] += [n for n in numbers if n not in row['numbers']]
+        row['numbers'] = sorted(set(row['numbers']) | set(numbers))
+        if owner and owner not in row['owners']:
+            row['owners'].append(owner)
+        # いちばん遅れている段（止まりがあればそれを先に）
+        if stuck and not row['stuck']:
+            row['stuck'], row['pct'] = stuck, pct
+        elif not row['stuck'] and pct < row['pct']:
+            row['pct'] = pct
+        row['stage'] = stage_word(row['pct'], row['stuck'])
+        row['owner'] = '・'.join(row['owners'])
         if entry.get('now') and entry['now'] not in row.get('now', '').split(' ／ '):
             row['now'] = ' ／ '.join(x for x in (row.get('now', ''), entry['now']) if x)
 
@@ -350,9 +387,13 @@ def running_rows(model: dict) -> list[dict]:
             if entry['pct'] == 100:
                 continue
             numbers = entry.get('children', []) if entry.get('is_feature') else [entry['number']]
-            add(person['owner'], entry, numbers, entry['pct'], entry['stuck'])
+            name = next((names[k] for k in [entry['number'], *numbers] if k in names), '') \
+                or _OWNER_PREFIX_RE.sub('', plain(person['owner'])) or plain(person['owner'])
+            # feature の行は PR が無ければ Status の段（着手可は 0）。動いている子の task があれば、少なくとも着手の段にする
+            pct = max(entry['pct'], 20) if entry.get('is_feature') and numbers else entry['pct']
+            add(name, entry, numbers, pct, entry['stuck'])
     for o in model['others']:
-        add(o['author'], o, [o['number']], o['pct'], o['stuck'])
+        add(plain(o['author']), o, [o['number']], o['pct'], o['stuck'])
     return rows
 
 
@@ -433,9 +474,9 @@ def _running_lines(model: dict) -> list[str]:
     if not rows:
         return out
     feats = [clip_width(f"F#{r['feature']} {r['feature_title']}" if r['feature'] else 'F#—', FEATURE_TITLE_WIDTH + 8).rstrip() for r in rows]
-    tasks = [clip_width('・'.join(f'#{n}' for n in r['numbers']) or '—', TASKS_WIDTH) for r in rows]
+    tasks = [join_owners([f'#{n}' for n in r['numbers']], TASKS_WIDTH) or '—' for r in rows]
     stages = [r['stage'] for r in rows]
-    owners = [clip_width(r['owner'], OWNER_WIDTH) for r in rows]
+    owners = [join_owners(r['owners'], OWNER_WIDTH) for r in rows]
     fw, tw, sw = (max(disp_width(x) for x in col) for col in (feats, tasks, stages))
     show_now = any(r.get('now') for r in rows)
     ow = max(disp_width(x) for x in owners)

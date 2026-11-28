@@ -1343,9 +1343,10 @@ def _load_checks(t, tmp_dir: str) -> None:
     gh_task.is_coordinator = lambda: False
     real_orca_assignments = gh_task._orca_assignments
     gh_task._orca_assignments = lambda progress: {}  # このマシンの Orca を読まない（TKS-R6 の検査だけが偽の orca を PATH に置いて戻す）
-    real_tree_numbers = gh_task._tree_numbers
+    real_tree_info = gh_task._tree_info
     tree_numbers_now: set = set()
-    gh_task._tree_numbers = lambda progress: set(tree_numbers_now)  # このマシンの作業ツリーも読まない（検査が tree_numbers_now に番号を入れる）
+    tree_names_now: dict = {}
+    gh_task._tree_info = lambda progress: {'numbers': set(tree_numbers_now), 'names': dict(tree_names_now)}  # このマシンの作業ツリーも読まない（検査が番号と名前を入れる）
     load = gh_task._load_module()
 
     def write_assign(rows) -> None:
@@ -1494,13 +1495,13 @@ def _load_checks(t, tmp_dir: str) -> None:
                 body.append(x)
             def row(n):
                 return next(x for x in body if re.search(rf'#{n}\b', x))
-            assert 'F#20 F2' in row(43) and 'CI 赤' in row(43) and '乙' in row(43), row(43)
-            assert '衝突' in row(44) and 'CI 緑' in row(45) and 'merge 済み' in row(46), (row(44), row(45), row(46))
-            assert 'draft' in row(42) and '着手' in row(41), (row(42), row(41))
-            assert 'F#10 F1' in row(50), row(50)
-            assert 'other-dev' in row(49) and 'CI 緑' in row(49) and 'other-dev' in row(51), (row(49), row(51))
+            assert row(43) == row(44) == row(49) and 'F#20 F2' in row(43), 'feature が同じ task は 1 行にまとめる'
+            for n in (40, 41, 42, 43, 44, 45, 46, 49, 51):
+                assert re.search(rf'#{n}\b', row(43)), (n, row(43))
+            assert 'CI 赤' in row(43) and 'CI 緑' not in row(43) and '乙・甲' in row(43) and 'other-dev' in row(43), f'止まりを優先・担当は「・」でつなぐ: {row(43)}'
+            assert 'F#10 F1' in row(50) and '未着手' in row(50), row(50)
             assert lines[head] == f'いま動いている {len(body)}', lines[head]
-            assert len({load.disp_width(x[:x.index('#')]) for x in map(row, (42, 43, 45))}) == 1, '左の列の桁がそろっていない'
+            assert len({load.disp_width(x[:x.index('#')]) for x in (row(43), row(50))}) == 1, '左の列の桁がそろっていない'
             turn = next(i for i, x in enumerate(lines) if x.startswith('あなたの番 '))
             assert lines[turn + 1].split()[:3] == ['取り込み', 'PR', '#142（Draft・緑）、#145（緑）'] or '取り込み' in lines[turn + 1] and '#142（Draft・緑）' in lines[turn + 1] and '#145（緑）' in lines[turn + 1], lines[turn + 1]
             assert '#143' not in lines[turn + 1] and '#144' not in lines[turn + 1] and '#149' not in lines[turn + 1], '赤・衝突・ほかの人の PR を取り込み待ちに出した'
@@ -1530,6 +1531,44 @@ def _load_checks(t, tmp_dir: str) -> None:
                 assert key in m, f'--json の鍵 {key} が消えた'
             assert {'name', 'total', 'done', 'held'} <= set(m['sections'][0]) and {'owner', 'tasks'} == set(m['people'][0]), m['people'][0].keys()
         t('load: 作業ツリーの担当が動いている task は担当の居ないものから外し・同じ task の PR は 1 行・--json の鍵は消さない', _stray_and_dedup_and_json)
+
+        def _running_names_and_stage() -> None:
+            # 1: 担当は作業ツリーの名前。無ければ控えの名前から先頭の `#番号 ` を落とす。ほかの開発者は GitHub の名前のまま
+            def person(owner, *entries):
+                return {'owner': owner, 'tasks': [dict({'section': 's', 'note': '', 'pr': None, 'stuck': '', 'feature': 7, 'feature_title': '機能'}, **e) for e in entries]}
+            mk = lambda *people, names=None: {'people': list(people), 'others': [], 'tree_names': names or {}}
+            r = load.running_rows(mk(person('#99 長い控えの名前（PR #1 の直し）', {'number': 1, 'pct': 20}), names={1: '1-tree'}))
+            assert r[0]['owners'] == ['1-tree'], r
+            r = load.running_rows(mk(person('#99 長い控えの名前（PR #1 の直し）', {'number': 1, 'pct': 20})))
+            assert r[0]['owners'] == ['長い控えの名前（PR #1 の直し）'], r
+            r = load.running_rows(dict(mk(person('skawashima', {'number': 1, 'pct': 20})), others=[
+                {'number': 2, 'pr': 9, 'author': 'ext-dev', 'pct': 70, 'stuck': '', 'feature': 8, 'feature_title': 'y'}]))
+            assert [x['owners'] for x in r] == [['skawashima'], ['ext-dev']], r
+            # 2: 段は「いちばん遅れている段」・止まりが先・担当が多ければ「ほか N」
+            r = load.running_rows(mk(person('a', {'number': 1, 'pct': 70}), person('b', {'number': 2, 'pct': 20}), person('c', {'number': 3, 'pct': 90})))
+            assert len(r) == 1 and r[0]['numbers'] == [1, 2, 3] and r[0]['stage'] == '着手' and r[0]['owners'] == ['a', 'b', 'c'], r
+            r = load.running_rows(mk(person('a', {'number': 1, 'pct': 20}), person('b', {'number': 2, 'pct': 70, 'stuck': '衝突'})))
+            assert r[0]['stage'] == '衝突', r
+            r = load.running_rows(mk(person('a', {'number': 1, 'pct': 20, 'feature': None, 'feature_title': ''}),
+                                     person('b', {'number': 2, 'pct': 20, 'feature': None, 'feature_title': ''})))
+            assert len(r) == 2 and r[0]['feature'] is None, '親の feature が分からない task を 1 行にまとめた'
+            assert load.join_owners(['a' * 10, 'b' * 10, 'c' * 10], 30) == 'a' * 10 + '・' + 'b' * 10 + '・ほか 1', load.join_owners(['a' * 10, 'b' * 10, 'c' * 10], 30)
+            assert load.join_owners(['甲', '乙'], 30) == '甲・乙'
+            r = load.running_rows(mk(person('a', {'number': 7, 'pct': 0, 'is_feature': True, 'children': [3, 4]}), person('b', {'number': 8, 'pct': 0, 'is_feature': True, 'children': []})))
+            assert r[0]['numbers'] == [3, 4] and r[0]['stage'] == '未着手', r  # 同じ feature の中に、子が動いていない 0 の行があれば、いちばん遅れている段は未着手
+            r = load.running_rows(mk(person('a', {'number': 7, 'pct': 0, 'is_feature': True, 'children': [3, 4]})))
+            assert r[0]['numbers'] == [3, 4] and r[0]['stage'] == '着手', f'動いている子があるのに未着手: {r}'
+        t('load: いま動いている は feature で 1 行にまとめ、段はいちばん遅れている段（止まり優先）・担当は作業ツリーの名前（無ければ `#番号 ` を落とした控えの名前）', _running_names_and_stage)
+
+        def _feature_title_suffix() -> None:
+            assert load.strip_section_suffix('堅牢化（13 本番環境の構築）', '13. 本番環境の構築') == '堅牢化'
+            assert load.strip_section_suffix('ハーネス（ハーネスの改善）', 'ハーネスの改善') == 'ハーネス'
+            assert load.strip_section_suffix('認証（ログイン周り）', '13. 本番環境の構築') == '認証（ログイン周り）', '別の括弧は残す'
+            assert load.strip_section_suffix('括弧なし', '2. x') == '括弧なし'
+            rows = [dict(r, title='F2（2 営業の登録）') if r['number'] == 20 else r for r in _load_rows()]
+            m = model_of(rows=rows)
+            assert all(x['feature_title'] == 'F2' for p in m['people'] for x in p['tasks'] if x['feature'] == 20), m['people'][0]['tasks'][0]
+        t('load: feature の題の末尾の、セクション名と同じ括弧は表示から外す（題は変えない・別の括弧は残す）', _feature_title_suffix)
 
         def _done_sections_hidden() -> None:
             rows = [dict(r, status='完了', state='CLOSED') if r['number'] in (12, 50) else r for r in _load_rows()]
@@ -1852,7 +1891,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                     gh_task.print_load_after()
                 out = buf.getvalue()
                 assert out.splitlines()[1] == '控えは 4320 分前の数です。取り直す: hirai-task load' and '（控え:' not in out, f'古い控えの断りが先頭に無い: {out[:160]}'
-                assert any(re.search(r'#40\b', x) and '着手' in x for x in out.splitlines()), f'start の変更が段に重ならない: {out}'
+                assert any(re.search(r'#40\b', x) and x.startswith(' ') for x in out.splitlines()), f'start のあとの task が いま動いている に出ない: {out}'
                 items = [gh_task.parse_item({'id': r['id'], 'fieldValues': {'nodes': [
                     {'__typename': 'ProjectV2ItemFieldSingleSelectValue', 'name': v, 'field': {'name': f}}
                     for f, v in (('Status', r['status']), (gh_task.KIND_FIELD, r['kind'])) if v]}, 'content': {
@@ -2461,7 +2500,8 @@ def _load_checks(t, tmp_dir: str) -> None:
                 return prs
             fresh(prs=with_mergeable('CONFLICTING'))
             rc, out = _run_main(['load'])
-            assert any(re.search(r'#43\b', x) and 'CI 赤' in x for x in out.splitlines()) and any(re.search(r'#44\b', x) and '衝突' in x for x in out.splitlines()), out[-300:]
+            assert [(x['number'], x['stuck']) for x in model_of(prs=with_mergeable('CONFLICTING'))['stuck']] == [(43, 'CI 赤'), (44, '衝突')], out[-300:]
+            assert any(re.search(r'#43\b', x) and 'CI 赤' in x for x in out.splitlines()), out[-300:]
             for value in ('UNKNOWN', 'CONFLICTING', 'UNKNOWN'):
                 gh_task.run_gh = _load_gh(calls, prs=with_mergeable(value))
                 rc, out = _run_main(['load', '--changed'])
@@ -2582,7 +2622,7 @@ def _load_checks(t, tmp_dir: str) -> None:
         gh_task.run_gh, gh_task.PROJECT_NUMBER_OVERRIDE, gh_task._mode_setting = orig_run, orig_override, orig_mode
         gh_task.is_coordinator, gh_task.ensure_assignee, gh_task._local_state_dir = entry_coord, entry_ensure, orig_local
         gh_task._orca_assignments = real_orca_assignments
-        gh_task._tree_numbers = real_tree_numbers
+        gh_task._tree_info = real_tree_info
 
 
 def _card_field_defs(*, with_card_fields: bool = True) -> list[dict]:
@@ -3071,6 +3111,25 @@ def _progress_checks(t, tmp_dir: str) -> None:
             raise FileNotFoundError('git')
         assert 201 in hp.worktree_numbers('o/r', runner, boom), 'git が無くても orca の分は返す'
     t('progress: 作業ツリーの番号は Orca の一覧と git worktree list から集め、本体の checkout・別のリポは拾わない', _tree_numbers)
+
+    def _unlinked_trees() -> None:
+        # linkedIssue も表示名の番号も無い作業ツリーは、フォルダ名・branch の最後の段の頭の番号で担当にする（feature のことも task のことも）
+        state['orca'] = True
+        names = [tree('/w/656-hardening-a', '656-hardening-a', branch='refs/heads/me/656-hardening-a'),
+                 tree('/w/2071-dns-one-zone', '2071-dns-one-zone', branch='refs/heads/me/2074-stg-one-zone'),
+                 tree('/w/911-legacy-ses', '911-legacy-ses'), tree('/w/stg-night-stop', 'stg-night-stop', branch='refs/heads/t/stg-night-stop')]
+        def run_names(argv):
+            sub = ' '.join(argv[1:3])
+            return 0, json.dumps({'ok': True, 'result': {'worktree list': {'worktrees': names}, 'orchestration worker-list': {'workers': []},
+                                                         'orchestration task-list': {'tasks': []}, 'orchestration inbox': {'messages': []}}[sub]})
+        got = hp.worktree_assign('o/r', run_names)
+        assert sorted(got) == [656, 911, 2071, 2074] and got[656]['owner'] == '656-hardening-a', got
+        info = hp.worktree_info('o/r', run_names, lambda argv: (1, ''))
+        assert info['names'] == {656: '656-hardening-a', 911: '911-legacy-ses', 2071: '2071-dns-one-zone', 2074: '2071-dns-one-zone'}, info['names']
+        assert {656, 2071, 2074, 911} <= info['numbers']
+        col = hp.collect('o/r', run_names, lambda argv: (1, ''), tz)
+        assert sorted(col['assign']) == [656, 911, 2071, 2074] and col['tree_names'][2074] == '2071-dns-one-zone', col['assign']
+    t('progress: linkedIssue も表示名の番号も無い作業ツリーを、フォルダ名・branch の頭の番号（feature も task も）で担当にし、名前を返す', _unlinked_trees)
 
     def _json_shape() -> None:
         m = json.loads(json.dumps(model()))
