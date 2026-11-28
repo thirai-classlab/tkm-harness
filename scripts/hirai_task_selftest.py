@@ -2637,11 +2637,14 @@ def _load_checks(t, tmp_dir: str) -> None:
                     r = dict(r, assignees=['kawa'])
                 if r['number'] == 50:
                     r = dict(r, assignees=['kawa', 'me'])
+                if r['number'] == 51:   # 作業ツリー（控えの担当）が残っているだけの、ほかの人の task
+                    r = dict(r, owner='丙', order=1.0)
                 rows.append(r)
             rows += [arow(70, '進行中', ['kawa'], 'エリアの選び方'), arow(71, 'レビュー中', ['kawa'], 'エリアか家賃なしで保存させない'),
                      arow(72, 'レビュー中', ['kawa'], '未使用の依存と export'), arow(73, '判断待ち', ['kawa'], 'エリアの選び方の細部'),
                      arow(74, '着手可', ['me'], 'AI が持つ'), *[arow(n, '着手可', ['me']) for n in range(75, 80)],
-                     arow(80, '着手可', [], '[User] 手で打つ'), arow(81, '判断待ち'), arow(82, '判断待ち')]
+                     arow(80, '着手可', [], '[User] 手で打つ'), arow(81, '判断待ち'), arow(82, '判断待ち'),
+                     arow(84, '着手可', ['me'], '[User] 自分で打つ'), arow(85, '判断待ち', ['me'], '自分の判断')]
             prs = _load_default_prs()
             prs['open'] += [_load_pr(171, [71]), _load_pr(172, [72], mergeable='CONFLICTING')]
             saved_people = os.environ.get('TKM_HARNESS_PEOPLE')
@@ -2675,7 +2678,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                     break
                 block.append(x)
             heads = [x for x in block if not x.startswith('   ')]
-            assert heads == [' 川嶋 6', ' 外部 1', ' 平井 8', ' 担当なし 12（着手可 1・判断待ち 2・人の作業 1・進行中 2・レビュー中 3・止まり 2・ほか 1）'], heads
+            assert heads == [' 川嶋 6', ' 外部 1', ' 平井 10', ' 担当なし 12（着手可 1・判断待ち 2・人の作業 1・進行中 2・レビュー中 3・止まり 2・ほか 1）'], heads
             text = '\n'.join(block)
             assert re.search(r'進行中\s+#70 エリアの選び方$', text, re.M), text
             assert re.search(r'レビュー中\s+#71 エリアか家賃なしで保存させない（PR #171・CI 緑）$', text, re.M), text
@@ -2685,21 +2688,25 @@ def _load_checks(t, tmp_dir: str) -> None:
             assert [x.split()[0] for x in kawa if x.startswith('   ')] == ['進行中', 'レビュー中', '止まり', '判断待ち', '着手可', '#50'], kawa
             assert len({load.disp_width(x[:x.index('#')]) for x in kawa if x.startswith('   ')}) == 1, f'状態の列の桁がそろっていない: {kawa}'
             # 自分のアカウント: 作業ツリーがある task = AI の担当・それ以外 = 人の作業（先頭 3 件と ほか N）
-            mine = block[block.index(' 平井 8') + 1:-1]
-            assert re.fullmatch(r'   AI の担当\s+#74 AI が持つ', mine[0]) and re.fullmatch(r'   人の作業\s+#50・#52・#75 ほか 4', mine[1]), mine
-            assert len(mine) == 2, mine
+            mine = block[block.index(' 平井 10') + 1:-1]
+            assert [re.sub(r'\s+', ' ', x.strip()) for x in mine] == [
+                'AI の担当 #74 AI が持つ', '人の作業 #84 自分で打つ', '担当の居ないもの #52 row 52',
+                '着手可 #50・#75・#76 ほか 3', '判断待ち #85 自分の判断'], mine
             assert re.search(r'進行中\s+#51 ', text) and 'other-dev' not in text, '表示名に直らない・ほかの人の task が出ない'
             # 5: いま動いている のほかの開発者の行の右端も表示名
+            own51 = [x for x in lines if x.startswith(' ') and re.search(r'#51\b', x) and 'F#' in x]
+            assert own51 and own51[0].rstrip().endswith('外部') and '丙' not in own51[0], f'ほかの人だけが担当の task を自分の作業ツリーの行に出した: {own51}'
+            assert any(p['other'] and p['owner'] == '外部' and 51 in [x['number'] for x in p['tasks']] for p in m['people']), m['people']
             dev_rows = [x for x in lines if x.startswith(' ') and re.search(r'#49\b', x)]
             assert dev_rows and dev_rows[0].rstrip().endswith('外部') and 'other-dev' not in dev_rows[0], dev_rows
             # --json: 鍵は足すだけ
             assert m['assignees_known'] is True and m['me'] == 'me' and m['unassigned']['count'] == 12, (m['assignees_known'], m['unassigned'])
-            assert [p['name'] for p in m['by_assignee']] == ['川嶋', '外部', '平井'] and m['by_assignee'][2]['me'] is True
+            assert [p['name'] for p in m['by_assignee']] == ['川嶋', '外部', '平井'] and m['by_assignee'][2]['me'] is True and m['by_assignee'][2]['count'] == 10
             assert m['settings']['people'] == {'kawa': '川嶋', 'me': '平井', 'other-dev': '外部'}, m['settings']['people']
             assert m['sections'][0]['next']['assignees'] == ['kawa', 'me'] and m['sections'][0]['next']['assignee_names'] == ['川嶋', '平井']
             # 対応表に無い人は GitHub の名前のまま
             out2 = load.render(model_of(rows=rows, prs=prs))
-            assert ' kawa 6' in out2 and ' other-dev 1' in out2 and ' me 8' in out2 and 'kawa・me' in out2, out2
+            assert ' kawa 6' in out2 and ' other-dev 1' in out2 and ' me 10' in out2 and 'kawa・me' in out2, out2
         t('load: 担当者の列・人ごとの段（状態の並び・PR と CI の段・先頭 3 件と ほか N・自分は AI の担当と人の作業・担当なしは数）・名前の対応表', _assignee_column_and_people)
 
         def _people_map_parse() -> None:
@@ -3326,7 +3333,7 @@ def _progress_checks(t, tmp_dir: str) -> None:
         assert m['source'] == 'fallback'
         owners = {n: r['owner'] for n, r in rows_of(m).items()}
         assert owners.get(201) == '201-x', owners                                               # PR の head の branch 名の頭の番号
-        assert owners.get(209) == '209-from-branch', owners
+        assert owners.get(209) == 'alice', owners   # Assignees が自分以外だけの task は、branch 名の担当より担当者の行
         assert 'Orca から引けなかった' in hp.render(load, m)
         rc = hp.orca_json(['worktree', 'list'], lambda argv: (1, '{}'))
         assert rc is None

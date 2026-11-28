@@ -45,7 +45,8 @@ PEOPLE_SHOWN = 3  # 人ごとの段で、状態ごとに題つきで出す件数
 # 人ごとの段の状態の並び（担当者のいる行）と、担当なしの行の並び
 STATE_ORDER = ('進行中', 'レビュー中', '止まり', '判断待ち', '人の作業', '着手可', 'ほか')
 UNASSIGNED_ORDER = ('着手可', '判断待ち', '人の作業', '進行中', 'レビュー中', '止まり', 'ほか')
-MINE_AI, MINE_HUMAN = 'AI の担当', '人の作業'  # 自分のアカウントの行の 2 つの区分
+MINE_AI, MINE_HUMAN, MINE_ORPHAN = 'AI の担当', '人の作業', '担当の居ないもの'  # 自分のアカウントの行の区分（残りは状態ごと）
+MINE_ORDER = (MINE_AI, MINE_HUMAN, MINE_ORPHAN, '着手可', '判断待ち', '承認待ち', '依存待ち', '保留', 'ほか')
 STALE_NOTE = '控えに担当者が無い。取り直す: hirai-task load'
 STATUS_DECISION = '判断待ち'
 STATUS_PENDING = '承認待ち'
@@ -254,6 +255,19 @@ def task_state(task: dict, stuck: str) -> str:
     return status if status in ('進行中', 'レビュー中', '着手可') else 'ほか'
 
 
+def mine_state(task: dict, has_worker: bool) -> str:
+    """自分のアカウントの task の区分: 作業ツリーがある = AI の担当／題に [User]・[操作] = 人の作業／進行中・レビュー中なのに
+    作業ツリーも印も無い = 担当の居ないもの／それ以外は Status ごと。"""
+    status = task.get('status') or ''
+    if has_worker:
+        return MINE_AI
+    if is_human(task):
+        return MINE_HUMAN
+    if status in NO_OWNER_STATUSES:
+        return MINE_ORPHAN
+    return status if status in MINE_ORDER else 'ほか'
+
+
 def pr_part(number: int, ctx: dict) -> dict | None:
     """その task の PR 1 本（draft でない・番号の大きいものを優先）と、段の語（止まり・draft・CI の状態）。無ければ None。"""
     mine = ctx['prs_of'].get(number, [])
@@ -328,6 +342,12 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
     total, done, held = (sum(s[k] for s in sections) for k in ('total', 'done', 'held'))
     named = dict(assign)
     others_of: dict[str, str] = {}
+    for n in list(named):  # 作業ツリーが手元に残っていても、Assignees が自分以外だけの task はその人の行に出す
+        if n in tasks and hirai_board.is_open(tasks[n]):
+            people_of = assignees_of(n) or []
+            if people_of and me_key not in {x.casefold() for x in people_of}:
+                others_of[n] = '・'.join(name_of(x) for x in people_of)
+                named[n] = {'owner': others_of[n], 'order': None}
     for t in tasks.values():
         n = t['number']
         if n in named or not hirai_board.is_open(t) or t.get('status') not in NO_OWNER_STATUSES:
@@ -389,7 +409,7 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
             pct, _note, stuck = stage_of(t['number'], ctx)
             entry = {'number': t['number'], 'title': strip_marks(t.get('title')), 'state': task_state(t, stuck),
                      'pr': pr_part(t['number'], ctx), 'order': t.get('order'),
-                     'mine_state': MINE_AI if has_worker(t['number']) else MINE_HUMAN}
+                     'mine_state': mine_state(t, has_worker(t['number']))}
             if not logins:
                 free.append(entry)
             for login in logins:
@@ -401,7 +421,7 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
             entries = list(person['entries'].values())
             is_me = bool(me_key) and any(x.casefold() == me_key for x in person['logins'])
             by_assignee.append({'name': person['name'], 'logins': person['logins'], 'me': is_me, 'count': len(entries),
-                                'groups': _groups(entries, (MINE_AI, MINE_HUMAN) if is_me else STATE_ORDER,
+                                'groups': _groups(entries, MINE_ORDER if is_me else STATE_ORDER,
                                                   'mine_state' if is_me else 'state')})
         by_assignee.sort(key=lambda p: (p['me'], -p['count'], p['name']))
         counts = {state: sum(1 for e in free if e['state'] == state) for state in UNASSIGNED_ORDER}
