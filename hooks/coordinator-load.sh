@@ -2,8 +2,10 @@
 # PostToolUse(Bash) の hook。コーディネーターの会話にだけ、次の 2 つを足す（どちらか 1 回に JSON は 1 つ。両方に当たれば表のほう）。
 #  1. 振り出し（orca orchestration worker-start・orca worktree set --issue・hirai-task / gh-task.sh の assign・start）か
 #     完了（hirai-task / gh-task.sh の done・after-merge・gh pr merge）のあと
-#     （区切った各部分を語に分け、コマンドの位置の語で決める。引用の中の文・閉じない引用では出ない）: `hirai-task load --cached` の表を、
-#     systemMessage（人の画面に出る。F7）と additionalContext（AI に入る。F8）の両方に出す。AI が出力を切っても貼り忘れても人の画面に表が出る。
+#     （区切った各部分を語に分け、コマンドの位置の語で決める。引用の中の文・閉じない引用では出ない）: `hirai-task load --cached --changed` の表を、
+#     段・担当・順番が前回に出した表から動いたときだけ、systemMessage（人の画面に出る。F7）と additionalContext（AI に入る。F8）の両方に出す。
+#     動いていなければ（load が exit 3）1 バイトも出さない。assign・start・done が自分の出力に表を出したあと（前回の控えを書き換えている）も
+#     同じ表を重ねない。会話の始まり（session-start.sh）と手で打つ `hirai-task load` は、動いたかを問わず全部出す。
 #  2. `orca orchestration check` で担当からの知らせを受けたとき: 「hirai-task load --changed を打つ」の 1 行を additionalContext に足す。
 # 止めない: 操作の可否を変えず、常に exit 0。対象外・load の失敗・空・時間切れ（8 秒）は 1 バイトも出さない（_meta.md 条 5 の context を注ぐだけの hook）。
 # GitHub を叩かない: 表は控え（--cached）から。各欄は 10,000 字の内に収め、超えたら末尾を切って「（続きは hirai-task load）」の 1 行にする。
@@ -41,7 +43,7 @@ if kind == "notice":
     emit("担当からの知らせを受けました。`hirai-task load --changed` を打ち、出力があればそのまま貼ります（段・担当・順番が動いていなければ何も出ません）。")
     sys.exit(0)
 try:
-    r = subprocess.run([task, "load", "--cached"], capture_output=True, text=True, timeout=8)
+    r = subprocess.run([task, "load", "--cached", "--changed"], capture_output=True, text=True, timeout=8)
 except Exception:
     sys.exit(0)
 table = r.stdout.strip()

@@ -1343,6 +1343,9 @@ def _load_checks(t, tmp_dir: str) -> None:
     gh_task.is_coordinator = lambda: False
     real_orca_assignments = gh_task._orca_assignments
     gh_task._orca_assignments = lambda progress: {}  # このマシンの Orca を読まない（TKS-R6 の検査だけが偽の orca を PATH に置いて戻す）
+    real_tree_numbers = gh_task._tree_numbers
+    tree_numbers_now: set = set()
+    gh_task._tree_numbers = lambda progress: set(tree_numbers_now)  # このマシンの作業ツリーも読まない（検査が tree_numbers_now に番号を入れる）
     load = gh_task._load_module()
 
     def write_assign(rows) -> None:
@@ -1398,8 +1401,9 @@ def _load_checks(t, tmp_dir: str) -> None:
             m2 = model_of(prs=prs)
             assert [o['number'] for o in m2['others']] == [49], f'task でない・載っていない・閉じたものを出した: {m2["others"]}'
             out = load.render(m)
-            assert '進行中・レビュー中なのに担当の居ないもの: #47, #52' in out, out
-            assert 'ほかの開発者の PR: #49（PR #149・other-dev）' in out, out
+            assert '担当の居ないもの（進行中・レビュー中）: #47、#52' in out, out
+            assert any(x.startswith(' ') and re.search(r'#49\b', x) and 'other-dev' in x for x in out.splitlines()), 'ほかの開発者の PR の task が いま動いている に出ない'
+            assert 'ほかの開発者の PR:' not in out, out
         t('load: 担当の居ない 進行中 と、ほかの開発者の PR を出す', _owner_missing_and_others)
 
         def _not_in_snapshot() -> None:
@@ -1419,11 +1423,11 @@ def _load_checks(t, tmp_dir: str) -> None:
             modes.update(modes_set)
             rc, out = _run_main(['load'])
             assert rc == 0, out
-            assert 'ベータに要ると本文に書かれた task は、開いているものが 2 件あります。' in out.splitlines()[0], out.splitlines()[0]
+            assert 'ベータ 12/15 まで残り 2 件' in out.splitlines()[0], out.splitlines()[0]
             fresh(fail_search=True)
             modes.update(modes_set)
             rc, out = _run_main(['load'])
-            assert rc == 0 and 'ベータの件数は引けませんでした。' in out.splitlines()[0], out.splitlines()[0]
+            assert rc == 0 and 'ベータ 12/15 の件数は引けませんでした' in out.splitlines()[0], out.splitlines()[0]
             fresh()
             rc, out = _run_main(['load'])
             assert '期限' not in out.splitlines()[0] and not any('search/issues' in c for c in calls), '設定が無いのに期限の行か検索が出た'
@@ -1434,25 +1438,104 @@ def _load_checks(t, tmp_dir: str) -> None:
         t('load: 期限は設定があるときだけ、本文の「期限: <日付>」の行で数える（日付に触れただけの issue は数えない。見本の誤り）',
           _deadline_lines)
 
+        def _width_helpers() -> None:
+            assert load.disp_width('abc') == 3 and load.disp_width('あい') == 4 and load.disp_width('A夜1') == 4, '全角は幅 2・半角は 1'
+            assert load.disp_width('［人］') == 6, load.disp_width('［人］')
+            clipped = load.clip_width('夜の停止の 1 回目の apply', 10)
+            assert clipped.endswith('…') and load.disp_width(clipped) <= 10, clipped
+            assert load.clip_width('短い', 10) == '短い', '収まるものは切らない'
+            assert load.disp_width(load.pad('夜の', 8)) == 8 and load.pad('長い長い長い', 4) == '長い長い長い', '幅で埋める・はみ出しは切らない'
+        t('load: 全角の幅は 2 で数え、幅で切って「…」を付け、幅で埋める', _width_helpers)
+
+        def _next_pick_and_tags() -> None:
+            tasks = [{'number': 9, 'order': None}, {'number': 7, 'order': 2.0}, {'number': 5, 'order': 2.0}, {'number': 3, 'order': 5.0}]
+            assert load.pick_next(tasks)['number'] == 5, '着手順が小さい順・同じなら番号の若い順（ready の着手順と同じ）'
+            assert load.pick_next([{'number': 9, 'order': None}, {'number': 4, 'order': None}])['number'] == 4, '着手順が無ければ番号の若い順'
+            assert load.pick_next([{'number': 1, 'order': None, 'status': '保留'}, {'number': 8, 'order': 9.0}])['number'] == 8, '保留は後回し'
+            assert load.pick_next([{'number': 1, 'order': None, 'status': '保留'}])['number'] == 1 and load.pick_next([]) is None
+            blocked = {20: '自分に未完了の blocked by'}
+            for task, want in (({'number': 1, 'status': '進行中', 'title': 'a'}, '進行中'), ({'number': 1, 'status': 'レビュー中', 'title': 'a'}, 'レビュー中'),
+                               ({'number': 1, 'status': '着手可', 'title': 'a'}, '着手可'), ({'number': 20, 'status': '着手可', 'title': 'a'}, '依存待ち'),
+                               ({'number': 1, 'status': '着手可', 'title': '[操作] apply'}, '人'), ({'number': 1, 'status': '進行中', 'title': '[User] 画面'}, '人'),
+                               ({'number': 1, 'status': '判断待ち', 'title': '[User] 画面'}, '判断'), ({'number': 1, 'status': '承認待ち', 'title': 'a'}, '承認待ち'),
+                               ({'number': 1, 'status': '依存待ち', 'title': 'a'}, '依存待ち'), ({'number': 1, 'status': '保留', 'title': '[User] a'}, '保留')):
+                assert load.turn_tag(task, blocked) == want, (task, load.turn_tag(task, blocked), want)
+            d = {'deadline_date': '2026-12-15', 'deadline_label': 'ベータ（12/15・エージェントのオンボーディング）', 'deadline_open': 13}
+            assert load.deadline_part(d) == 'ベータ 12/15 まで残り 13 件', load.deadline_part(d)
+            assert load.deadline_part({**d, 'deadline_label': '期限（2026-12-15）', 'deadline_open': 3}) == '期限 12/15 まで残り 3 件'
+            assert load.deadline_part({**d, 'deadline_date': ''}) == '' and load.strip_marks('[User]  STG で打つ [操作]') == 'STG で打つ'
+        t('load: 次のタスクは着手順の若い順（無ければ番号順・保留は後回し）で選び、誰の番かの語を 8 通りで付ける', _next_pick_and_tags)
+
         def _table_shape() -> None:
-            m = model_of()
-            out = load.render(m)
+            out = load.render(model_of())
             lines = out.splitlines()
-            assert lines[0] == '2 / 15 完了（13%）。保留の 1 件を除くと 14% です。', lines[0]
-            assert '| セクション | 進み | セクション | 進み |' in out and '| 土台 | 33% | 営業の登録 | 8% |' in out, out
-            assert '**進行中のタスク**' in out and load.STAGE_SENTENCE in out, out
-            assert '| 甲 | 営業の登録 | #40 → #41 → #42（PR #142） → #48 | 0% → 20% → 50% → 100% |' in out, out
-            assert '| | 土台 | #50 | 0% |' in out.replace('|  |', '| |'), out
+            assert lines[0] == '全体 2/15（13%）  保留 1 を除くと 14%', lines[0]
+            assert '|' not in out and '---' not in out and '**' not in out and '期限' not in lines[0], f'Markdown の表の記号が残った: {out}'
+            assert lines[2].split() == ['セクション', '完了', '次のタスク'], lines[2]
+            sec = [x for x in lines if '営業の登録' in x or '土台' in x]
+            assert len(sec) == 2 and '1/3' in sec[0] and '#50' in sec[0] and '［着手可］' in sec[0], sec
+            assert '1/12' in sec[1] and '#40' in sec[1] and '［着手可］' in sec[1], sec  # 着手順 1.0 が 2 件（#40・#43）なら番号の若い #40
+            cols = {load.disp_width(x[:x.index('#')]) for x in sec}
+            assert len(cols) == 1, f'次のタスクの桁がそろっていない: {cols} {sec}'
+            assert sum(1 for x in lines if x.startswith(' ')) >= 2 and not any('営業の登録' in x and '土台' in x for x in lines), '1 行 1 セクション'
             fresh(); modes.update({'load_mainline': '営業', 'load_mainline_label': 'ベータの本線'})
             rc, out = _run_main(['load'])
             assert '営業の登録（ベータの本線）' in out, out
-        t('load: 1 行目・セクションの表・進行中のタスクの表の形が、決まった 4 部と同じ（セクションの変わり目で行を分ける）', _table_shape)
+        t('load: 平文 3 段（1 行目・セクションの表・次のタスクの桁）が決まった形と同じ（Markdown の記号なし・1 行 1 セクション）', _table_shape)
+
+        def _running_and_turn() -> None:
+            out = load.render(model_of())
+            lines = out.splitlines()
+            head = next(i for i, x in enumerate(lines) if x.startswith('いま動いている '))
+            body = []
+            for x in lines[head + 1:]:
+                if not x.startswith(' '):
+                    break
+                body.append(x)
+            def row(n):
+                return next(x for x in body if re.search(rf'#{n}\b', x))
+            assert 'F#20 F2' in row(43) and 'CI 赤' in row(43) and '乙' in row(43), row(43)
+            assert '衝突' in row(44) and 'CI 緑' in row(45) and 'merge 済み' in row(46), (row(44), row(45), row(46))
+            assert 'draft' in row(42) and '着手' in row(41), (row(42), row(41))
+            assert 'F#10 F1' in row(50), row(50)
+            assert 'other-dev' in row(49) and 'CI 緑' in row(49) and 'other-dev' in row(51), (row(49), row(51))
+            assert lines[head] == f'いま動いている {len(body)}', lines[head]
+            assert len({load.disp_width(x[:x.index('#')]) for x in map(row, (42, 43, 45))}) == 1, '左の列の桁がそろっていない'
+            turn = next(i for i, x in enumerate(lines) if x.startswith('あなたの番 '))
+            assert lines[turn + 1].split()[:3] == ['取り込み', 'PR', '#142（Draft・緑）、#145（緑）'] or '取り込み' in lines[turn + 1] and '#142（Draft・緑）' in lines[turn + 1] and '#145（緑）' in lines[turn + 1], lines[turn + 1]
+            assert '#143' not in lines[turn + 1] and '#144' not in lines[turn + 1] and '#149' not in lines[turn + 1], '赤・衝突・ほかの人の PR を取り込み待ちに出した'
+            rows = _load_rows() + [dict(_load_rows()[6], number=60 + i, id=f'I_{60 + i}', status='判断待ち', owner='', order=None) for i in range(4)] \
+                + [dict(_load_rows()[6], number=64, id='I_64', status='着手可', owner='', order=None, title='[User] 手で打つ')]
+            out2 = load.render(model_of(rows=rows))
+            assert re.search(r'判断\s+#60・#61・#62 ほか 1', out2) and re.search(r'人の作業\s+#64', out2), out2
+            nothing = load.render(model_of(prs={'open': [], 'merged': []}))
+            assert 'あなたの番' not in nothing, '材料が無いのに あなたの番 を出した'
+        t('load: いま動いている（feature・task・段の語・担当）と あなたの番（取り込み・判断・人の作業）を出す', _running_and_turn)
+
+        def _stray_and_dedup_and_json() -> None:
+            assert model_of()['stray'] == [47, 52]
+            tree_numbers_now.update({47})                    # 作業ツリーの名前に task の番号がある = 担当が動いている
+            assert model_of()['stray'] == [52], model_of()['stray']
+            tree_numbers_now.clear(); tree_numbers_now.update({20})  # 親の feature の番号（ブランチ名の頭）も同じ
+            assert model_of()['stray'] == [], model_of()['stray']
+            assert '担当の居ないもの' not in load.render(model_of()), '0 件なのに行を出した'
+            tree_numbers_now.clear()
+            prs = _load_default_prs()
+            prs['open'].append(_load_pr(150, [49], author='other-dev'))  # 同じ task を閉じる 2 本目の PR
+            m = model_of(prs=prs)
+            assert [(o['number'], o['pr']) for o in m['others']] == [(49, 149)], m['others']
+            assert sum(1 for x in load.render(m).splitlines() if re.search(r'#49\b', x) and x.startswith(' ')) == 1, '同じ task が 2 行出た'
+            for key in ('total', 'done', 'held', 'sections', 'people', 'stray', 'others', 'stuck', 'settings', 'truncated',
+                        'unknown_assignees', 'signature', 'fetched_at', 'how', 'age_minutes'):
+                assert key in m, f'--json の鍵 {key} が消えた'
+            assert {'name', 'total', 'done', 'held'} <= set(m['sections'][0]) and {'owner', 'tasks'} == set(m['people'][0]), m['people'][0].keys()
+        t('load: 作業ツリーの担当が動いている task は担当の居ないものから外し・同じ task の PR は 1 行・--json の鍵は消さない', _stray_and_dedup_and_json)
 
         def _done_sections_hidden() -> None:
             rows = [dict(r, status='完了', state='CLOSED') if r['number'] in (12, 50) else r for r in _load_rows()]
             m = model_of(rows=rows)
-            first = load.render(m).split('**進行中のタスク**')[0]
-            assert '| 土台 |' not in first, f'100% のセクションを出した: {first}'
+            first = load.render(m).split('いま動いている')[0]
+            assert '土台' not in first, f'100% のセクションを出した: {first}'
         t('load: 100% のセクションは表に出さない', _done_sections_hidden)
 
         def _group_same_pr() -> None:
@@ -1461,7 +1544,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             prs = _load_default_prs()
             prs['open'] = [p for p in prs['open'] if p['number'] not in (143, 144)] + [_load_pr(150, [43, 44])]
             out = load.render(model_of(rows=rows, prs=prs))
-            assert '#43・#44（PR #150）' in out, out
+            assert re.search(r'#43・#44\b', out), out
         t('load: 同じ PR の隣り合う task は「#a・#b（PR #n）」にまとめる', _group_same_pr)
 
         def _changed() -> None:
@@ -1487,7 +1570,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             _run_main(['load'])
             gh_task.run_gh = _load_gh(calls, prs=with_checks('FAILURE'))
             rc, out = _run_main(['load', '--changed'])
-            assert rc == 0 and '止まっているもの: #43（CI 赤）' in out, f'CI が赤になって止まったのに出ない: {rc} {out[-200:]}'
+            assert rc == 0 and any(re.search(r'#43\b', x) and 'CI 赤' in x for x in out.splitlines()), f'CI が赤になって止まったのに出ない: {rc} {out[-200:]}'
             gh_task.run_gh = _load_gh(calls, prs=with_checks('FAILURE'))
             rc, out = _run_main(['load', '--changed'])
             assert rc == 3, rc
@@ -1523,7 +1606,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                 json.dump(snap, f)
             rc, out = _run_main(['load', '--cached'])
             assert rc == 0 and len(calls) == before, '--cached が gh を叩いた'
-            assert '（控え: 25 分前）' in out, f'控えの古さが出ていない: {out[-80:]}'
+            assert out.splitlines()[0] == '控えは 25 分前の数です。取り直す: hirai-task load' and '（控え:' not in out, f'控えの古さが先頭に出ていない: {out[:120]}'
         t('load --cached: gh を叩かず控えだけ読む（控えが無ければ何も出さず exit 3。古ければ何分前かを出す）', _cached_no_gh)
 
         def _one_pr_query() -> None:
@@ -1729,16 +1812,16 @@ def _load_checks(t, tmp_dir: str) -> None:
                 with redirect_stdout(buf):
                     gh_task.print_load_after()
                 out = buf.getvalue()
-                assert '3 / 15 完了（20%）' in out and '#45（PR #145）' in out and '100%' in out, out
+                assert '全体 3/15（20%）' in out and not re.search(r'#45\b', out.split('いま動いている')[1]), out
                 assert sum('items(first:' in c for c in calls) == 0 and sum('pullRequests(states: OPEN' in c for c in calls) == 1, calls
                 # 直後の load・hook が呼ぶ控えだけの load でも同じ数で、「動いた」と誤らない（板の控えが追いつくまで重ねる）
                 rc, out = _run_main(['load', '--cached'])
-                assert rc == 0 and '3 / 15 完了（20%）' in out, out
+                assert rc == 0 and '全体 3/15（20%）' in out, out
                 rc, out = _run_main(['load', '--changed', '--cached'])
                 assert (rc, out) == (3, ''), f'done のあとに、動いていない表を出した: {rc} {out[:120]!r}'
                 gh_task._record_overlay(46, '完了', 'CLOSED')
                 rc, out = _run_main(['load', '--cached'])
-                assert '4 / 15 完了' in out, f'2 件目の done で 1 件目が戻った: {out.splitlines()[0]}'
+                assert '全体 4/15' in out, f'2 件目の done で 1 件目が戻った: {out.splitlines()[0]}'
                 # 板の控えが新しくなれば、重ねた変更は使わない
                 with open(gh_task.BOARD_CACHE, encoding='utf-8') as f:
                     snap = json.load(f)
@@ -1746,7 +1829,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                 with open(gh_task.BOARD_CACHE, 'w', encoding='utf-8') as f:
                     json.dump(snap, f)
                 rc, out = _run_main(['load', '--cached'])
-                assert '2 / 15 完了' in out, f'新しい板に古い変更を重ねた: {out.splitlines()[0]}'
+                assert '全体 2/15' in out, f'新しい板に古い変更を重ねた: {out.splitlines()[0]}'
                 gh_task.run_gh = lambda args, input_text=None: (1, '', 'boom')
                 gh_task.print_load_after()  # 取れなくても例外を出さない
             finally:
@@ -1768,8 +1851,8 @@ def _load_checks(t, tmp_dir: str) -> None:
                 with redirect_stdout(buf):
                     gh_task.print_load_after()
                 out = buf.getvalue()
-                assert '（控え: 4320 分前）' in out, f'古い控えの断りが無い: {out[-120:]}'
-                assert '0% → 20%' in out or '| 甲 | 営業の登録 | #40 → #41' in out and '20% → 20%' in out, out
+                assert out.splitlines()[1] == '控えは 4320 分前の数です。取り直す: hirai-task load' and '（控え:' not in out, f'古い控えの断りが先頭に無い: {out[:160]}'
+                assert any(re.search(r'#40\b', x) and '着手' in x for x in out.splitlines()), f'start の変更が段に重ならない: {out}'
                 items = [gh_task.parse_item({'id': r['id'], 'fieldValues': {'nodes': [
                     {'__typename': 'ProjectV2ItemFieldSingleSelectValue', 'name': v, 'field': {'name': f}}
                     for f, v in (('Status', r['status']), (gh_task.KIND_FIELD, r['kind'])) if v]}, 'content': {
@@ -1780,12 +1863,12 @@ def _load_checks(t, tmp_dir: str) -> None:
                 with redirect_stdout(buf):
                     gh_task.print_load_after(items=items)
                 out = buf.getvalue()
-                assert '（控え:' not in out and '3 / 15 完了' in out, f'取り直した items を使っていない: {out.splitlines()[:2]} {out[-80:]}'
+                assert '（控え:' not in out and '全体 3/15' in out, f'取り直した items を使っていない: {out.splitlines()[:2]} {out[-80:]}'
                 os.remove(gh_task.BOARD_CACHE)
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     gh_task.print_load_after(items=items)
-                assert '3 / 15 完了' in buf.getvalue(), f'控えが無いと after-merge の表が出ない: {buf.getvalue()[:100]}'
+                assert '全体 3/15' in buf.getvalue(), f'控えが無いと after-merge の表が出ない: {buf.getvalue()[:100]}'
             finally:
                 gh_task.is_coordinator = lambda: False
         t('print_load_after: 古い控えには何分前かを出し、after-merge は取り直した items を使う（控えが無くても出る）', _overlay_start_and_stale)
@@ -1916,16 +1999,18 @@ def _load_checks(t, tmp_dir: str) -> None:
             rows = [dict(r, owner='a|b<i>`x`\n[y](z)\x1b[31m') if r['number'] == 40 else r for r in _load_rows()]
             rows = [dict(r, title='2. 営業|の`登録`<b>') if r['number'] == 2 else r for r in rows]
             out = load.render(model_of(rows=rows))
-            for line in out.splitlines():
-                if line.startswith('|') and not line.startswith('|---'):
-                    assert line.count('|') == 5 or line.startswith('| セクション | 進み'), f'列が崩れた: {line!r}'
-            assert '\x1b' not in out and '<b>' not in out and '<i>' not in out and '](' not in out, out
+            assert '\x1b' not in out and all(c.isprintable() or c == '\n' for c in out), f'制御文字が通った: {out!r}'
+            mine = [x for x in out.splitlines() if re.search(r'#40\b', x) and x.startswith(' ') and 'a|b' in x]
+            assert len(mine) == 1 and '[y](z)' in mine[0], f'改行を含む担当の名前が 1 行に畳まれていない: {mine}'
         t('load: 別 repo の Closes は数えない・縦棒・HTML・改行・制御文字・リンクを表に通さない', _other_repo_and_escape)
 
         def _section_names() -> None:
             rows = [dict(r, title='2.5 設計の現在形（層 0〜4）') if r['number'] == 1 else dict(r, title='3. 営業の登録') if r['number'] == 2 else r for r in _load_rows()]
             out = load.render(model_of(rows=rows))
-            assert '| 2.5 設計の現在形（層 0〜4） |' in out and '| 営業の登録 |' in out and '3. 営業' not in out, out
+            sec = [x for x in out.splitlines() if '設計の現在形' in x]
+            assert len(sec) == 1 and sec[0].startswith(' 2.5 設計の現在形（層 0〜4）'), sec
+            sec = [x for x in out.splitlines() if '営業の登録' in x]
+            assert len(sec) == 1 and sec[0].startswith(' 3   営業の登録') and '3. 営業' not in out, sec
         t('load: セクションの番号は「N. 」だけ落とす（2.5 などを壊さない）', _section_names)
 
         def _cache_checks() -> None:
@@ -1941,7 +2026,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             for minutes in (9, 10):  # --cached は新しくても古さを言う（控えだけで描くので、何分前かを毎回添える）
                 json.dump({**good, 'fetched_epoch': good['fetched_epoch'] - minutes * 60 - 1}, open(gh_task.LOAD_PR_CACHE, 'w', encoding='utf-8'))
                 rc, out = _run_main(['load', '--cached'])
-                assert rc == 0 and f'（控え: {minutes} 分前）' in out, f'PR の控えが {minutes} 分前: {out[-60:]!r}'
+                assert rc == 0 and f'控えは {minutes} 分前の数です' in out.splitlines()[0], f'PR の控えが {minutes} 分前: {out[-60:]!r}'
             os.remove(gh_task.LOAD_PR_CACHE)
             open(gh_task.BOARD_CACHE, 'w').write('{not json')
             rc, out = _run_main(['load', '--cached'])
@@ -2276,10 +2361,10 @@ def _load_checks(t, tmp_dir: str) -> None:
                     for i, r in enumerate(_load_rows())] + []
             rows = [dict(r, owner='甲', order=99.0) if r['number'] == 50 else r for r in rows]
             out = load.render(model_of(rows=rows))
-            line = next(x for x in out.splitlines() if x.startswith('| 甲 |'))
-            assert '#40' not in line and '#41' in line and '#43' in line, f'閉じた行を畳んでいない: {line}'
+            running = out.split('いま動いている')[1]
+            assert re.search(r'#50\b', running) and not re.search(r'#4[0-3]\b', running), f'閉じた task を いま動いている に出した: {running}'
             all_closed = [dict(r, state='CLOSED', status='完了') if r['owner'] == '乙' else r for r in _load_rows()]
-            assert '| 乙 |' not in load.render(model_of(rows=all_closed)), '全部閉じた担当の行が残った'
+            assert '乙' not in load.render(model_of(rows=all_closed)).split('いま動いている')[1], '全部閉じた担当の行が残った'
         t('load: 閉じた task は新しい 3 つだけ出し、全部閉じた担当は出さない', _closed_folded)
 
         def _post_step_timeout() -> None:
@@ -2311,9 +2396,9 @@ def _load_checks(t, tmp_dir: str) -> None:
                 table = {e['number']: e for e in gh_task._overlay_entries()}
                 assert set(table) == {45} and table[45]['state'] == 'CLOSED', f'閉じた issue だけを残す: {table}'
                 rc, out = _run_main(['load', '--changed', '--cached'])
-                assert rc == 0 and '3 / 15 完了' in out, f'段が動いたのに出ない・完了が戻った: {rc} {out[:80]!r}'
+                assert rc == 0 and '全体 3/15' in out, f'段が動いたのに出ない・完了が戻った: {rc} {out[:80]!r}'
                 rc, out = _run_main(['load', '--cached'])
-                assert '3 / 15 完了' in out, f'after-merge のあと、板の控えで完了が戻った: {out.splitlines()[0]}'
+                assert '全体 3/15' in out, f'after-merge のあと、板の控えで完了が戻った: {out.splitlines()[0]}'
             finally:
                 for n, v in saved.items():
                     setattr(gh_task, n, v)
@@ -2350,7 +2435,7 @@ def _load_checks(t, tmp_dir: str) -> None:
             for raw in ({'entries': 5}, {'entries': [None, 3, {'number': 'x', 'at': 1}, {'number': 45}]}, [], {'entries': None}):
                 gh_task._write_atomic(gh_task.LOAD_OVERLAY, json.dumps(raw))
                 rc, out = _run_main(['load', '--cached'])
-                assert rc == 0 and '2 / 15 完了' in out, f'壊れた overlay で落ちたか数えた: {raw} {rc} {out[:60]!r}'
+                assert rc == 0 and '全体 2/15' in out, f'壊れた overlay で落ちたか数えた: {raw} {rc} {out[:60]!r}'
                 gh_task._record_overlay(45, '完了', 'CLOSED')
                 assert [e['number'] for e in gh_task._overlay_entries()] == [45], raw
             def entries(*rows):
@@ -2358,10 +2443,10 @@ def _load_checks(t, tmp_dir: str) -> None:
                 rc, out = _run_main(['load', '--cached'])
                 return out.splitlines()[0]
             key = gh_task._board_key()
-            assert '3 / 15' in entries((45, base + 1, key)), '板より新しい変更を重ねない'
-            assert '3 / 15' in entries((45, base - 60, key)), '取得中の変更（時刻が取得の終わりより前）を重ねない'
-            assert '2 / 15' in entries((45, base - 500, key)), '板より古い変更を重ねた'
-            assert '2 / 15' in entries((45, base + 1, 'other/repo#auto')), '別リポの変更を重ねた'
+            assert '3/15' in entries((45, base + 1, key)), '板より新しい変更を重ねない'
+            assert '3/15' in entries((45, base - 60, key)), '取得中の変更（時刻が取得の終わりより前）を重ねない'
+            assert '2/15' in entries((45, base - 500, key)), '板より古い変更を重ねた'
+            assert '2/15' in entries((45, base + 1, 'other/repo#auto')), '別リポの変更を重ねた'
             gh_task._record_overlay(45, '完了', 'CLOSED')
             assert any(e['number'] == 45 and e['key'] == 'other/repo#auto' for e in gh_task._overlay_entries()), '別リポの行を番号だけで消した'
             gh_task._write_atomic(gh_task.LOAD_OVERLAY, json.dumps({'entries': [{'number': 45, 'status': '完了', 'state': 'CLOSED', 'at': 1.0, 'key': key}]}))
@@ -2376,7 +2461,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                 return prs
             fresh(prs=with_mergeable('CONFLICTING'))
             rc, out = _run_main(['load'])
-            assert '止まっているもの: #43（CI 赤）, #44（衝突）' in out, out[-200:]
+            assert any(re.search(r'#43\b', x) and 'CI 赤' in x for x in out.splitlines()) and any(re.search(r'#44\b', x) and '衝突' in x for x in out.splitlines()), out[-300:]
             for value in ('UNKNOWN', 'CONFLICTING', 'UNKNOWN'):
                 gh_task.run_gh = _load_gh(calls, prs=with_mergeable(value))
                 rc, out = _run_main(['load', '--changed'])
@@ -2394,10 +2479,9 @@ def _load_checks(t, tmp_dir: str) -> None:
             prs['open'].append(_load_pr(190, [47], checks='FAILURE'))
             prs['open'].append(_load_pr(191, [52], author='other-dev'))
             out = load.render(model_of(prs=prs))
-            assert '止まっているもの: #43（CI 赤）, #44（衝突）, #47（CI 赤）' in out, out[-300:]
-            line = next((x for x in out.splitlines() if x.startswith('進行中・レビュー中なのに')), '')
-            assert '#52' not in line and '#47' in line, f'ほかの開発者の PR がある行を担当の居ないものにも出した: {line}'
-            assert '#52（PR #191・other-dev）' in out, out[-300:]
+            line = next((x for x in out.splitlines() if x.startswith('担当の居ないもの')), '')
+            assert '#52' not in line and '#47（CI 赤）' in line, f'CI 赤が担当の居ないものの行に出ない／ほかの開発者の PR がある行を出した: {line}'
+            assert any(re.search(r'#52\b', x) and 'other-dev' in x for x in out.splitlines()), out[-300:]
         t('load: 担当の居ない行の CI 赤も「止まっているもの」に出し、ほかの開発者の PR がある行は担当の居ないものから外す', _stray_stuck_and_dedup)
 
         def _state_and_errors_after() -> None:
@@ -2498,6 +2582,7 @@ def _load_checks(t, tmp_dir: str) -> None:
         gh_task.run_gh, gh_task.PROJECT_NUMBER_OVERRIDE, gh_task._mode_setting = orig_run, orig_override, orig_mode
         gh_task.is_coordinator, gh_task.ensure_assignee, gh_task._local_state_dir = entry_coord, entry_ensure, orig_local
         gh_task._orca_assignments = real_orca_assignments
+        gh_task._tree_numbers = real_tree_numbers
 
 
 def _card_field_defs(*, with_card_fields: bool = True) -> list[dict]:
@@ -2946,14 +3031,16 @@ def _progress_checks(t, tmp_dir: str) -> None:
         m = model()
         assert [u['number'] for u in m['upcoming']] == [206, 207], m['upcoming']              # [User]・割り当て済み・作業ツリーの名前に番号がある・PR が閉じる task は出さない
         out = hp.render(load, m)
-        assert 'これから立てる' in out and '#206' in out and '#208' not in out, out
+        line = next(x for x in out.splitlines() if x.startswith('これから立てる'))
+        assert '#206' in line and '#208' not in line, line
     t('progress: 着手可で作業ツリーも割り当ても無い task を「これから立てる」に出す', _upcoming)
 
     def _render_shape() -> None:
         out = hp.render(load, model())
-        assert out.startswith('0 / 12 完了（0%）。'), out.splitlines()[0]
-        assert '| セクション | 進み | セクション | 進み |' in out, out
-        assert '| 担当 | セクション | 順番 | 進捗 | いまやっていること |' in out, out
+        assert out.startswith('全体 0/12（0%）'), out.splitlines()[0]
+        assert '|' not in out and '---' not in out and 'セクション' in out and 'いま動いている ' in out, out
+        line = next(x for x in out.split('いま動いている')[1].splitlines() if re.search(r'#201\b', x))
+        assert 'CI の結果待ち' in line, f'いまやっていること が 平文の行に残らない: {line}'
     t('progress: 表は全体の 1 行・セクションの表・5 列の進行中の表', _render_shape)
 
     def _fallback() -> None:
@@ -2970,6 +3057,20 @@ def _progress_checks(t, tmp_dir: str) -> None:
         prs2 = {**json.loads(json.dumps(prs)), 'open': []}
         assert hp.fallback_assign(view2, prs2) == {209: {'owner': 'alice', 'order': None}}, '番号の無い PR のとき Assignees に落ちない'
     t('progress: Orca が無いとき PR の branch 名の頭の番号 → Assignees の順で担当を引く', _fallback)
+
+    def _tree_numbers() -> None:
+        state['orca'] = True
+        def git_out(argv):
+            return 0, ('worktree /w/main-8888\nHEAD a\nbranch refs/heads/stg\n\nworktree /w/2071-dns-one-zone\nHEAD b\n'
+                       'branch refs/heads/2071-dns-one-zone\n\nworktree /w/x\nHEAD c\ndetached\n')
+        nums = hp.worktree_numbers('o/r', runner, git_out)
+        assert {201, 202, 203, 211, 2071} <= nums, nums                    # linkedIssue・表示名の頭・path・git の branch
+        assert 299 not in nums and 8888 not in nums, f'別のリポ・本体の checkout の番号を拾った: {nums}'
+        assert hp.worktree_numbers('o/r', runner, lambda argv: (1, '')) <= nums and 2071 not in hp.worktree_numbers('o/r', runner, lambda argv: (1, ''))
+        def boom(argv):
+            raise FileNotFoundError('git')
+        assert 201 in hp.worktree_numbers('o/r', runner, boom), 'git が無くても orca の分は返す'
+    t('progress: 作業ツリーの番号は Orca の一覧と git worktree list から集め、本体の checkout・別のリポは拾わない', _tree_numbers)
 
     def _json_shape() -> None:
         m = json.loads(json.dumps(model()))
@@ -3754,7 +3855,11 @@ def main() -> int:
     print('gh_task_selftest.py')
     restore_settings = _isolate_settings()
 
-    if os.environ.get('HIRAI_SELFTEST_ONLY') == 'progress':  # 手早く回すための絞り込み（smoke は絞らない）
+    only = os.environ.get('HIRAI_SELFTEST_ONLY')
+    if only in ('progress', 'load'):  # 手早く回すための絞り込み（smoke は絞らない）。load は load・progress の 2 組
+        gh_task.sleep_fn = lambda _seconds: None
+        if only == 'load':
+            _load_checks(t, tempfile.mkdtemp())
         _progress_checks(t, tempfile.mkdtemp())
         print('\n'.join(results))
         restore_settings()

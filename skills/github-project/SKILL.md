@@ -41,11 +41,11 @@ description: GitHub Project でやること（wave・feature・task の issue �
 | 着手した・完了した | `hirai-task start <n>`・`hirai-task done <n>`・`hirai-task after-merge <PR>` |
 | 進捗があった | `hirai-task load --changed`（前回と比べて段・担当・順番・止まりの印が動いたときだけ出し、動いていなければ 1 行も出さず exit 3）。コーディネーターの会話では、前景の `orca orchestration check` で知らせを受けたとき（出力に message の id があるか `--ack` を付けたとき）、hook が「打つ」の 1 行を足す。背景で待って受けたときは出ないので、自分で打つ |
 
-**割り振り・着手・完了のあとの表は、コーディネーターの会話だけに出る。** コーディネーターの会話は、**親（立てたコーディネーター）がいない会話**で、`tasks` が `github-project` のリポのとき。親の有無は `hirai-task is-coordinator` が、上書き `TKM_HARNESS_ROLE=coordinator|worker` > `HC_NOTIFY=off`（コーディネーターの印）> Orca が無い（親なし）> `orca orchestration worker-list` に自分の端末（`ORCA_TERMINAL_HANDLE`）が載っているか（載っていれば親がいる担当・載っていなければ親なし）の順で決める。Orca があって 2 秒で引けない・JSON が読めないときは「判定できない」で、表は入れない（`hirai-notify` は今までどおり送る）。`worker-start` 以外（`orca worktree create --agent` など）で立てた担当は worker-list に載らず「親なし」と見なされるので、その会話では `TKM_HARNESS_ROLE=worker` を付ける。板の控えが 1 本も無いときは 1 行の断り、10 分より古い控えで描くときは（`--cached` は新しくても）表の下に「（控え: N 分前）」が出る。`start`・`done`・`reopen`・`review`・`set Status`・`after-merge` で閉じた issue の変更は、板の控えが追いつくまで表に重なる。`--cached` は gh を叩かず、手元の控えだけを読む（板と PR の控えのどちらかが無ければ exit 3・何も出さない）。
+**割り振り・着手・完了のあとの表は、コーディネーターの会話だけに出る。** コーディネーターの会話は、**親（立てたコーディネーター）がいない会話**で、`tasks` が `github-project` のリポのとき。親の有無は `hirai-task is-coordinator` が、上書き `TKM_HARNESS_ROLE=coordinator|worker` > `HC_NOTIFY=off`（コーディネーターの印）> Orca が無い（親なし）> `orca orchestration worker-list` に自分の端末（`ORCA_TERMINAL_HANDLE`）が載っているか（載っていれば親がいる担当・載っていなければ親なし）の順で決める。Orca があって 2 秒で引けない・JSON が読めないときは「判定できない」で、表は入れない（`hirai-notify` は今までどおり送る）。`worker-start` 以外（`orca worktree create --agent` など）で立てた担当は worker-list に載らず「親なし」と見なされるので、その会話では `TKM_HARNESS_ROLE=worker` を付ける。板の控えが 1 本も無いときは 1 行の断り、10 分より古い控えで描くときは（`--cached` は新しくても。0 分前は言わない）表の先頭に「控えは N 分前の数です。取り直す: hirai-task load」の 1 行が出る。`start`・`done`・`reopen`・`review`・`set Status`・`after-merge` で閉じた issue の変更は、板の控えが追いつくまで表に重なる。`--cached` は gh を叩かず、手元の控えだけを読む（板と PR の控えのどちらかが無ければ exit 3・何も出さない）。
 
 ### 会話の始まりに表が入る（コーディネーターの会話）
 
-親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほか、コーディネーターの会話では、振り出し（`orca orchestration worker-start`・`orca worktree set --issue`・`hirai-task` / `gh-task.sh` の `assign`・`start`）と完了（`done`・`after-merge`・`gh pr merge`）のあとに、hook が `hirai-task load --cached` の表を人の画面（systemMessage）と AI の context の両方へ出す（AI が出力を切っても人の画面に出る。同じ表を貼り直さない。GitHub は叩かず、load が失敗・空・8 秒で返らないときは出ない）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
+親がいない会話（コーディネーター）には、会話の始まり・`/clear`・圧縮のあと（SessionStart の startup・resume・clear・compact）に、`hirai-task load --cached` の表が `additionalContext` として丸ごと入る（GitHub は叩かない。控えの古さを 1 行添える。控えが無ければ「進みの表の控えがありません（`hirai-task load` で作る）」の 1 行だけ）。担当の会話・GitHub Project で回さないリポ・親の有無を判定できないとき（1 行で断る）は入らない。`TKM_HARNESS_LOAD_ON_START=off`（settings.json の env）で止める（既定は入れる）。このほか、コーディネーターの会話では、振り出し（`orca orchestration worker-start`・`orca worktree set --issue`・`hirai-task` / `gh-task.sh` の `assign`・`start`）と完了（`done`・`after-merge`・`gh pr merge`）のあとに、hook が `hirai-task load --cached --changed` の表を、段・担当・順番が前回から動いたときだけ人の画面（systemMessage）と AI の context の両方へ出す（AI が出力を切っても人の画面に出る。同じ表を貼り直さない。動いていない・assign や start が自分の出力に表を出したあとは出ない。GitHub は叩かず、load が失敗・空・8 秒で返らないときも出ない）。このほかの時機は、上の表のとおり `assign`・`start`・`done`・`after-merge` の出力の最後と、担当からの知らせを受けたあとの `load --changed`。
 
 ### 担当を Orca で立てるとき（表の「担当」と「いまやっていること」の出どころ）
 
@@ -55,11 +55,12 @@ description: GitHub Project でやること（wave・feature・task の issue �
 
 ### 表の読み方
 
-- 進捗は申告でなく実物で決まる: 0 着手前／20 進行中・レビュー中（PR なし）／50 draft の PR／60 ready で CI が走っているか赤・検査なし／70 CI 緑／90 merge 済みで issue が開いている（Status が 完了 の開いた issue も）／100 issue が閉じた。控えに無い（新しい）issue は 0% で、完了に数えない
-- **止まっているもの**: CI が赤・PR が衝突している task（draft の CI 赤は出さない。担当の無い行も入る）。段の数だけでは分からない止まりを別の行に出す
+- **表の形**: 桁をそろえた平文（Markdown の表は使わない。全角は幅 2 で数える）。1 行目は `全体 完了/全体（%）`・保留を除いた %・期限の残り件数。次に セクションごとに 1 行（完了/全体と「次のタスク」＝そのセクションで着手順がいちばん若い開いている task 1 件と、だれの番か［進行中・レビュー中・着手可・人・判断・承認待ち・依存待ち・保留］）。その次が「いま動いている」（feature・task の番号・段の語・担当）、「あなたの番」（取り込み待ちの PR・判断待ち・人の作業）、最後に担当の居ないもの
+- 進捗は申告でなく実物で決まる（段の語は 着手＝20／draft＝50／ready＝60／CI 緑＝70／merge 済み＝90。止まりは CI 赤・衝突の語）: 0 着手前／20 進行中・レビュー中（PR なし）／50 draft の PR／60 ready で CI が走っているか赤・検査なし／70 CI 緑／90 merge 済みで issue が開いている（Status が 完了 の開いた issue も）／100 issue が閉じた。控えに無い（新しい）issue は 0% で、完了に数えない
+- **止まっているもの**: CI が赤・PR が衝突している task は、「いま動いている」の段の語（CI 赤・衝突）と、担当の居ないものの行の `#n（CI 赤）` に出る（draft の CI 赤は出さない）
 - **担当の列**: 自分の作業のセッションの名前と順番は手元の控え（git の管理ディレクトリの下の `hirai-task/load-assign.json`）から、ほかの人の行は GitHub の Assignees の名前から出す（Project に「担当」の項目は足さない）。閉じた task は割り振りの順番の後ろの 3 つだけ
-- **進行中・レビュー中なのに担当の居ないもの**: 手元の控えに名前が無く、ほかの人だけの Assignees でもない 進行中・レビュー中の task（Assignees が自分だけの行も入る。ほかの開発者の開いている PR がある行は「ほかの開発者の PR」に出す）。残さない
-- **ほかの開発者の PR**: 割り振りもほかの人の Assignees も無い open の task を閉じる、自分でない人の開いている PR
+- **進行中・レビュー中なのに担当の居ないもの**: 手元の控えに名前が無く、ほかの人だけの Assignees でもなく、作業ツリー（Orca の一覧・`git worktree list`）の名前に task か親の feature の番号も無い 進行中・レビュー中の task（Assignees が自分だけの行も入る。ほかの開発者の開いている PR がある行は「いま動いている」に GitHub の名前で出す）。0 件なら行ごと出さない。残さない
+- **ほかの開発者の PR**: 割り振りもほかの人の Assignees も無い open の task を閉じる、自分でない人の開いている PR。「いま動いている」に担当を GitHub の名前で出す（同じ task を閉じる PR が複数あっても 1 行）
 - 期限の行・本線の印は、設定があるときだけ出る。置き場は `.claude/settings.json` の `env`（読む順は settings の file（打ったリポの。環境変数は読まない）> そのリポの `.claude/mode.yml`。ホームの mode.yml は読まない）:
 
 ```json

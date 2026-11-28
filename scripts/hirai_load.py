@@ -12,6 +12,7 @@ hirai_load.py — `hirai-task load` が描く、全体の進みと、振って�
 渡される形:
   view: bin/hirai-task の board_view（issues・open_prs など。木の組み方は hirai_board.build と同じ）
   prs: {'open': [PR], 'merged': [PR], 'me': 自分の login, 'assignees': {番号: [login]}}（PR は bin の fetch_load_prs の形）
+  tree_numbers: 作業ツリー（Orca・git worktree）の path・branch・表示名に現れる番号（担当の居ない行から外す。無ければ空）
   assign: {番号: {'owner': 自分の作業のセッションの名前, 'order': 順（数値か None）}}（手元の控え）
   settings: {'deadline_label': …, 'deadline_date': …, 'deadline_open': 件数か None, 'mainline': …, 'mainline_label': …}
             （無い設定は '' で、その行・印を出さない）
@@ -21,13 +22,25 @@ hirai_load.py — `hirai-task load` が描く、全体の進みと、振って�
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import hirai_board
 
-STAGE_SENTENCE = '進捗は申告でなく、PR と CI の実物から出しています（20 着手、50 draft、60 ready、70 CI 緑、90 merge 済み）。'
 NO_OWNER_STATUSES = ('進行中', 'レビュー中')
 HELD_STATUS = '保留'
 CLOSED_SHOWN = 3  # 担当の行に出す、閉じた task の数（割り振りの順番の前のものから畳む）
+TITLE_WIDTH = 34  # 次のタスクの題の幅（全角 2・半角 1）
+NAME_WIDTH = 30  # セクション名の幅
+FEATURE_TITLE_WIDTH = 22
+TASKS_WIDTH = 26
+OWNER_WIDTH = 30
+NOW_WIDTH = 60
+TURN_MAX = 3  # あなたの番の 判断 に番号を並べる数（残りは「ほか N」）
+HUMAN_MARKS = ('[User]', '[操作]')  # 題にこの印がある task は人の作業
+STATUS_DECISION = '判断待ち'
+STATUS_PENDING = '承認待ち'
+# 段（率）を、画面に出す語にする。止まり（CI 赤・衝突）は率に関わらずその語を出す
+STAGE_WORDS = {0: '未着手', 20: '着手', 50: 'draft', 60: 'ready', 70: 'CI 緑', 90: 'merge 済み', 100: '完了'}
 DONE_STATUS = '完了'
 # feature の段（PR が無いとき）: 承認待ち・着手可 → 0、進行中 → 20、レビュー中 → 60、完了 → 100
 FEATURE_STATUS_PCT = {'承認待ち': 0, '着手可': 0, '進行中': 20, 'レビュー中': 60, DONE_STATUS: 100}
@@ -39,10 +52,38 @@ def one_line(text) -> str:
     return ' '.join(str(text or '').split())
 
 
-def cell(text) -> str:
-    """表のセルに入れる字（改行・制御文字を空白に、縦棒と角かっこを全角に、バッククォートを ' に。崩れと埋め込みを防ぐ）。"""
-    plain = ''.join(c if c.isprintable() else ' ' for c in str(text or ''))
-    return one_line(plain).replace('|', '｜').replace('<', '&lt;').replace('`', "'").replace('[', '［').replace(']', '］')
+def plain(text) -> str:
+    """画面に出す字（改行・制御文字を空白に畳む。端末の制御列を通さない）。"""
+    return one_line(''.join(c if c.isprintable() else ' ' for c in str(text or '')))
+
+
+def disp_width(text) -> int:
+    """端末での幅。全角（W・F）は 2、結合文字は 0、それ以外は 1。"""
+    width = 0
+    for c in str(text):
+        if unicodedata.combining(c):
+            continue
+        width += 2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1
+    return width
+
+
+def pad(text, width: int) -> str:
+    """幅 width まで右に空白を足す（はみ出しは切らない）。"""
+    return str(text) + ' ' * max(0, width - disp_width(text))
+
+
+def clip_width(text, width: int) -> str:
+    """幅 width に収める。超えるときは幅 width - 1 までで切って「…」を付ける。"""
+    text = plain(text)
+    if disp_width(text) <= width:
+        return text
+    out, used = '', 0
+    for c in text:
+        w = disp_width(c)
+        if used + w > width - 1:
+            break
+        out, used = out + c, used + w
+    return out + '…'
 
 
 def ci_state(pr: dict) -> str:
@@ -87,6 +128,60 @@ def stage_of(number: int, ctx: dict) -> tuple[int, str, str]:
     return 0, status or 'Status 未設定', ''
 
 
+def section_name(model: dict, number: int) -> str:
+    wave, _feat = hirai_board.locate(model, number)
+    title = (model['by_number'].get(wave) or {}).get('title') if wave else ''
+    return re.sub(r'^\d+\.\s+', '', one_line(title)) or '—'
+
+
+_SECTION_RE = re.compile(r'^(\d+(?:\.\d+)*)\.?\s+(.+)$')
+
+
+def section_parts(wave: dict) -> tuple[str, str]:
+    """(番号, 名前)。題が「2. 開発環境」「2.5 設計」の形なら番号を分け、そうでなければ番号は空。"""
+    title = one_line(wave.get('title'))
+    match = _SECTION_RE.match(title)
+    return (match.group(1), match.group(2)) if match else ('', title or '—')
+
+
+def strip_marks(title) -> str:
+    """題の [User]・[操作] の印を外す（「［人］」の語で足りるので、幅を使わない）。"""
+    text = str(title or '')
+    for mark in HUMAN_MARKS:
+        text = text.replace(mark, ' ')
+    return plain(text)
+
+
+def is_human(task: dict) -> bool:
+    return any(mark in (task.get('title') or '') for mark in HUMAN_MARKS)
+
+
+def pick_next(tasks: list) -> dict | None:
+    """セクションの次のタスク: 着手順の小さい順（着手順の無い task は後ろ）→ 番号の若い順。ready の並び
+    （bin/hirai-task の ready_sort_key。同じ wave の中では wave の位置が同じなので 着手順 → 番号）と同じ。
+    保留は後回しにし、残りが保留だけのときだけ保留を出す。"""
+    def key(t: dict):
+        order = t.get('order')
+        return (order is None, order if order is not None else 0.0, t['number'])
+    live = [t for t in tasks if t.get('status') != HELD_STATUS]
+    pool = live or list(tasks)
+    return min(pool, key=key) if pool else None
+
+
+def turn_tag(task: dict, not_ready: dict) -> str:
+    """その task が今だれの番か（進行中・レビュー中・着手可・人・判断・承認待ち・依存待ち・保留。ほかの Status はその語）。"""
+    status = task.get('status') or ''
+    if status == HELD_STATUS:
+        return '保留'
+    if status == STATUS_DECISION:
+        return '判断'
+    if is_human(task):
+        return '人'
+    if status == '着手可':
+        return '依存待ち' if task['number'] in not_ready else '着手可'
+    return status or '未設定'
+
+
 def _pr_index(prs: list, repo: str) -> dict:
     out: dict[int, list] = {}
     for pr in prs:
@@ -95,13 +190,17 @@ def _pr_index(prs: list, repo: str) -> dict:
     return out
 
 
-def section_name(model: dict, number: int) -> str:
-    wave, _feat = hirai_board.locate(model, number)
-    title = (model['by_number'].get(wave) or {}).get('title') if wave else ''
-    return re.sub(r'^\d+\.\s+', '', one_line(title)) or '—'
+def stage_word(pct: int, stuck: str) -> str:
+    return stuck or STAGE_WORDS.get(pct, f'{pct}%')
 
 
-def build(view: dict, prs: dict, assign: dict, settings: dict) -> dict:
+def _ticket(model: dict, n: int) -> dict:
+    """行に付ける feature の情報（親の feature が分からない task は番号なし）。"""
+    _wave, feat = hirai_board.locate(model, n)
+    return {'feature': feat, 'feature_title': one_line((model['by_number'].get(feat) or {}).get('title')) if feat else ''}
+
+
+def build(view: dict, prs: dict, assign: dict, settings: dict, tree_numbers=()) -> dict:
     """表の材料（JSON にできる形）を組む。"""
     model = hirai_board.build(view)
     # 担当の行は task と、控え（assign）に載った feature（割り振りの単位は feature。ADR-0815）。
@@ -110,6 +209,7 @@ def build(view: dict, prs: dict, assign: dict, settings: dict) -> dict:
     tasks.update({i['number']: i for i in view['issues'] if i.get('kind') == 'feature' and i['number'] in assign})
     ctx = {'tasks': tasks, 'prs_of': _pr_index(prs['open'], view['repo']),
            'merged_of': {n: [p['number'] for p in ps] for n, ps in _pr_index(prs['merged'], view['repo']).items()}}
+    not_ready = view.get('not_ready') or {}
     sections = []
     for wave in model['waves']:
         rows = hirai_board.wave_tasks(model, wave['number'])
@@ -117,7 +217,12 @@ def build(view: dict, prs: dict, assign: dict, settings: dict) -> dict:
             continue
         done = sum(1 for t in rows if not hirai_board.is_open(t))
         held = sum(1 for t in rows if hirai_board.is_open(t) and t.get('status') == HELD_STATUS)
-        sections.append({'name': section_name(model, wave['number']), 'total': len(rows), 'done': done, 'held': held})
+        number, name = section_parts(wave)
+        following = pick_next([t for t in rows if hirai_board.is_open(t)])
+        sections.append({'name': section_name(model, wave['number']), 'number': number, 'label': name,
+                         'total': len(rows), 'done': done, 'held': held,
+                         'next': ({'number': following['number'], 'title': strip_marks(following.get('title')),
+                                   'tag': turn_tag(following, not_ready)} if following else None)})
     total, done, held = (sum(s[k] for s in sections) for k in ('total', 'done', 'held'))
     me, assignees = prs.get('me') or '', prs.get('assignees') or {}
     named = dict(assign)
@@ -142,34 +247,51 @@ def build(view: dict, prs: dict, assign: dict, settings: dict) -> dict:
             pct, note, stuck = stage_of(n, ctx)
             mine = ctx['prs_of'].get(n, [])
             pr = max(mine, key=lambda p: (not p['draft'], p['number']))['number'] if mine else None
-            entries.append({'number': n, 'pct': pct, 'note': note, 'pr': pr, 'stuck': stuck, 'section': section_name(model, n)})
+            entry = {'number': n, 'pct': pct, 'note': note, 'pr': pr, 'stuck': stuck, 'section': section_name(model, n),
+                     'is_feature': (tasks[n].get('kind') == 'feature') if n in tasks else False, **_ticket(model, n)}
+            if entry['is_feature']:  # feature の行は、その子の task のうち動いているものを番号に出す
+                entry['children'] = sorted(c['number'] for c in model['tasks_of'].get(n, [])
+                                           if hirai_board.is_open(c) and c.get('status') in NO_OWNER_STATUSES)
+            entries.append(entry)
         if all(x['pct'] == 100 for x in entries):
             continue  # 全部閉じた担当は、古い割り振りの控えが残っているだけ。出さない
         closed = [x for x in entries if x['pct'] == 100]
         folded = closed[:-CLOSED_SHOWN] if len(closed) > CLOSED_SHOWN else []
         entries = [x for x in entries if x not in folded]  # 閉じた行は新しいほうだけ（古いものは畳む）
         people.append({'owner': owner, 'tasks': entries})
-    stray = [t['number'] for t in tasks.values()
-             if hirai_board.is_open(t) and t.get('status') in NO_OWNER_STATUSES and t['number'] not in named]
-    others = []
-    for pr in prs['open']:
+    others = {}
+    for pr in sorted(prs['open'], key=lambda p: p['number']):
         author = pr.get('author') or ''
         if me and author and author != me:
             for n in pr.get('closes') or []:
-                if int(n) not in named and int(n) in tasks and hirai_board.is_open(tasks[int(n)]):
-                    others.append({'number': int(n), 'pr': pr['number'], 'author': author})
-    others.sort(key=lambda o: (o['pr'], o['number']))
+                n = int(n)
+                if n not in named and n in tasks and hirai_board.is_open(tasks[n]) and n not in others:  # 同じ task を閉じる PR が複数でも 1 行
+                    pct, _note, stuck = stage_of(n, ctx)
+                    others[n] = {'number': n, 'pr': pr['number'], 'author': author, 'pct': pct, 'stuck': stuck,
+                                 **_ticket(model, n)}
+    others = sorted(others.values(), key=lambda o: (o['pr'], o['number']))
     other_numbers = {o['number'] for o in others}
-    stray = [n for n in stray if n not in other_numbers]  # ほかの開発者の PR がある行は、担当の居ない行に出さない
+    in_trees = {int(x) for x in tree_numbers}
+
+    def has_worker(n: int) -> bool:  # 作業ツリーの名前に task か親の feature の番号がある = 担当が動いている
+        return n in in_trees or _ticket(model, n)['feature'] in in_trees
+
+    stray = [t['number'] for t in tasks.values()
+             if hirai_board.is_open(t) and t.get('status') in NO_OWNER_STATUSES and t['number'] not in named
+             and t['number'] not in other_numbers  # ほかの開発者の PR がある行は、担当の居ない行に出さない
+             and not has_worker(t['number'])]
     stuck_tasks = [{'number': t['number'], 'stuck': t['stuck']} for p in people for t in p['tasks'] if t['stuck']]
     stray_rows = [(n, stage_of(n, ctx)[2]) for n in sorted(stray)]  # 担当の無い行の CI 赤・衝突も止まりに出す
     stuck_tasks += [{'number': n, 'stuck': mark} for n, mark in stray_rows if mark]
     open_total = prs.get('open_total')
-    return {'total': total, 'done': done, 'held': held, 'sections': sections, 'people': people,
-            'stray': sorted(stray), 'others': others, 'stuck': stuck_tasks, 'settings': settings,
-            'truncated': open_total if isinstance(open_total, int) and open_total > len(prs['open']) else 0,
-            'unknown_assignees': prs.get('unknown_assignees') or 0,
-            'signature': signature(people), 'fetched_at': view.get('fetched_at', ''), 'how': view.get('how', '')}
+    model_out = {'total': total, 'done': done, 'held': held, 'sections': sections, 'people': people,
+                 'stray': sorted(stray), 'others': others, 'stuck': stuck_tasks, 'settings': settings,
+                 'truncated': open_total if isinstance(open_total, int) and open_total > len(prs['open']) else 0,
+                 'unknown_assignees': prs.get('unknown_assignees') or 0,
+                 'signature': signature(people), 'fetched_at': view.get('fetched_at', ''), 'how': view.get('how', '')}
+    model_out['running'] = running_rows(model_out)
+    model_out['turn'] = turn_rows(view, prs, tasks)
+    return model_out
 
 
 def signature(people: list) -> dict:
@@ -185,18 +307,8 @@ def pct_of(done: int, total: int) -> int:
     return 100 * done // total if total > 0 else 0
 
 
-def deadline_sentence(settings: dict) -> str:
-    label = one_line(settings.get('deadline_label') or '')
-    if not settings.get('deadline_date') or not label:
-        return ''
-    n = settings.get('deadline_open')
-    if n is None:
-        return f'{label}の件数は引けませんでした。'
-    return f'{label}に要ると本文に書かれた task は、開いているものが {n} 件あります。'
-
-
 def group_rows(entries: list) -> list[list[dict]]:
-    """同じ PR の隣り合う task を 1 つにまとめ、セクションが変わる所で行を分ける。"""
+    """同じ PR の隣り合う task を 1 つにまとめ、セクションが変わる所で行を分ける（board --progress の rows の形）。"""
     groups: list[dict] = []
     for e in entries:
         last = groups[-1] if groups else None
@@ -213,44 +325,168 @@ def group_rows(entries: list) -> list[list[dict]]:
     return runs
 
 
-def render(model: dict) -> str:
-    """4 部構成の Markdown（1 行目・セクションの表・進行中のタスクの表・実物と合っていない行）。"""
-    total, done, held = model['total'], model['done'], model['held']
-    s = model['settings']
-    first = f"{done} / {total} 完了（{pct_of(done, total)}%）。"
-    if held:
-        first += f'保留の {held} 件を除くと {pct_of(done, total - held)}% です。'
-    first += deadline_sentence(s)
-    out = [first, '']
-    mainline = s.get('mainline') or ''
-    cells = [(x['name'] + (f"（{one_line(s.get('mainline_label') or '本線')}）" if mainline and mainline in x['name'] else ''),
-              f"{pct_of(x['done'], x['total'])}%")
-             for x in model['sections'] if x['done'] < x['total']]
-    if cells:
-        out += ['| セクション | 進み | セクション | 進み |', '|---|---|---|---|']
-    half = (len(cells) + 1) // 2
-    for i in range(half):
-        right = cells[half + i] if half + i < len(cells) else ('', '')
-        out.append(f'| {cell(cells[i][0])} | {cells[i][1]} | {cell(right[0])} | {right[1]} |')
-    out += ['', '**進行中のタスク**', '', STAGE_SENTENCE, '', '| 担当 | セクション | 順番 | 進捗 |', '|---|---|---|---|']
+def running_rows(model: dict) -> list[dict]:
+    """「いま動いている」の行。feature が同じで担当と段の語も同じ task は 1 行にまとめる（番号は「・」でつなぐ）。
+    ほかの開発者の PR（担当の控えに無いもの）は GitHub の名前で最後に足す。親の feature が分からない task は feature なし。"""
+    rows: list[dict] = []
+    index: dict[tuple, dict] = {}
+
+    def add(owner: str, entry: dict, numbers: list[int], pct: int, stuck: str) -> None:
+        stage = stage_word(pct, stuck)
+        key = (entry.get('feature'), owner, stage)
+        row = index.get(key)
+        if row is None:
+            row = index[key] = {'feature': entry.get('feature'), 'feature_title': entry.get('feature_title') or '',
+                                'numbers': [], 'stage': stage, 'owner': owner, 'pct': pct}
+            if 'now' in entry:
+                row['now'] = ''
+            rows.append(row)
+        row['numbers'] += [n for n in numbers if n not in row['numbers']]
+        if entry.get('now') and entry['now'] not in row.get('now', '').split(' ／ '):
+            row['now'] = ' ／ '.join(x for x in (row.get('now', ''), entry['now']) if x)
+
     for person in model['people']:
-        runs = group_rows(person['tasks'])
-        for i, run in enumerate(runs):
-            chain = ' → '.join('・'.join(f'#{n}' for n in g['numbers']) + (f"（PR #{g['pr']}）" if g['pr'] else '') for g in run)
-            pcts = ' → '.join(f"{g['pct']}%" for g in run)
-            out.append(f"| {cell(person['owner']) if i == 0 else ''} | {cell(run[0]['section'])} | {chain} | {pcts} |")
-    if not model['people']:
-        out.append('| — | — | 割り振りがありません | — |')
-    if model['stuck']:
-        out += ['', '止まっているもの: ' + ', '.join(f"#{t['number']}（{t['stuck']}）" for t in model['stuck'])]
+        for entry in person['tasks']:
+            if entry['pct'] == 100:
+                continue
+            numbers = entry.get('children', []) if entry.get('is_feature') else [entry['number']]
+            add(person['owner'], entry, numbers, entry['pct'], entry['stuck'])
+    for o in model['others']:
+        add(o['author'], o, [o['number']], o['pct'], o['stuck'])
+    return rows
+
+
+def turn_rows(view: dict, prs: dict, tasks: dict) -> list[dict]:
+    """「あなたの番」の行（いま材料が取れるものだけ。GitHub は叩かない）: 取り込み待ちの PR・判断待ち・人の作業。"""
+    rows: list[dict] = []
+    me = prs.get('me') or ''
+    ready_prs = []
+    for pr in sorted(prs['open'], key=lambda p: p['number']):
+        if me and (pr.get('author') or '') == me and ci_state(pr) == '緑' and not pr.get('conflict'):
+            ready_prs.append({'number': pr['number'], 'draft': bool(pr.get('draft'))})
+    if ready_prs:
+        rows.append({'kind': '取り込み', 'prs': ready_prs, 'numbers': []})
+    live = [t for t in sorted(tasks.values(), key=lambda t: t['number'])
+            if hirai_board.is_task(t) and hirai_board.is_open(t) and t.get('kind') != 'feature']
+    decide = [t['number'] for t in live if t.get('status') == STATUS_DECISION]
+    if decide:
+        rows.append({'kind': '判断', 'prs': [], 'numbers': decide})
+    human = [t['number'] for t in live if is_human(t) and t.get('status') in ('着手可', '進行中', 'レビュー中')]
+    if human:
+        rows.append({'kind': '人の作業', 'prs': [], 'numbers': human})
+    return rows
+
+
+def deadline_part(settings: dict) -> str:
+    """期限の行（1 行目に寄せる）。設定が無ければ空。"""
+    date = settings.get('deadline_date') or ''
+    label = one_line(settings.get('deadline_label') or '')
+    if not date or not label:
+        return ''
+    match = re.fullmatch(r'\d{4}-(\d{2})-(\d{2})', date)
+    short = f'{int(match.group(1))}/{int(match.group(2))}' if match else date
+    label = re.split(r'[（(]', label)[0].strip() or label  # 「ベータ（12/15・…）」は「ベータ」だけ（日付は別に出す）
+    n = settings.get('deadline_open')
+    if n is None:
+        return f'{label} {short} の件数は引けませんでした'
+    return f'{label} {short} まで残り {n} 件'
+
+
+def headline(model: dict) -> str:
+    total, done, held = model['total'], model['done'], model['held']
+    parts = [f'全体 {done}/{total}（{pct_of(done, total)}%）']
+    if held:
+        parts.append(f'保留 {held} を除くと {pct_of(done, total - held)}%')
+    parts.append(deadline_part(model['settings']))
+    return '  '.join(x for x in parts if x)
+
+
+def _section_lines(model: dict) -> list[str]:
+    s = model['settings']
+    mainline = s.get('mainline') or ''
+    mark = f"（{one_line(s.get('mainline_label') or '本線')}）"
+    open_sections = [x for x in model['sections'] if x['done'] < x['total']]
+    if not open_sections:
+        return []
+    numw = max(disp_width(x['number']) for x in open_sections)
+    names = [clip_width(x['label'] + (mark if mainline and mainline in x['name'] else ''), NAME_WIDTH) for x in open_sections]
+    left = max(1 + numw + (1 if numw else 0) + max(disp_width(n) for n in names), disp_width('セクション'))
+    counts = [f"{x['done']}/{x['total']}" for x in open_sections]
+    cw = max([disp_width(c) for c in counts] + [disp_width('完了')])
+    nxt = [x['next'] for x in open_sections]
+    idw = max([disp_width(f"#{n['number']}") for n in nxt if n] + [0])
+    titles = [clip_width(n['title'], TITLE_WIDTH) if n else '' for n in nxt]
+    tw = max([disp_width(t) for t in titles] + [0])
+    out = [pad('セクション', left) + '  ' + ' ' * (cw - disp_width('完了')) + '完了' + '  次のタスク']
+    for x, name, count, n, title in zip(open_sections, names, counts, nxt, titles):
+        line = ' ' + pad(x['number'], numw) + (' ' if numw else '') + pad(name, left - 1 - numw - (1 if numw else 0))
+        line += '  ' + ' ' * (cw - disp_width(count)) + count + '  '
+        if n:
+            line += pad(f"#{n['number']}", idw) + ' ' + pad(title, tw) + f"  ［{n['tag']}］"
+        out.append(line.rstrip())
+    return out
+
+
+def _running_lines(model: dict) -> list[str]:
+    rows = model['running']
+    out = [f'いま動いている {len(rows)}']
+    if not rows:
+        return out
+    feats = [clip_width(f"F#{r['feature']} {r['feature_title']}" if r['feature'] else 'F#—', FEATURE_TITLE_WIDTH + 8).rstrip() for r in rows]
+    tasks = [clip_width('・'.join(f'#{n}' for n in r['numbers']) or '—', TASKS_WIDTH) for r in rows]
+    stages = [r['stage'] for r in rows]
+    owners = [clip_width(r['owner'], OWNER_WIDTH) for r in rows]
+    fw, tw, sw = (max(disp_width(x) for x in col) for col in (feats, tasks, stages))
+    show_now = any(r.get('now') for r in rows)
+    ow = max(disp_width(x) for x in owners)
+    for r, f, t, st, o in zip(rows, feats, tasks, stages, owners):
+        line = f' {pad(f, fw)}  {pad(t, tw)}  {pad(st, sw)}  {pad(o, ow) if show_now else o}'
+        if show_now and r.get('now'):
+            line += '  ' + clip_width(r['now'], NOW_WIDTH)
+        out.append(line.rstrip())
+    return out
+
+
+def _turn_lines(model: dict) -> list[str]:
+    rows = model.get('turn') or []
+    if not rows:
+        return []
+    out = [f'あなたの番 {len(rows)}']
+    width = max(disp_width(r['kind']) for r in rows)
+    for r in rows:
+        if r['prs']:
+            body = '、'.join(f"PR #{p['number']}（{'Draft・' if p['draft'] else ''}緑）" for p in r['prs'])
+        else:
+            shown = r['numbers'][:TURN_MAX]
+            body = '・'.join(f'#{n}' for n in shown) + (f' ほか {len(r["numbers"]) - TURN_MAX}' if len(r['numbers']) > TURN_MAX else '')
+        out.append(f' {pad(r["kind"], width)}  {body}')
+    return out
+
+
+def render(model: dict, age_minutes: int | None = None, extra: list | tuple = ()) -> str:
+    """桁をそろえた平文の 3 段（全体と期限の 1 行・セクションごとの次のタスク・いま動いている・あなたの番）と、
+    担当の居ないもの。Markdown の表は使わない（hook の出力では描かれない）。age_minutes があれば先頭に控えの古さの 1 行。
+    extra は、あなたの番のあとに足す行（board --progress の「これから立てる」など）。"""
+    out: list[str] = []
+    if age_minutes is not None:
+        out += [f'控えは {age_minutes} 分前の数です。取り直す: hirai-task load', '']
+    out += [headline(model), '']
+    sections = _section_lines(model)
+    out += sections + ([''] if sections else [])
+    out += _running_lines(model)
+    turn = _turn_lines(model)
+    out += [''] + turn if turn else []
+    notes: list[str] = []
     if model['stray']:
-        out += ['', '進行中・レビュー中なのに担当の居ないもの: ' + ', '.join(f'#{n}' for n in model['stray'])]
-    if model['others']:
-        out += ['', 'ほかの開発者の PR: ' + ', '.join(f"#{o['number']}（PR #{o['pr']}・{cell(o['author'])}）" for o in model['others'])]
+        marks = {t['number']: t['stuck'] for t in model['stuck']}
+        notes.append('担当の居ないもの（進行中・レビュー中）: ' + '、'.join(
+            f'#{n}' + (f'（{marks[n]}）' if marks.get(n) else '') for n in model['stray']))
+    notes += list(extra)
     if model['truncated']:
-        out += ['', f"開いている PR が {model['truncated']} 本あり、新しいほうだけで数えています。"]
+        notes.append(f"開いている PR が {model['truncated']} 本あり、新しいほうだけで数えています。")
     if model['unknown_assignees']:
-        out += ['', f"Assignees を見ていない 進行中・レビュー中 の task が {model['unknown_assignees']} 件あります。"]
+        notes.append(f"Assignees を見ていない 進行中・レビュー中 の task が {model['unknown_assignees']} 件あります。")
+    out += [''] + notes if notes else []
     return '\n'.join(out) + '\n'
 
 

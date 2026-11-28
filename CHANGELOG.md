@@ -4,6 +4,16 @@
 
 更新のしかたは [README の「更新する」](README.md#更新する既定では自動で新しくなりません)。**既定では自動更新しない**（v1.13.0 から opt-in で自動にできる）。
 
+## 4.2.0
+テックリードが 2026-11-28 に、進みの表（`hirai-task load`）を「わかりにくい」と指摘し、案 A を承認した。**表を Markdown の表から、桁をそろえた平文の 3 段にした**。hook の出力（PostToolUse の additionalContext・systemMessage）では Markdown が描かれず `|` と `---` がそのまま見えていた。全角の幅は 2 で数えて桁を合わせ、長い題は幅で切って「…」にする（`unicodedata.east_asian_width`）。
+
+- **3 段**: 1 行目は `全体 完了/全体（%）`・保留を除いた %・期限の残り件数（`ベータ 12/15 まで残り N 件`。設定があるときだけ）。次に、セクションごとに 1 行で「完了/全体」と「次のタスク」（そのセクションで着手順がいちばん若い開いている task 1 件。着手順が無ければ番号順・保留は後回し・開いている task が無いセクションは出さない）と、だれの番か（［進行中］［レビュー中］［着手可］［人］［判断］［承認待ち］［依存待ち］［保留］）。続けて「いま動いている N」（feature・task の番号・段の語〔着手・draft・ready・CI 緑・merge 済み・止まりは CI 赤・衝突〕・担当。ほかの開発者の PR は GitHub の名前）と、取れる材料だけの「あなたの番 N」（取り込み待ちの PR・判断・人の作業）。% は全体の 1 行だけ
+- **担当の居ないもの**: 作業ツリー（Orca の一覧・`git worktree list`）の名前に task か親の feature の番号がある task を外す（担当が実際に動いている task が並んでいた）。0 件なら行ごと出さない。「止まっているもの」「ほかの開発者の PR」の行は、段の語と「いま動いている」に畳んだ
+- **控えの古さ**: 末尾の「（控え: N 分前）」をやめ、古いときは先頭に「控えは N 分前の数です。取り直す: hirai-task load」の 1 行を出す（条件は前のまま。`--cached` は新しくても言うが、0 分前は言わない）
+- **hook**: `hooks/coordinator-load.sh` は `hirai-task load --cached --changed` を回し、段・担当・順番が前回から動いたときだけ表を出す（動いていなければ 1 バイトも出さない）。会話の始まり（`session-start.sh`）と手で打つ `hirai-task load` は、これまでどおり全部出す。`assign`・`start`・`done` が自分の出力に表を出して前回の控えを書き換えたあとに、hook が同じ表を重ねて出していたのを、この判定で止めた。同じ task を閉じるほかの開発者の PR が複数あると 1 つの task が 2 行出ていたのも 1 行にした
+- **そのまま**: `--json` の鍵（`sections` に `number`・`label`・`next`、`others` に段、`running`・`turn` を足しただけ）。`hirai-task board --progress` の「いまやっていること」は、同じ平文の「いま動いている」の右の列に残る
+- **試験**: `tests/smoke-tasks.sh` case 13 は hook が `load --cached --changed` を呼ぶこと・動いていない（exit 3）ときは何も出さないことを見る（壊した写しは 10 個）。selftest は `HIRAI_SELFTEST_ONLY=load` で load と progress の検査だけを回せる
+
 ## 4.1.0
 テックリードが 2026-11-26 に「プロジェクト依存系はsetting.jsonに集約したい。」「すべてsetting.json>setting.local.jsonで上書きが良いかと思います。modeはlocal.jsonを上書きするように変更して下さい。」「プロジェクトもsetting.jsonで指定できたほうが良いです。」と決めた（heyapro-app feature #2052・設計メモ `docs/draft/tkm-harness-settings.md`）。同じ feature で「`hirai-task assign` が feature を受け付けない」穴に「#2052に含めて対応して下さい。」、振り出しのあとに進みの表が出なかった件に「仕組みで解決しておいて下さい。」。**プロジェクトの設定を `.claude/settings.json` の `env` に集め、各自の `.claude/settings.local.json` で上書きし、進め方（mode）は settings.local.json に置く。**
 

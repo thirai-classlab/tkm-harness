@@ -76,7 +76,7 @@ merged_into:
 - TKM-R7.1 3 つの層: tkm-harness の土台（決まりの予算・進め方・確認・画面下・知らせ）／ タスク管理の機能（hirai-task・board・project-setup）／ 各リポのハーネス（そのリポの決まり・検査・hook・skill・settings）
 
 ### 要件 TKM-R8: 進捗の表を board が出し、担当と「いまやっていること」を Orca から引く（テックリード 2026-11-26 00:45「アサインジェイソンに書いてる内容CLIから取れへんの?」「入れといて下さい。」「これだと何やってるかよくわからんなあ」）
-- TKM-R8.1 Given GitHub Project のリポ When `hirai-task board --progress` Then 全体の 1 行・開いているセクションの 2 列の表・「進行中のタスク」の表（担当｜セクション｜順番｜進捗｜いまやっていること）・担当の居ないもの・これから立てる を文字の表で出す。`--json` で同じ中身を機械の形で出す（mod の欄から使う）
+- TKM-R8.1 Given GitHub Project のリポ When `hirai-task board --progress` Then 全体の 1 行・セクションごとの次のタスク・「いま動いている」（feature｜task｜段｜担当｜いまやっていること）・あなたの番・担当の居ないもの・これから立てる を、桁をそろえた平文（Markdown の表でない。4.2.0 から）で出す。`--json` で同じ中身を機械の形で出す（mod の欄から使う）
 - TKM-R8.2 Given Orca がある When 担当の列を作る Then `orca orchestration worker-list`・`task-list`・`orca worktree list` を突き合わせ、issue の番号は割り当ての題（spec の 1 行目）からだけ取り、完了を報告して作業ツリーが残る担当（merge 待ち）も出し、着手可なのにどこにも無い task を「これから立てる」に出す。担当の名前は割り当ての短い題
 - TKM-R8.3 Given 担当の行 When 「いまやっていること」を作る Then 最新の heartbeat の phase・最新の status か question の件名・作業ツリーの最後の commit・PR と CI の状態を 1 行に組む
 - TKM-R8.4 Given Orca が無い When 担当の列を作る Then 開いている PR の head の branch 名の番号 → issue の assignee の順で引く
