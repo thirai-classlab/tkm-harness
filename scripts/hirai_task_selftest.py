@@ -1474,8 +1474,11 @@ def _load_checks(t, tmp_dir: str) -> None:
             lines = out.splitlines()
             assert lines[0] == '全体 2/15（13%）  保留 1 を除くと 14%', lines[0]
             assert '|' not in out and '---' not in out and '**' not in out and '期限' not in lines[0], f'Markdown の表の記号が残った: {out}'
-            assert lines[2].split() == ['セクション', '完了', '次のタスク', '誰の番', '担当'], lines[2]
+            assert lines[1] == '残り 13: 進行中 4・レビュー中 5・着手可 3・保留 1', lines[1]   # 合計は 全体 − 完了
+            assert lines[3].split() == ['セクション', '完了', '次のタスク', '誰の番', '担当'], lines[3]
+            assert sum(int(x) for x in re.findall(r'(\d+)(?:・|$)', lines[1].split(':')[1])) == 13
             sec = [x for x in lines if '営業の登録' in x or '土台' in x]
+            assert re.search(r'1/3\s+33%\s', sec[0]) and re.search(r'1/12\s+8%\s', sec[1]), sec   # 件数のあとに %（pct_of）
             assert len(sec) == 2 and '1/3' in sec[0] and '#50' in sec[0] and '［着手可］' in sec[0], sec
             assert '1/12' in sec[1] and '#40' in sec[1] and '［着手可］' in sec[1], sec  # 着手順 1.0 が 2 件（#40・#43）なら番号の若い #40
             cols = {load.disp_width(x[:x.index('#')]) for x in sec}
@@ -1502,7 +1505,11 @@ def _load_checks(t, tmp_dir: str) -> None:
                 assert re.search(rf'#{n}\b', row(43)), (n, row(43))
             assert 'CI 赤' in row(43) and '乙・甲' in row(43) and 'other-dev' not in row(43) and not re.search(r'#49\b', row(43)), f'止まりを優先・担当は「・」でつなぐ・ほかの開発者は別の行: {row(43)}'
             assert row(49) == row(51) and 'F#20 F2' in row(49) and 'other-dev' in row(49) and '乙' not in row(49) and '着手' in row(49), f'ほかの開発者は別の行・段は task 自身の段: {row(49)}'
-            assert 'F#10 F1' in row(50) and '未着手' in row(50), row(50)
+            assert 'F#10 F1' in row(50) and '未着手 0%' in row(50), row(50)
+            assert 'CI 赤 60%' in row(43) and '#40→#43（PR #143）→#41→#44（PR #144）→#42（PR #142）→#45（PR #145）→#46' in row(43), f'止まりの語と段の %・控えの順番の「→」・PR の番号: {row(43)}'
+            assert '#49（PR #149）・#51' in row(49) and '→' not in row(49) and '着手 20%' in row(49), f'順番が無ければ「・」・ほかの開発者の PR の番号: {row(49)}'
+            unit = load._group_lines({'state': 'レビュー中', 'count': 4, 'tasks': [{'number': n, 'title': 't', 'pr': {'number': n + 1000, 'word': 'CI 緑'}} for n in (1, 2, 3, 4)]}, 10)
+            assert unit == ['   レビュー中  #1（PR #1001）・#2（PR #1002）・#3（PR #1003） ほか 1'], unit
             assert lines[head] == f'いま動いている {len(body)}', lines[head]
             assert len({load.disp_width(x[:x.index('#')]) for x in (row(43), row(50))}) == 1, '左の列の桁がそろっていない'
             turn = next(i for i, x in enumerate(lines) if x.startswith('あなたの番 '))
@@ -2661,14 +2668,14 @@ def _load_checks(t, tmp_dir: str) -> None:
                     os.environ['TKM_HARNESS_PEOPLE'] = saved_people
             lines = out.splitlines()
             # 2: 次のタスクの行の末尾に担当者の列（無ければ —・複数なら ・）。桁は見出しとそろう
-            assert lines[2].split() == ['セクション', '完了', '次のタスク', '誰の番', '担当'], lines[2]
-            sec = {x.split()[1]: x for x in lines[3:5]}
+            assert lines[3].split() == ['セクション', '完了', '次のタスク', '誰の番', '担当'], lines[3]
+            sec = {x.split()[1]: x for x in lines[4:6]}
             assert re.search(r'#50\s.*［着手可］\s+川嶋・平井$', sec['土台']), sec['土台']
             assert re.search(r'#40\s.*［着手可］\s+川嶋$', sec['営業の登録']), sec['営業の登録']
             for x in sec.values():
-                assert load.disp_width(x[:x.index('［')]) == load.disp_width(lines[2][:lines[2].index('誰の番')]), x
+                assert load.disp_width(x[:x.index('［')]) == load.disp_width(lines[3][:lines[3].index('誰の番')]), x
             assert len({load.disp_width(x[:x.index('川嶋')]) for x in sec.values()}) == 1, '担当の列の先頭がそろう（複数名も同じ列から）'
-            assert load.disp_width(lines[2][:lines[2].index('担当')]) == load.disp_width(sec['土台'][:sec['土台'].index('川嶋')]), '担当の見出しと名前の桁'
+            assert load.disp_width(lines[3][:lines[3].index('担当')]) == load.disp_width(sec['土台'][:sec['土台'].index('川嶋')]), '担当の見出しと名前の桁'
             # 1: 人ごとの段は いま動いている のあと・あなたの番 の前。他の人 → 自分 → 担当なし
             head = next(i for i, x in enumerate(lines) if x == '人ごと（開いている task）')
             assert next(i for i, x in enumerate(lines) if x.startswith('いま動いている ')) < head < next(i for i, x in enumerate(lines) if x.startswith('あなたの番 '))
@@ -2678,17 +2685,18 @@ def _load_checks(t, tmp_dir: str) -> None:
                     break
                 block.append(x)
             heads = [x for x in block if not x.startswith('   ')]
-            assert heads == [' 川嶋 6', ' 外部 1', ' 平井 10', ' 担当なし 12（着手可 1・判断待ち 2・人の作業 1・進行中 2・レビュー中 3・止まり 2・ほか 1）'], heads
+            assert heads == [' 川嶋 6（進行中 1・レビュー中 1・止まり 1・判断待ち 1・着手可 2）', ' 外部 1（進行中 1）',
+                             ' 平井 10（AI の担当 1・人の作業 1・担当の居ないもの 1・着手可 6・判断待ち 1）', ' 担当なし 12（着手可 1・判断待ち 2・人の作業 1・進行中 2・レビュー中 3・止まり 2・ほか 1）'], heads
             text = '\n'.join(block)
             assert re.search(r'進行中\s+#70 エリアの選び方$', text, re.M), text
             assert re.search(r'レビュー中\s+#71 エリアか家賃なしで保存させない（PR #171・CI 緑）$', text, re.M), text
             assert re.search(r'止まり\s+#72 未使用の依存と export（PR #172・衝突）$', text, re.M), text
             assert re.search(r'判断待ち\s+#73 エリアの選び方の細部$', text, re.M), text
-            kawa = block[:block.index(' 外部 1')]
+            kawa = block[:next(i for i, x in enumerate(block) if x.startswith(' 外部 1'))]
             assert [x.split()[0] for x in kawa if x.startswith('   ')] == ['進行中', 'レビュー中', '止まり', '判断待ち', '着手可', '#50'], kawa
             assert len({load.disp_width(x[:x.index('#')]) for x in kawa if x.startswith('   ')}) == 1, f'状態の列の桁がそろっていない: {kawa}'
             # 自分のアカウント: 作業ツリーがある task = AI の担当・それ以外 = 人の作業（先頭 3 件と ほか N）
-            mine = block[block.index(' 平井 10') + 1:-1]
+            mine = block[next(i for i, x in enumerate(block) if x.startswith(' 平井 10')) + 1:-1]
             assert [re.sub(r'\s+', ' ', x.strip()) for x in mine] == [
                 'AI の担当 #74 AI が持つ', '人の作業 #84 自分で打つ', '担当の居ないもの #52 row 52',
                 '着手可 #50・#75・#76 ほか 3', '判断待ち #85 自分の判断'], mine

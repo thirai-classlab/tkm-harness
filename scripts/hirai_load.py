@@ -34,7 +34,7 @@ CLOSED_SHOWN = 3  # 担当の行に出す、閉じた task の数（割り振り
 TITLE_WIDTH = 34  # 次のタスクの題の幅（全角 2・半角 1）
 NAME_WIDTH = 30  # セクション名の幅
 FEATURE_TITLE_WIDTH = 22
-TASKS_WIDTH = 48
+TASKS_WIDTH = 72
 OWNER_WIDTH = 30
 NOW_WIDTH = 60
 TURN_MAX = 3  # あなたの番の 判断 に番号を並べる数（残りは「ほか N」）
@@ -44,6 +44,7 @@ PEOPLE_TITLE_WIDTH = 40  # 人ごとの段の題の幅
 PEOPLE_SHOWN = 3  # 人ごとの段で、状態ごとに題つきで出す件数（超えたら番号だけ先頭 3 件と「ほか N」）
 # 人ごとの段の状態の並び（担当者のいる行）と、担当なしの行の並び
 STATE_ORDER = ('進行中', 'レビュー中', '止まり', '判断待ち', '人の作業', '着手可', 'ほか')
+REMAINING_ORDER = ('進行中', 'レビュー中', '着手可', '判断待ち', '承認待ち', '依存待ち', '保留', '人の作業', 'ほか')  # 残りの内訳の並び
 UNASSIGNED_ORDER = ('着手可', '判断待ち', '人の作業', '進行中', 'レビュー中', '止まり', 'ほか')
 MINE_AI, MINE_HUMAN, MINE_ORPHAN = 'AI の担当', '人の作業', '担当の居ないもの'  # 自分のアカウントの行の区分（残りは状態ごと）
 MINE_ORDER = (MINE_AI, MINE_HUMAN, MINE_ORPHAN, '着手可', '判断待ち', '承認待ち', '依存待ち', '保留', 'ほか')
@@ -268,6 +269,21 @@ def mine_state(task: dict, has_worker: bool) -> str:
     return status if status in MINE_ORDER else 'ほか'
 
 
+def remaining_state(task: dict, not_ready: dict) -> str:
+    """残り（開いている task）の内訳の区分。保留・判断待ち・人の作業（題の印）・依存待ち（着手可で未完了の blocked by）を先に決め、
+    あとは Status（進行中・レビュー中・着手可・承認待ち）。ほかの Status は ほか。"""
+    status = task.get('status') or ''
+    if status == HELD_STATUS:
+        return '保留'
+    if status == STATUS_DECISION:
+        return STATUS_DECISION
+    if is_human(task):
+        return '人の作業'
+    if status == '着手可' and task['number'] in not_ready:
+        return '依存待ち'
+    return status if status in REMAINING_ORDER else 'ほか'
+
+
 def pr_part(number: int, ctx: dict) -> dict | None:
     """その task の PR 1 本（draft でない・番号の大きいものを優先）と、段の語（止まり・draft・CI の状態）。無ければ None。"""
     mine = ctx['prs_of'].get(number, [])
@@ -369,11 +385,13 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
             mine = ctx['prs_of'].get(n, [])
             pr = max(mine, key=lambda p: (not p['draft'], p['number']))['number'] if mine else None
             entry = {'number': n, 'pct': pct, 'note': note, 'pr': pr, 'stuck': stuck, 'section': section_name(model, n),
+                     'order': named[n].get('order'),
                      'is_feature': (tasks[n].get('kind') == 'feature') if n in tasks else False, **_ticket(model, n)}
             if entry['is_feature']:  # feature の行は、その子の task のうち動いているものを番号に出す
                 entry['children'] = sorted(c['number'] for c in model['tasks_of'].get(n, [])
                                            if hirai_board.is_open(c) and c.get('status') in NO_OWNER_STATUSES)
                 entry['children_stages'] = {c: list(_stage_and_stuck(c, ctx)) for c in entry['children']}  # 子の task 自身の段（PR・CI から）
+                entry['children_prs'] = {c: (pr_part(c, ctx) or {}).get('number') for c in entry['children'] if pr_part(c, ctx)}
             entries.append(entry)
         if all(x['pct'] == 100 for x in entries):
             continue  # 全部閉じた担当は、古い割り振りの控えが残っているだけ。出さない
@@ -398,6 +416,10 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
     def has_worker(n: int) -> bool:  # 作業ツリーの名前に task か親の feature の番号がある = 担当が動いている
         return n in in_trees or _ticket(model, n)['feature'] in in_trees
 
+    rem = {state: 0 for state in REMAINING_ORDER}
+    for t in live_issues:
+        rem[remaining_state(t, not_ready)] += 1
+    remaining = {'count': len(live_issues), 'states': [[state, rem[state]] for state in REMAINING_ORDER if rem[state]]}
     by_assignee, unassigned = [], {'count': 0, 'states': []}
     if assignees_known:
         by_name: dict[str, dict] = {}
@@ -439,7 +461,7 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
                  'stray': sorted(stray), 'others': others, 'stuck': stuck_tasks, 'settings': settings,
                  'truncated': open_total if isinstance(open_total, int) and open_total > len(prs['open']) else 0,
                  'unknown_assignees': prs.get('unknown_assignees') or 0,
-                 'me': me, 'assignees_known': assignees_known, 'by_assignee': by_assignee, 'unassigned': unassigned,
+                 'me': me, 'remaining': remaining, 'assignees_known': assignees_known, 'by_assignee': by_assignee, 'unassigned': unassigned,
                  'tree_names': {int(k): v for k, v in ((trees or {}).get('names') or {}).items()},
                  'signature': signature(people), 'fetched_at': view.get('fetched_at', ''), 'how': view.get('how', '')}
     model_out['running'] = running_rows(model_out)
@@ -481,10 +503,10 @@ def group_rows(entries: list) -> list[list[dict]]:
 _OWNER_PREFIX_RE = re.compile(r'^#\d+\s*')
 
 
-def join_owners(owners: list[str], width: int) -> str:
-    """担当（task の番号も同じ）を「・」でつなぐ。幅を超えるときは後ろを落として「・ほか N」にする。"""
+def join_owners(owners: list[str], width: int, sep: str = '・') -> str:
+    """担当（task の番号も同じ）を sep（既定は「・」。順番のある行は「→」）でつなぐ。幅を超えるときは後ろを落として「・ほか N」にする。"""
     for shown in range(len(owners), 0, -1):
-        text = '・'.join(owners[:shown]) + (f'・ほか {len(owners) - shown}' if shown < len(owners) else '')
+        text = sep.join(owners[:shown]) + (f'・ほか {len(owners) - shown}' if shown < len(owners) else '')
         if disp_width(text) <= width:
             return text
     return clip_width(owners[0], width) if owners else ''
@@ -499,18 +521,25 @@ def running_rows(model: dict) -> list[dict]:
     rows: list[dict] = []
     index: dict[tuple, dict] = {}
 
-    def add(side: str, owner: str, entry: dict, stages: dict) -> None:
+    def add(side: str, owner: str, entry: dict, stages: dict, prs: dict | None = None) -> None:
         if not stages:
             return
         key = (entry.get('feature'), side if entry.get('feature') else owner)
         row = index.get(key)
         if row is None:
             row = index[key] = {'feature': entry.get('feature'), 'feature_title': entry.get('feature_title') or '',
-                                'numbers': [], 'stage': '', 'owner': '', 'owners': [], 'pct': 100, 'stuck': ''}
+                                'numbers': [], 'stage': '', 'owner': '', 'owners': [], 'pct': 100, 'stuck': '',
+                                'prs': {}, 'order_of': {}}
             if 'now' in entry:
                 row['now'] = ''
             rows.append(row)
         row['numbers'] = sorted(set(row['numbers']) | set(stages))
+        for k, v in (prs or {}).items():
+            if v is not None:
+                row['prs'][str(k)] = v
+        if entry.get('order') is not None:
+            for k in stages:
+                row['order_of'][str(k)] = entry['order']
         if owner and owner not in row['owners']:
             row['owners'].append(owner)
         for pct, stuck in stages.values():
@@ -531,16 +560,18 @@ def running_rows(model: dict) -> list[dict]:
             if entry.get('is_feature'):  # 子の task のうち、ほかの開発者の行に出るものは自分の行に入れない
                 stages = {int(k): tuple(v) for k, v in (entry.get('children_stages') or {}).items() if int(k) not in theirs}
                 numbers = list(stages)
+                prs = {int(k): v for k, v in (entry.get('children_prs') or {}).items()}
             else:
                 stages, numbers = {entry['number']: (entry['pct'], entry['stuck'])}, [entry['number']]
+                prs = {entry['number']: entry.get('pr')}
             name = next((names[k] for k in [entry['number'], *numbers] if k in names), '') \
                 or _OWNER_PREFIX_RE.sub('', plain(person['owner'])) or plain(person['owner'])
             if person.get('other'):
                 name = plain(person['owner'])
-            add('dev:' + name if person.get('other') else 'own', name, entry, stages)
+            add('dev:' + name if person.get('other') else 'own', name, entry, stages, prs)
     for o in model['others']:
         author = plain(o.get('author_name') or o['author'])
-        add('dev:' + author, author, o, {o['number']: (o['pct'], o['stuck'])})
+        add('dev:' + author, author, o, {o['number']: (o['pct'], o['stuck'])}, {o['number']: o.get('pr')})
     return rows
 
 
@@ -599,7 +630,11 @@ def _section_lines(model: dict) -> list[str]:
     numw = max(disp_width(x['number']) for x in open_sections)
     names = [clip_width(x['label'] + (mark if mainline and mainline in x['name'] else ''), NAME_WIDTH) for x in open_sections]
     left = max(1 + numw + (1 if numw else 0) + max(disp_width(n) for n in names), disp_width('セクション'))
-    counts = [f"{x['done']}/{x['total']}" for x in open_sections]
+    raw = [f"{x['done']}/{x['total']}" for x in open_sections]
+    rw = max(disp_width(c) for c in raw)
+    pcts = [f"{pct_of(x['done'], x['total'])}%" for x in open_sections]
+    pw = max(disp_width(c) for c in pcts)
+    counts = [' ' * (rw - disp_width(c)) + c + '  ' + ' ' * (pw - disp_width(q)) + q for c, q in zip(raw, pcts)]
     cw = max([disp_width(c) for c in counts] + [disp_width('完了')])
     nxt = [x['next'] for x in open_sections]
     idw = max([disp_width(f"#{n['number']}") for n in nxt if n] + [0])
@@ -619,14 +654,28 @@ def _section_lines(model: dict) -> list[str]:
     return out
 
 
+def _row_tasks(row: dict) -> list[str]:
+    """行の task の番号（PR があれば `#n（PR #m）`）。控えの順番がある行は、順番 → 番号の順に並べる。"""
+    order_of, prs = row.get('order_of') or {}, row.get('prs') or {}
+    numbers = sorted(row['numbers'], key=lambda n: (str(n) not in order_of, order_of.get(str(n), 0), n)) if order_of else row['numbers']
+    groups: list[list] = []  # 同じ PR の隣り合う task は「#a・#b（PR #n）」にまとめる
+    for n in numbers:
+        pr = prs.get(str(n))
+        if groups and pr is not None and groups[-1][0] == pr:
+            groups[-1][1].append(n)
+        else:
+            groups.append([pr, [n]])
+    return ['・'.join(f'#{n}' for n in ns) + (f'（PR #{pr}）' if pr is not None else '') for pr, ns in groups]
+
+
 def _running_lines(model: dict) -> list[str]:
     rows = model['running']
     out = [f'いま動いている {len(rows)}']
     if not rows:
         return out
     feats = [clip_width(f"F#{r['feature']} {r['feature_title']}" if r['feature'] else 'F#—', FEATURE_TITLE_WIDTH + 8).rstrip() for r in rows]
-    tasks = [join_owners([f'#{n}' for n in r['numbers']], TASKS_WIDTH) or '—' for r in rows]
-    stages = [r['stage'] for r in rows]
+    tasks = [join_owners(_row_tasks(r), TASKS_WIDTH, '→' if r.get('order_of') else '・') or '—' for r in rows]
+    stages = [f"{r['stage']} {r['pct']}%" for r in rows]
     owners = [join_owners(r['owners'], OWNER_WIDTH) for r in rows]
     fw, tw, sw = (max(disp_width(x) for x in col) for col in (feats, tasks, stages))
     show_now = any(r.get('now') for r in rows)
@@ -649,7 +698,7 @@ def _group_lines(group: dict, label_width: int) -> list[str]:
     if len(tasks) <= PEOPLE_SHOWN:
         return [f"   {label if i == 0 else pad('', label_width)}  #{t['number']} {clip_width(t['title'], PEOPLE_TITLE_WIDTH)}{_pr_text(t.get('pr'))}".rstrip()
                 for i, t in enumerate(tasks)]
-    shown = '・'.join(f"#{t['number']}" for t in tasks[:PEOPLE_SHOWN])
+    shown = '・'.join(f"#{t['number']}" + (f"（PR #{t['pr']['number']}）" if t.get('pr') else '') for t in tasks[:PEOPLE_SHOWN])
     return [f'   {label}  {shown} ほか {len(tasks) - PEOPLE_SHOWN}']
 
 
@@ -661,7 +710,7 @@ def _people_lines(model: dict) -> list[str]:
     out = ['人ごと（開いている task）']
     label_width = max([disp_width(g['state']) for p in people for g in p['groups']] + [0])
     for person in people:
-        out.append(f" {person['name']} {person['count']}")
+        out.append(f" {person['name']} {person['count']}（" + '・'.join(f"{g['state']} {g['count']}" for g in person['groups']) + '）')
         for group in person['groups']:
             out += _group_lines(group, label_width)
     if free['count']:
@@ -694,7 +743,11 @@ def render(model: dict, age_minutes: int | None = None, extra: list | tuple = ()
         out += [STALE_NOTE, '']
     if age_minutes is not None:
         out += [f'控えは {age_minutes} 分前の数です。取り直す: hirai-task load', '']
-    out += [headline(model), '']
+    out += [headline(model)]
+    rem = model.get('remaining') or {'count': 0, 'states': []}
+    if rem['count']:
+        out += [f"残り {rem['count']}: " + '・'.join(f'{state} {n}' for state, n in rem['states'])]
+    out += ['']
     sections = _section_lines(model)
     out += sections + ([''] if sections else [])
     out += _running_lines(model)
