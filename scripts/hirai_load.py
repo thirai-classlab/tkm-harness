@@ -190,6 +190,11 @@ def _pr_index(prs: list, repo: str) -> dict:
     return out
 
 
+def _stage_and_stuck(n: int, ctx: dict) -> tuple:
+    pct, _note, stuck = stage_of(n, ctx)
+    return pct, stuck
+
+
 def stage_word(pct: int, stuck: str) -> str:
     return stuck or STAGE_WORDS.get(pct, f'{pct}%')
 
@@ -266,13 +271,14 @@ def build(view: dict, prs: dict, assign: dict, settings: dict, trees: dict | Non
             if entry['is_feature']:  # feature の行は、その子の task のうち動いているものを番号に出す
                 entry['children'] = sorted(c['number'] for c in model['tasks_of'].get(n, [])
                                            if hirai_board.is_open(c) and c.get('status') in NO_OWNER_STATUSES)
+                entry['children_stages'] = {c: list(_stage_and_stuck(c, ctx)) for c in entry['children']}  # 子の task 自身の段（PR・CI から）
             entries.append(entry)
         if all(x['pct'] == 100 for x in entries):
             continue  # 全部閉じた担当は、古い割り振りの控えが残っているだけ。出さない
         closed = [x for x in entries if x['pct'] == 100]
         folded = closed[:-CLOSED_SHOWN] if len(closed) > CLOSED_SHOWN else []
         entries = [x for x in entries if x not in folded]  # 閉じた行は新しいほうだけ（古いものは畳む）
-        people.append({'owner': owner, 'tasks': entries})
+        people.append({'owner': owner, 'other': any(n in others_of for n in owners[owner]), 'tasks': entries})
     others = {}
     for pr in sorted(prs['open'], key=lambda p: p['number']):
         author = pr.get('author') or ''
@@ -353,47 +359,56 @@ def join_owners(owners: list[str], width: int) -> str:
 
 
 def running_rows(model: dict) -> list[dict]:
-    """「いま動いている」の行。同じ feature は 1 行にまとめる（task の番号は「・」でつなぎ、段はいちばん遅れている段で、
-    止まり〔CI 赤・衝突〕が 1 つでもあればそれ。担当は重ならないものを順に並べる）。親の feature が分からない task は担当ごと。
-    担当は作業ツリーの名前（無ければ控えの名前から先頭の `#番号 ` を落としたもの）。ほかの開発者の PR は GitHub の名前で最後に足す。"""
+    """「いま動いている」の行。同じ feature の task は 1 行にまとめるが、自分の側（作業ツリー・控えの担当）とほかの開発者
+    （GitHub の名前。開発者ごと）は別の行にする。task の番号は「・」でつなぎ、段は行に入った task 自身の段（PR・CI から出した段）の
+    うちいちばん遅れているもの（止まり〔CI 赤・衝突〕があればそれ）。feature の Status では決めない。task が 1 件も入らない行は出さない。
+    親の feature が分からない task は担当ごと。担当は作業ツリーの名前（無ければ控えの名前から先頭の `#番号 ` を落としたもの）。"""
     names = {int(k): v for k, v in (model.get('tree_names') or {}).items()}
     rows: list[dict] = []
     index: dict[tuple, dict] = {}
 
-    def add(owner: str, entry: dict, numbers: list[int], pct: int, stuck: str) -> None:
-        key = (entry.get('feature'), '' if entry.get('feature') else owner)
+    def add(side: str, owner: str, entry: dict, stages: dict) -> None:
+        if not stages:
+            return
+        key = (entry.get('feature'), side if entry.get('feature') else owner)
         row = index.get(key)
         if row is None:
             row = index[key] = {'feature': entry.get('feature'), 'feature_title': entry.get('feature_title') or '',
-                                'numbers': [], 'stage': '', 'owner': '', 'owners': [], 'pct': pct, 'stuck': ''}
+                                'numbers': [], 'stage': '', 'owner': '', 'owners': [], 'pct': 100, 'stuck': ''}
             if 'now' in entry:
                 row['now'] = ''
             rows.append(row)
-        row['numbers'] = sorted(set(row['numbers']) | set(numbers))
+        row['numbers'] = sorted(set(row['numbers']) | set(stages))
         if owner and owner not in row['owners']:
             row['owners'].append(owner)
-        # いちばん遅れている段（止まりがあればそれを先に）
-        if stuck and not row['stuck']:
-            row['stuck'], row['pct'] = stuck, pct
-        elif not row['stuck'] and pct < row['pct']:
-            row['pct'] = pct
+        for pct, stuck in stages.values():
+            if stuck and not row['stuck']:
+                row['stuck'], row['pct'] = stuck, pct
+            elif not row['stuck'] and pct < row['pct']:
+                row['pct'] = pct
         row['stage'] = stage_word(row['pct'], row['stuck'])
         row['owner'] = '・'.join(row['owners'])
         if entry.get('now') and entry['now'] not in row.get('now', '').split(' ／ '):
             row['now'] = ' ／ '.join(x for x in (row.get('now', ''), entry['now']) if x)
 
+    theirs = {o['number'] for o in model['others']} | {e['number'] for p in model['people'] if p.get('other') for e in p['tasks']}
     for person in model['people']:
         for entry in person['tasks']:
             if entry['pct'] == 100:
                 continue
-            numbers = entry.get('children', []) if entry.get('is_feature') else [entry['number']]
+            if entry.get('is_feature'):  # 子の task のうち、ほかの開発者の行に出るものは自分の行に入れない
+                stages = {int(k): tuple(v) for k, v in (entry.get('children_stages') or {}).items() if int(k) not in theirs}
+                numbers = list(stages)
+            else:
+                stages, numbers = {entry['number']: (entry['pct'], entry['stuck'])}, [entry['number']]
             name = next((names[k] for k in [entry['number'], *numbers] if k in names), '') \
                 or _OWNER_PREFIX_RE.sub('', plain(person['owner'])) or plain(person['owner'])
-            # feature の行は PR が無ければ Status の段（着手可は 0）。動いている子の task があれば、少なくとも着手の段にする
-            pct = max(entry['pct'], 20) if entry.get('is_feature') and numbers else entry['pct']
-            add(name, entry, numbers, pct, entry['stuck'])
+            if person.get('other'):
+                name = plain(person['owner'])
+            add('dev:' + name if person.get('other') else 'own', name, entry, stages)
     for o in model['others']:
-        add(plain(o['author']), o, [o['number']], o['pct'], o['stuck'])
+        author = plain(o['author'])
+        add('dev:' + author, author, o, {o['number']: (o['pct'], o['stuck'])})
     return rows
 
 

@@ -1495,10 +1495,11 @@ def _load_checks(t, tmp_dir: str) -> None:
                 body.append(x)
             def row(n):
                 return next(x for x in body if re.search(rf'#{n}\b', x))
-            assert row(43) == row(44) == row(49) and 'F#20 F2' in row(43), 'feature が同じ task は 1 行にまとめる'
-            for n in (40, 41, 42, 43, 44, 45, 46, 49, 51):
+            assert row(43) == row(44) == row(40) and 'F#20 F2' in row(43), '自分の feature が同じ task は 1 行にまとめる'
+            for n in (40, 41, 42, 43, 44, 45, 46):
                 assert re.search(rf'#{n}\b', row(43)), (n, row(43))
-            assert 'CI 赤' in row(43) and 'CI 緑' not in row(43) and '乙・甲' in row(43) and 'other-dev' in row(43), f'止まりを優先・担当は「・」でつなぐ: {row(43)}'
+            assert 'CI 赤' in row(43) and '乙・甲' in row(43) and 'other-dev' not in row(43) and not re.search(r'#49\b', row(43)), f'止まりを優先・担当は「・」でつなぐ・ほかの開発者は別の行: {row(43)}'
+            assert row(49) == row(51) and 'F#20 F2' in row(49) and 'other-dev' in row(49) and '乙' not in row(49) and '着手' in row(49), f'ほかの開発者は別の行・段は task 自身の段: {row(49)}'
             assert 'F#10 F1' in row(50) and '未着手' in row(50), row(50)
             assert lines[head] == f'いま動いている {len(body)}', lines[head]
             assert len({load.disp_width(x[:x.index('#')]) for x in (row(43), row(50))}) == 1, '左の列の桁がそろっていない'
@@ -1529,13 +1530,13 @@ def _load_checks(t, tmp_dir: str) -> None:
             for key in ('total', 'done', 'held', 'sections', 'people', 'stray', 'others', 'stuck', 'settings', 'truncated',
                         'unknown_assignees', 'signature', 'fetched_at', 'how', 'age_minutes'):
                 assert key in m, f'--json の鍵 {key} が消えた'
-            assert {'name', 'total', 'done', 'held'} <= set(m['sections'][0]) and {'owner', 'tasks'} == set(m['people'][0]), m['people'][0].keys()
+            assert {'name', 'total', 'done', 'held'} <= set(m['sections'][0]) and {'owner', 'other', 'tasks'} == set(m['people'][0]), m['people'][0].keys()
         t('load: 作業ツリーの担当が動いている task は担当の居ないものから外し・同じ task の PR は 1 行・--json の鍵は消さない', _stray_and_dedup_and_json)
 
         def _running_names_and_stage() -> None:
             # 1: 担当は作業ツリーの名前。無ければ控えの名前から先頭の `#番号 ` を落とす。ほかの開発者は GitHub の名前のまま
-            def person(owner, *entries):
-                return {'owner': owner, 'tasks': [dict({'section': 's', 'note': '', 'pr': None, 'stuck': '', 'feature': 7, 'feature_title': '機能'}, **e) for e in entries]}
+            def person(owner, *entries, other=False):
+                return {'owner': owner, 'other': other, 'tasks': [dict({'section': 's', 'note': '', 'pr': None, 'stuck': '', 'feature': 7, 'feature_title': '機能'}, **e) for e in entries]}
             mk = lambda *people, names=None: {'people': list(people), 'others': [], 'tree_names': names or {}}
             r = load.running_rows(mk(person('#99 長い控えの名前（PR #1 の直し）', {'number': 1, 'pct': 20}), names={1: '1-tree'}))
             assert r[0]['owners'] == ['1-tree'], r
@@ -1544,20 +1545,27 @@ def _load_checks(t, tmp_dir: str) -> None:
             r = load.running_rows(dict(mk(person('skawashima', {'number': 1, 'pct': 20})), others=[
                 {'number': 2, 'pr': 9, 'author': 'ext-dev', 'pct': 70, 'stuck': '', 'feature': 8, 'feature_title': 'y'}]))
             assert [x['owners'] for x in r] == [['skawashima'], ['ext-dev']], r
-            # 2: 段は「いちばん遅れている段」・止まりが先・担当が多ければ「ほか N」
+            # 2: 段は、行に入った task 自身の段のうちいちばん遅れているもの（止まり優先）。feature の Status では決めない
             r = load.running_rows(mk(person('a', {'number': 1, 'pct': 70}), person('b', {'number': 2, 'pct': 20}), person('c', {'number': 3, 'pct': 90})))
             assert len(r) == 1 and r[0]['numbers'] == [1, 2, 3] and r[0]['stage'] == '着手' and r[0]['owners'] == ['a', 'b', 'c'], r
             r = load.running_rows(mk(person('a', {'number': 1, 'pct': 20}), person('b', {'number': 2, 'pct': 70, 'stuck': '衝突'})))
             assert r[0]['stage'] == '衝突', r
+            # 1: 同じ feature でも、自分の側とほかの開発者は別の行（ほかの開発者は開発者ごと）
+            r = load.running_rows(mk(person('a', {'number': 1, 'pct': 70}), person('dev1', {'number': 2, 'pct': 70, 'stuck': '衝突'}, other=True),
+                                     person('dev2', {'number': 3, 'pct': 20}, other=True)))
+            assert [(x['numbers'], x['stage'], x['owners']) for x in r] == [([1], 'CI 緑', ['a']), ([2], '衝突', ['dev1']), ([3], '着手', ['dev2'])], r
             r = load.running_rows(mk(person('a', {'number': 1, 'pct': 20, 'feature': None, 'feature_title': ''}),
                                      person('b', {'number': 2, 'pct': 20, 'feature': None, 'feature_title': ''})))
             assert len(r) == 2 and r[0]['feature'] is None, '親の feature が分からない task を 1 行にまとめた'
             assert load.join_owners(['a' * 10, 'b' * 10, 'c' * 10], 30) == 'a' * 10 + '・' + 'b' * 10 + '・ほか 1', load.join_owners(['a' * 10, 'b' * 10, 'c' * 10], 30)
             assert load.join_owners(['甲', '乙'], 30) == '甲・乙'
-            r = load.running_rows(mk(person('a', {'number': 7, 'pct': 0, 'is_feature': True, 'children': [3, 4]}), person('b', {'number': 8, 'pct': 0, 'is_feature': True, 'children': []})))
-            assert r[0]['numbers'] == [3, 4] and r[0]['stage'] == '未着手', r  # 同じ feature の中に、子が動いていない 0 の行があれば、いちばん遅れている段は未着手
-            r = load.running_rows(mk(person('a', {'number': 7, 'pct': 0, 'is_feature': True, 'children': [3, 4]})))
-            assert r[0]['numbers'] == [3, 4] and r[0]['stage'] == '着手', f'動いている子があるのに未着手: {r}'
+            # feature の行は、子の task 自身の段で決める（PR なし 20 と PR 緑 70 なら着手）。task が 1 件も入らない行は出さない
+            r = load.running_rows(mk(person('a', {'number': 7, 'pct': 0, 'is_feature': True, 'children': [3, 4], 'children_stages': {3: [20, ''], 4: [70, '']}}),
+                                     person('b', {'number': 8, 'pct': 20, 'is_feature': True, 'children': [], 'children_stages': {}, 'feature': 8})))
+            assert [(x['feature'], x['numbers'], x['stage']) for x in r] == [(7, [3, 4], '着手')], r
+            r = load.running_rows(dict(mk(person('a', {'number': 7, 'pct': 0, 'is_feature': True, 'children': [3, 4], 'children_stages': {3: [20, ''], 4: [70, '']}})),
+                                       others=[{'number': 4, 'pr': 9, 'author': 'dev', 'pct': 70, 'stuck': '', 'feature': 7, 'feature_title': '機能'}]))
+            assert [(x['numbers'], x['stage'], x['owners']) for x in r] == [([3], '着手', ['a']), ([4], 'CI 緑', ['dev'])], f'ほかの開発者の task が自分の行に入った: {r}'
         t('load: いま動いている は feature で 1 行にまとめ、段はいちばん遅れている段（止まり優先）・担当は作業ツリーの名前（無ければ `#番号 ` を落とした控えの名前）', _running_names_and_stage)
 
         def _feature_title_suffix() -> None:
