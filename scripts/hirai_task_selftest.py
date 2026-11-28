@@ -364,7 +364,7 @@ _SINGLE_SELECT_KEY_TO_FIELD = {'status': 'Status', 'kind': gh_task.KIND_FIELD}
 def _write_item_body(
     *, found: bool = True, title: str = 'task', body: str = '', state: str = 'OPEN',
     parent_number: int | None = None, blockers: list[tuple[int, str]] | None = None,
-    project_number: int = 7, **field_kwargs,
+    project_number: int = 7, assignees: list[str] | None = None, **field_kwargs,
 ) -> dict:
     if not found:
         return {'data': {'repository': {'issue': None}}}
@@ -382,6 +382,7 @@ def _write_item_body(
         'body': body,
         'state': state,
         'parent': {'number': parent_number} if parent_number is not None else None,
+        'assignees': {'nodes': [{'login': x} for x in (assignees or [])]},
         'blockedBy': {
             'totalCount': len(blockers),
             # (番号, 状態) か (番号, 状態, 'owner/repo')。repo は本物の応答と同じく repository.nameWithOwner に載る
@@ -1292,7 +1293,7 @@ def _load_gh(calls: list, *, rows=None, prs=None, deadline_bodies=None, fail_sea
                 return 1, '', 'HTTP 403: rate limit'
             items = [{'number': 900 + i, 'body': b} for i, b in enumerate(deadline_bodies or [])]
             return 0, json.dumps({'total_count': len(items), 'incomplete_results': False, 'items': items}), ''
-        if 'assignees(first: 10)' in joined and 'pullRequests(states: OPEN' not in joined:
+        if re.search(r'\ba0: issue\(number', joined) and 'pullRequests(states: OPEN' not in joined:
             repo = {}
             for i, num in re.findall(r'a(\d+): issue\(number: (\d+)\)', joined):
                 logins = (by_number.get(int(num)) or {}).get('assignees', [])
@@ -1310,7 +1311,8 @@ def _load_gh(calls: list, *, rows=None, prs=None, deadline_bodies=None, fail_sea
             for k, number in enumerate(numbers):
                 if 'blockedBy' in joined:
                     data[f'i{k}'] = {'issue': {'number': number, 'blockedBy': {'totalCount': 0, 'nodes': []},
-                                               'closedByPullRequestsReferences': {'nodes': []}}}
+                                               'closedByPullRequestsReferences': {'nodes': []},
+                                               'assignees': {'nodes': [{'login': x} for x in (by_number.get(number) or {}).get('assignees', [])]}}}
                 else:
                     data[f'i{k}'] = {'issue': {'number': number, 'body': ''}}
             return 0, json.dumps({'data': data}), ''
@@ -1472,8 +1474,11 @@ def _load_checks(t, tmp_dir: str) -> None:
             lines = out.splitlines()
             assert lines[0] == '全体 2/15（13%）  保留 1 を除くと 14%', lines[0]
             assert '|' not in out and '---' not in out and '**' not in out and '期限' not in lines[0], f'Markdown の表の記号が残った: {out}'
-            assert lines[2].split() == ['セクション', '完了', '次のタスク'], lines[2]
+            assert lines[1] == '残り 13: 進行中 4・レビュー中 5・着手可 3・保留 1', lines[1]   # 合計は 全体 − 完了
+            assert lines[3].split() == ['セクション', '完了', '次のタスク', '誰の番', '担当'], lines[3]
+            assert sum(int(x) for x in re.findall(r'(\d+)(?:・|$)', lines[1].split(':')[1])) == 13
             sec = [x for x in lines if '営業の登録' in x or '土台' in x]
+            assert re.search(r'1/3\s+33%\s', sec[0]) and re.search(r'1/12\s+8%\s', sec[1]), sec   # 件数のあとに %（pct_of）
             assert len(sec) == 2 and '1/3' in sec[0] and '#50' in sec[0] and '［着手可］' in sec[0], sec
             assert '1/12' in sec[1] and '#40' in sec[1] and '［着手可］' in sec[1], sec  # 着手順 1.0 が 2 件（#40・#43）なら番号の若い #40
             cols = {load.disp_width(x[:x.index('#')]) for x in sec}
@@ -1500,7 +1505,19 @@ def _load_checks(t, tmp_dir: str) -> None:
                 assert re.search(rf'#{n}\b', row(43)), (n, row(43))
             assert 'CI 赤' in row(43) and '乙・甲' in row(43) and 'other-dev' not in row(43) and not re.search(r'#49\b', row(43)), f'止まりを優先・担当は「・」でつなぐ・ほかの開発者は別の行: {row(43)}'
             assert row(49) == row(51) and 'F#20 F2' in row(49) and 'other-dev' in row(49) and '乙' not in row(49) and '着手' in row(49), f'ほかの開発者は別の行・段は task 自身の段: {row(49)}'
-            assert 'F#10 F1' in row(50) and '未着手' in row(50), row(50)
+            assert 'F#10 F1' in row(50) and '未着手 0%' in row(50), row(50)
+            assert 'CI 赤（ready）' in row(43) and '60%' not in row(43) and '#40→#43（PR #143）→#41→#44（PR #144）→#42（PR #142）→#45（PR #145）→#46' in row(43), f'止まりの語と段の %・控えの順番の「→」・PR の番号: {row(43)}'
+            assert '#49（PR #149）・#51' in row(49) and '→' not in row(49) and '着手 20%' in row(49), f'順番が無ければ「・」・ほかの開発者の PR の番号: {row(49)}'
+            m_stuck = load.render({**model_of(), 'running': [
+                {'feature': 1, 'feature_title': 'a', 'numbers': [1], 'stage': '衝突', 'owner': 'x', 'owners': ['x'], 'pct': 70, 'stuck': '衝突'},
+                {'feature': 2, 'feature_title': 'b', 'numbers': [2], 'stage': 'CI 赤', 'owner': 'x', 'owners': ['x'], 'pct': 60, 'stuck': 'CI 赤'},
+                {'feature': 3, 'feature_title': 'c', 'numbers': [3], 'stage': '衝突', 'owner': 'x', 'owners': ['x'], 'pct': 50, 'stuck': '衝突'},
+                {'feature': 4, 'feature_title': 'd', 'numbers': [4], 'stage': 'CI 緑', 'owner': 'x', 'owners': ['x'], 'pct': 70, 'stuck': ''}]})
+            for want in ('衝突（CI 緑）', 'CI 赤（ready）', '衝突（draft）', 'CI 緑 70%'):
+                assert want in m_stuck, (want, m_stuck)
+            assert '衝突 70%' not in m_stuck and '衝突 50%' not in m_stuck and 'CI 赤 60%' not in m_stuck, m_stuck
+            unit = load._group_lines({'state': 'レビュー中', 'count': 4, 'tasks': [{'number': n, 'title': 't', 'pr': {'number': n + 1000, 'word': 'CI 緑'}} for n in (1, 2, 3, 4)]}, 10)
+            assert unit == ['   レビュー中  #1（PR #1001）・#2（PR #1002）・#3（PR #1003） ほか 1'], unit
             assert lines[head] == f'いま動いている {len(body)}', lines[head]
             assert len({load.disp_width(x[:x.index('#')]) for x in (row(43), row(50))}) == 1, '左の列の桁がそろっていない'
             turn = next(i for i, x in enumerate(lines) if x.startswith('あなたの番 '))
@@ -1749,13 +1766,13 @@ def _load_checks(t, tmp_dir: str) -> None:
         def _start_calls_ensure() -> None:
             called: list[int] = []
             orig_start, orig_ens, orig_print = gh_task.cmd_start, gh_task.ensure_assignee, gh_task.print_load_after
-            gh_task.cmd_start = lambda number, approved, reread=False: 0
+            gh_task.cmd_start = lambda number, approved, reread=False, take=False: 0
             gh_task.ensure_assignee = lambda number: called.append(number)
             gh_task.print_load_after = lambda patch=None: called.append(-1)
             try:
                 rc, _ = _run_main(['start', '40'])
                 assert (rc, called) == (0, [40, -1]), f'start のあとに Assignees と表が出ない: {rc} {called}'
-                gh_task.cmd_start = lambda number, approved, reread=False: 2
+                gh_task.cmd_start = lambda number, approved, reread=False, take=False: 2
                 called.clear()
                 rc, _ = _run_main(['start', '40'])
                 assert (rc, called) == (2, []), f'断られた start で Assignees を書いた: {called}'
@@ -1937,7 +1954,7 @@ def _load_checks(t, tmp_dir: str) -> None:
                 gh_task.cmd_done = lambda number, reason: 1
                 rc, _ = _run_main(['done', '45'])
                 assert (rc, seen) == (1, []), f'失敗した done のあとに表: {seen}'
-                gh_task.cmd_start = lambda number, approved, reread=False: 0
+                gh_task.cmd_start = lambda number, approved, reread=False, take=False: 0
                 rc, _ = _run_main(['start', '40'])
                 assert (rc, seen) == (0, [('overlay', 40, '進行中', None), ('ensure', 40), ('table', False)]), seen
                 seen.clear()
@@ -2624,6 +2641,123 @@ def _load_checks(t, tmp_dir: str) -> None:
                 sys.stderr = saved_err
             assert got is False and out.getvalue() == '' and '入れていない' in err.getvalue(), (got, out.getvalue(), err.getvalue())
         t('ensure_assignee: 空で、閉じる PR を確かめられないときは入れず、標準エラーに 1 行', _ensure_pr_unknown)
+
+        def _assignee_column_and_people() -> None:
+            def arow(number, status, assignees=(), title=None, parent=20, order=None):
+                return dict(_load_rows()[6], number=number, id=f'I_{number}', status=status, owner='', order=order,
+                            parent_number=parent, assignees=list(assignees), title=title or f'row {number}')
+            rows = []
+            for r in _load_rows():
+                if r['number'] == 40:
+                    r = dict(r, assignees=['kawa'])
+                if r['number'] == 50:
+                    r = dict(r, assignees=['kawa', 'me'])
+                if r['number'] == 51:   # 作業ツリー（控えの担当）が残っているだけの、ほかの人の task
+                    r = dict(r, owner='丙', order=1.0)
+                rows.append(r)
+            rows += [arow(70, '進行中', ['kawa'], 'エリアの選び方'), arow(71, 'レビュー中', ['kawa'], 'エリアか家賃なしで保存させない'),
+                     arow(72, 'レビュー中', ['kawa'], '未使用の依存と export'), arow(73, '判断待ち', ['kawa'], 'エリアの選び方の細部'),
+                     arow(74, '着手可', ['me'], 'AI が持つ'), *[arow(n, '着手可', ['me']) for n in range(75, 80)],
+                     arow(80, '着手可', [], '[User] 手で打つ'), arow(81, '判断待ち'), arow(82, '判断待ち'),
+                     arow(84, '着手可', ['me'], '[User] 自分で打つ'), arow(85, '判断待ち', ['me'], '自分の判断')]
+            prs = _load_default_prs()
+            prs['open'] += [_load_pr(171, [71]), _load_pr(172, [72], mergeable='CONFLICTING')]
+            saved_people = os.environ.get('TKM_HARNESS_PEOPLE')
+            os.environ['TKM_HARNESS_PEOPLE'] = 'kawa=川嶋, me=平井,other-dev=外部,壊れた項,=空'
+            tree_numbers_now.clear(); tree_numbers_now.add(74)
+            try:
+                m = model_of(rows=rows, prs=prs)
+                out = load.render(m)
+            finally:
+                tree_numbers_now.clear()
+                if saved_people is None:
+                    os.environ.pop('TKM_HARNESS_PEOPLE', None)
+                else:
+                    os.environ['TKM_HARNESS_PEOPLE'] = saved_people
+            lines = out.splitlines()
+            # 2: 次のタスクの行の末尾に担当者の列（無ければ —・複数なら ・）。桁は見出しとそろう
+            assert lines[3].split() == ['セクション', '完了', '次のタスク', '誰の番', '担当'], lines[3]
+            sec = {x.split()[1]: x for x in lines[4:6]}
+            assert re.search(r'#50\s.*［着手可］\s+川嶋・平井$', sec['土台']), sec['土台']
+            assert re.search(r'#40\s.*［着手可］\s+川嶋$', sec['営業の登録']), sec['営業の登録']
+            for x in sec.values():
+                assert load.disp_width(x[:x.index('［')]) == load.disp_width(lines[3][:lines[3].index('誰の番')]), x
+            assert len({load.disp_width(x[:x.index('川嶋')]) for x in sec.values()}) == 1, '担当の列の先頭がそろう（複数名も同じ列から）'
+            assert load.disp_width(lines[3][:lines[3].index('担当')]) == load.disp_width(sec['土台'][:sec['土台'].index('川嶋')]), '担当の見出しと名前の桁'
+            # 1: 人ごとの段は いま動いている のあと・あなたの番 の前。他の人 → 自分 → 担当なし
+            head = next(i for i, x in enumerate(lines) if x == '人ごと（開いている task）')
+            assert next(i for i, x in enumerate(lines) if x.startswith('いま動いている ')) < head < next(i for i, x in enumerate(lines) if x.startswith('あなたの番 '))
+            block = []
+            for x in lines[head + 1:]:
+                if not x.startswith(' '):
+                    break
+                block.append(x)
+            heads = [x for x in block if not x.startswith('   ')]
+            assert heads == [' 川嶋 6（進行中 1・レビュー中 1・止まり 1・判断待ち 1・着手可 2）', ' 外部 1（進行中 1）',
+                             ' 平井 10（AI の担当 1・人の作業 1・担当の居ないもの 1・着手可 6・判断待ち 1）', ' 担当なし 12（着手可 1・判断待ち 2・人の作業 1・進行中 2・レビュー中 3・止まり 2・ほか 1）'], heads
+            text = '\n'.join(block)
+            assert re.search(r'進行中\s+#70 エリアの選び方$', text, re.M), text
+            assert re.search(r'レビュー中\s+#71 エリアか家賃なしで保存させない（PR #171・CI 緑）$', text, re.M), text
+            assert re.search(r'止まり\s+#72 未使用の依存と export（PR #172・衝突）$', text, re.M), text
+            assert re.search(r'判断待ち\s+#73 エリアの選び方の細部$', text, re.M), text
+            kawa = block[:next(i for i, x in enumerate(block) if x.startswith(' 外部 1'))]
+            assert [x.split()[0] for x in kawa if x.startswith('   ')] == ['進行中', 'レビュー中', '止まり', '判断待ち', '着手可', '#50'], kawa
+            assert len({load.disp_width(x[:x.index('#')]) for x in kawa if x.startswith('   ')}) == 1, f'状態の列の桁がそろっていない: {kawa}'
+            # 自分のアカウント: 作業ツリーがある task = AI の担当・それ以外 = 人の作業（先頭 3 件と ほか N）
+            mine = block[next(i for i, x in enumerate(block) if x.startswith(' 平井 10')) + 1:-1]
+            assert [re.sub(r'\s+', ' ', x.strip()) for x in mine] == [
+                'AI の担当 #74 AI が持つ', '人の作業 #84 自分で打つ', '担当の居ないもの #52 row 52',
+                '着手可 #50・#75・#76 ほか 3', '判断待ち #85 自分の判断'], mine
+            assert re.search(r'進行中\s+#51 ', text) and 'other-dev' not in text, '表示名に直らない・ほかの人の task が出ない'
+            # 5: いま動いている のほかの開発者の行の右端も表示名
+            own51 = [x for x in lines if x.startswith(' ') and re.search(r'#51\b', x) and 'F#' in x]
+            assert own51 and own51[0].rstrip().endswith('外部') and '丙' not in own51[0], f'ほかの人だけが担当の task を自分の作業ツリーの行に出した: {own51}'
+            assert any(p['other'] and p['owner'] == '外部' and 51 in [x['number'] for x in p['tasks']] for p in m['people']), m['people']
+            dev_rows = [x for x in lines if x.startswith(' ') and re.search(r'#49\b', x)]
+            assert dev_rows and dev_rows[0].rstrip().endswith('外部') and 'other-dev' not in dev_rows[0], dev_rows
+            # --json: 鍵は足すだけ
+            assert m['assignees_known'] is True and m['me'] == 'me' and m['unassigned']['count'] == 12, (m['assignees_known'], m['unassigned'])
+            assert [p['name'] for p in m['by_assignee']] == ['川嶋', '外部', '平井'] and m['by_assignee'][2]['me'] is True and m['by_assignee'][2]['count'] == 10
+            assert m['settings']['people'] == {'kawa': '川嶋', 'me': '平井', 'other-dev': '外部'}, m['settings']['people']
+            assert m['sections'][0]['next']['assignees'] == ['kawa', 'me'] and m['sections'][0]['next']['assignee_names'] == ['川嶋', '平井']
+            # 対応表に無い人は GitHub の名前のまま
+            out2 = load.render(model_of(rows=rows, prs=prs))
+            assert ' kawa 6' in out2 and ' other-dev 1' in out2 and ' me 10' in out2 and 'kawa・me' in out2, out2
+        t('load: 担当者の列・人ごとの段（状態の並び・PR と CI の段・先頭 3 件と ほか N・自分は AI の担当と人の作業・担当なしは数）・名前の対応表', _assignee_column_and_people)
+
+        def _people_map_parse() -> None:
+            assert load.parse_people('a=川嶋,B = 平井 ,x,=y,z=,,') == {'a': '川嶋', 'b': '平井'}, load.parse_people('a=川嶋,B = 平井 ,x,=y,z=,,')
+            assert load.parse_people('') == {} and load.parse_people(None) == {}
+            os.environ['TKM_HARNESS_PEOPLE'] = 'skawashimaclasslab-ai=川嶋'
+            try:
+                assert gh_task._people_map() == {'skawashimaclasslab-ai': '川嶋'} and gh_task._display_name('SkawashimaClasslab-AI', gh_task._people_map()) == '川嶋'
+            finally:
+                os.environ.pop('TKM_HARNESS_PEOPLE', None)
+            assert gh_task._people_map() == {}
+        t('load: 名前の対応表 TKM_HARNESS_PEOPLE は 名前=表示名 のコンマ区切り（大文字小文字を分けず・形の違う項は読み飛ばし・無ければ空）', _people_map_parse)
+
+        def _stale_cache_has_no_assignees() -> None:
+            model_of()                                                   # 控えを作る（担当者あり）
+            with open(gh_task.BOARD_CACHE, encoding='utf-8') as f:
+                snap = json.load(f)
+            for extra in snap['extras'].values():
+                extra.pop('assignees', None)
+            gh_task._save_shared_json(gh_task.BOARD_CACHE, snap)
+            # --cached（GitHub を叩かない）: 落ちず、先頭に断り・担当の列は —・人ごとの段は出さない
+            calls.clear()
+            rc, out = _run_main(['load', '--cached'])
+            assert rc == 0 and calls == [], (rc, calls)
+            lines = out.splitlines()
+            assert lines[0] == '控えに担当者が無い。取り直す: hirai-task load', lines[0]
+            assert '人ごと' not in out and re.search(r'#50\s.*［着手可］\s+—$', out, re.M), out
+            rc, data = _run_main(['load', '--cached', '--json'])
+            assert rc == 0 and json.loads(data)['assignees_known'] is False
+            # 新しい控え（10 分以内）でも担当者の鍵が無ければ、普通の load は取り直す
+            calls.clear()
+            rc, out = _run_main(['load'])
+            assert rc == 0 and any('items(first:' in c for c in calls), calls
+            assert '控えに担当者が無い' not in out and '人ごと（開いている task）' in out, out
+        t('load: 担当者の鍵が無い古い控えでも --cached は落ちず「—」と取り直しの 1 行を出す（普通の load は取り直す）・GitHub を叩かない', _stale_cache_has_no_assignees)
     finally:
         for n, v in orig.items():
             setattr(gh_task, n, v)
@@ -2631,6 +2765,125 @@ def _load_checks(t, tmp_dir: str) -> None:
         gh_task.is_coordinator, gh_task.ensure_assignee, gh_task._local_state_dir = entry_coord, entry_ensure, orig_local
         gh_task._orca_assignments = real_orca_assignments
         gh_task._tree_info = real_tree_info
+
+
+def _assignee_checks(t, tmp_dir: str) -> None:
+    """ほかの人が担当の task を AI の候補から外す検査（ready の一覧・start の断りと --take）。HIRAI_SELFTEST_ONLY=assignees で単独に回せる。"""
+    saved = (gh_task.run_gh, gh_task.is_coordinator, gh_task.ensure_assignee, gh_task.LOAD_OVERLAY, gh_task.PROJECT_NUMBER_OVERRIDE)
+    gh_task.is_coordinator, gh_task.ensure_assignee = (lambda: False), (lambda number: False)
+    gh_task.LOAD_OVERLAY = os.path.join(tempfile.mkdtemp(dir=tmp_dir), 'load-overlay.json')
+    gh_task.PROJECT_NUMBER_OVERRIDE = ''
+    people_env = 'skawashimaclasslab-ai=川嶋,thirai-classlab=平井'
+
+    def with_people(fn):
+        before = os.environ.get('TKM_HARNESS_PEOPLE')
+        os.environ['TKM_HARNESS_PEOPLE'] = people_env
+        try:
+            return fn()
+        finally:
+            if before is None:
+                os.environ.pop('TKM_HARNESS_PEOPLE', None)
+            else:
+                os.environ['TKM_HARNESS_PEOPLE'] = before
+
+    def ready_gh(rows, *, user='me'):
+        inner = _load_gh([], rows=rows)
+
+        def fake(args, input_text=None):
+            if args[:4] == ['api', '-X', 'GET', 'user']:
+                if user is None:
+                    return 1, '', 'HTTP 401'
+                return 0, json.dumps({'login': user}), ''
+            return inner(args, input_text)
+        return fake
+
+    def arow(number, assignees=(), parent=20, title=None):
+        return dict(_load_rows()[6], number=number, id=f'I_{number}', status='着手可', owner='', order=None,
+                    parent_number=parent, assignees=list(assignees), title=title or f'row {number}')
+
+    try:
+        def _ready_skips_others() -> None:
+            rows = [r for r in _load_rows() if r['kind'] in ('wave', 'feature')] + [
+                arow(40, ['skawashimaclasslab-ai']), arow(41, ['me', 'skawashimaclasslab-ai']), arow(42, []),
+                arow(43, ['ME']), arow(44, ['skawashimaclasslab-ai', 'someone'])]
+            gh_task.run_gh = ready_gh(rows)
+            rc, out = with_people(lambda: _run_main(['ready']))
+            lines = out.splitlines()
+            assert rc == 0 and lines[0] == '着手可 4 件', out   # task 3 件 + 子の無い feature #10
+            listed = [int(m.group(1)) for x in lines if (m := re.match(r'\s+#(\d+)\s+\[feature #', x))]
+            assert listed == [41, 42, 43], f'自分が入っている・担当なしは一覧に残す: {listed}'
+            assert lines[-1] == 'ほかの人が担当（取らない）: #40（川嶋）、#44（川嶋・someone）', lines[-1]
+            rc, out = _run_main(['ready'])                 # 対応表が無ければ GitHub の名前のまま
+            assert out.splitlines()[-1] == 'ほかの人が担当（取らない）: #40（skawashimaclasslab-ai）、#44（skawashimaclasslab-ai・someone）', out
+            # 担当者のいる行が無ければ自分のアカウントを引かず、末尾の行も出さない
+            plain = [r for r in rows if r['number'] not in (40, 41, 43, 44)]
+            seen = []
+            inner = ready_gh(plain)
+            gh_task.run_gh = lambda a, i=None: (seen.append(a), inner(a, i))[1]
+            rc, out = _run_main(['ready'])
+            assert 'ほかの人が担当' not in out and not any(a[:4] == ['api', '-X', 'GET', 'user'] for a in seen), (out, seen)
+            # 全部ほかの人の担当なら 0 件と、外した行だけ
+            gh_task.run_gh = ready_gh([r for r in rows if r['number'] in (1, 2, 20, 40, 44)])
+            rc, out = _run_main(['ready'])
+            assert out.splitlines()[0] == '着手可の issue は 0 件' and out.splitlines()[-1].startswith('ほかの人が担当（取らない）: #40'), out
+            # 自分のアカウントが引けないときは外さず、標準エラーに 1 行
+            gh_task.run_gh = ready_gh(rows, user=None)
+            err = io.StringIO()
+            real_err, sys.stderr = sys.stderr, err
+            try:
+                rc, out = _run_main(['ready'])
+            finally:
+                sys.stderr = real_err
+            assert '着手可 6 件' in out and 'ほかの人が担当' not in out and 'アカウントが分からず' in err.getvalue(), (out, err.getvalue())
+        t('ready: Assignees に自分以外が居て自分が居ない task は一覧から外し、末尾に「ほかの人が担当（取らない）」（表示名つき・自分が入る・担当なしはそのまま）', _ready_skips_others)
+
+        def _start_refuses_others() -> None:
+            def start(assignees, *, take=False, user='me', record=None, main_args=None):
+                record = [] if record is None else record
+
+                def rest_handler(method, path, body):
+                    if method == 'GET' and path == 'user':
+                        return {'login': user} if user else None
+                    return {}
+                gh_task.run_gh = make_write_gh({40: dict(title='task', status=gh_task.READY_STATUS, kind='task', assignees=assignees)},
+                                               record=record, rest_handler=rest_handler)
+                return record
+            # ほかの人だけが担当: exit 2 で断り、何も書かない
+            record = start(['skawashimaclasslab-ai'])
+            try:
+                with_people(lambda: gh_task.cmd_start(40, None))
+            except gh_task.GhError as exc:
+                assert exc.code == 2 and str(exc) == '#40 は 川嶋 が担当。取るなら --take', (exc.code, str(exc))
+            else:
+                raise AssertionError('ほかの人の task を取れてしまった')
+            assert record == [], record
+            _expect_exit(lambda: gh_task.cmd_start(40, None, False, False), 2)
+            # --take を付けたときだけ通る
+            record = start(['skawashimaclasslab-ai'])
+            with redirect_stdout(io.StringIO()):
+                assert gh_task.cmd_start(40, None, False, True) == 0
+            assert record == [('F_Status', 'O_Status_進行中')], record
+            # 自分が入っている・担当なしはこれまでどおり
+            for assignees in (['me', 'skawashimaclasslab-ai'], ['ME'], []):
+                record = start(assignees)
+                with redirect_stdout(io.StringIO()):
+                    assert gh_task.cmd_start(40, None) == 0, assignees
+                assert record == [('F_Status', 'O_Status_進行中')], (assignees, record)
+            # 自分のアカウントが引けなければ断る（ほかの人の task かもしれない）
+            record = start(['skawashimaclasslab-ai'], user=None)
+            _expect_exit(lambda: gh_task.cmd_start(40, None), 2)
+            assert record == [], record
+            # 引数 --take（main 経由）と、使い方の断り
+            record = start(['skawashimaclasslab-ai'])
+            rc, out = _run_main(['start', '40'])
+            assert rc == 2 and '取るなら --take' in out and record == [], (rc, out, record)
+            rc, out = _run_main(['start', '40', '--take'])
+            assert rc == 0 and record == [('F_Status', 'O_Status_進行中')], (rc, out, record)
+            rc, out = _run_main(['start', '40', '--take', '--take'])
+            assert rc == 2 and '--take' in out, (rc, out)
+        t('start: ほかの人だけが担当の task は「#n は <名前> が担当。取るなら --take」と断って exit 2（何も書かない）・--take でだけ通る・自分が入る/担当なしは通る', _start_refuses_others)
+    finally:
+        gh_task.run_gh, gh_task.is_coordinator, gh_task.ensure_assignee, gh_task.LOAD_OVERLAY, gh_task.PROJECT_NUMBER_OVERRIDE = saved
 
 
 def _card_field_defs(*, with_card_fields: bool = True) -> list[dict]:
@@ -3020,7 +3273,7 @@ def _progress_checks(t, tmp_dir: str) -> None:
         return (0, '1795620000\tテストを足した') if argv[2] in ('/w/b', '/w/c') else (1, '')
 
     def issue(n, status, *, state='OPEN', title=None):
-        return {'number': n, 'kind': 'task', 'state': state, 'status': status, 'title': title or f'task {n}', 'parent_number': 2}
+        return {'number': n, 'kind': 'task', 'state': state, 'status': status, 'title': title or f'task {n}', 'parent_number': 2, 'assignees': []}
 
     view = {'repo': 'o/r', 'issues': [
         {'number': 1, 'kind': 'wave', 'state': 'OPEN', 'status': '', 'title': '1. 土台', 'parent_number': None},
@@ -3096,7 +3349,7 @@ def _progress_checks(t, tmp_dir: str) -> None:
         assert m['source'] == 'fallback'
         owners = {n: r['owner'] for n, r in rows_of(m).items()}
         assert owners.get(201) == '201-x', owners                                               # PR の head の branch 名の頭の番号
-        assert owners.get(209) == '209-from-branch', owners
+        assert owners.get(209) == 'alice', owners   # Assignees が自分以外だけの task は、branch 名の担当より担当者の行
         assert 'Orca から引けなかった' in hp.render(load, m)
         rc = hp.orca_json(['worktree', 'list'], lambda argv: (1, '{}'))
         assert rc is None
@@ -3923,11 +4176,14 @@ def main() -> int:
     restore_settings = _isolate_settings()
 
     only = os.environ.get('HIRAI_SELFTEST_ONLY')
-    if only in ('progress', 'load'):  # 手早く回すための絞り込み（smoke は絞らない）。load は load・progress の 2 組
+    if only in ('progress', 'load', 'assignees'):  # 手早く回すための絞り込み（smoke は絞らない）。load は load・progress・assignees の 3 組
         gh_task.sleep_fn = lambda _seconds: None
         if only == 'load':
             _load_checks(t, tempfile.mkdtemp())
-        _progress_checks(t, tempfile.mkdtemp())
+        if only in ('load', 'assignees'):
+            _assignee_checks(t, tempfile.mkdtemp())
+        if only != 'assignees':
+            _progress_checks(t, tempfile.mkdtemp())
         print('\n'.join(results))
         restore_settings()
         return 1 if fail else 0
@@ -7465,7 +7721,7 @@ def main() -> int:
         def _reread_arg_parsing_and_coverage_text() -> None:
             seen: list = []
             saved = gh_task.cmd_start
-            gh_task.cmd_start = lambda n, approved, reread=False: seen.append((n, approved, reread)) or 0
+            gh_task.cmd_start = lambda n, approved, reread=False, take=False: seen.append((n, approved, reread)) or 0
             try:
                 assert gh_task.main(['start', '750', '--reread']) == 0
                 assert gh_task.main(['start', '750', '--reread', '--approved', 'x']) == 0
@@ -7499,7 +7755,7 @@ def main() -> int:
         def _reread_rejects_option_as_approved_value() -> None:
             seen: list = []
             saved = gh_task.cmd_start
-            gh_task.cmd_start = lambda n, approved, reread=False: seen.append((n, approved, reread)) or 0
+            gh_task.cmd_start = lambda n, approved, reread=False, take=False: seen.append((n, approved, reread)) or 0
             try:
                 _expect_exit(lambda: gh_task.main(['start', '12', '--approved', '--reread']), 2)
                 _expect_exit(lambda: gh_task.main(['start', '12', '--approved', '--reread', '--reread']), 2)
@@ -11630,6 +11886,7 @@ def main() -> int:
         _board_checks(t, cache_tmp_dir)
         _card_checks(t, cache_tmp_dir)
         _load_checks(t, cache_tmp_dir)
+        _assignee_checks(t, cache_tmp_dir)
         _progress_checks(t, cache_tmp_dir)
         _feature_checks(t, cache_tmp_dir)
         _settings_checks(t, cache_tmp_dir)

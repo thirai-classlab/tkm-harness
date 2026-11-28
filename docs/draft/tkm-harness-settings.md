@@ -78,6 +78,7 @@ F4 から、`/tkm-harness:config` で settings の file に書いた値は、開
 | project（GitHub Project の番号） | `TKM_HARNESS_PROJECT` | 正の整数 | 無し（リポに紐づいた Project を探す） | settings.json |
 | repo（owner/リポ） | `TKM_HARNESS_REPO` | `<owner>/<name>` | `git remote get-url origin` | settings.json |
 | 進みの表の期限と本線 | `TKM_HARNESS_LOAD_DEADLINE`・`_LOAD_DEADLINE_LABEL`・`_LOAD_MAINLINE`・`_LOAD_MAINLINE_LABEL` | 4.0.0 と同じ | 空 | settings.json（手で書く） |
+| 進みの表の名前の対応表 | `TKM_HARNESS_PEOPLE` | `GitHub の名前=表示名,…`（4.3.0 で足した） | 空 | settings.json（手で書く） |
 | 前夜の CI | `TKM_HARNESS_NIGHTLY_CI` | workflow のファイル名 | 空 | settings.json（手で書く） |
 
 - TKS-R2.1 Given settings.local.json に `TKM_HARNESS_MODE=loop` When 会話を開く Then 開始時の表示・画面下・毎ターンの reminder が loop（mode.yml に mode が無くても）
