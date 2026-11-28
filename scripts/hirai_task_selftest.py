@@ -1506,8 +1506,16 @@ def _load_checks(t, tmp_dir: str) -> None:
             assert 'CI 赤' in row(43) and '乙・甲' in row(43) and 'other-dev' not in row(43) and not re.search(r'#49\b', row(43)), f'止まりを優先・担当は「・」でつなぐ・ほかの開発者は別の行: {row(43)}'
             assert row(49) == row(51) and 'F#20 F2' in row(49) and 'other-dev' in row(49) and '乙' not in row(49) and '着手' in row(49), f'ほかの開発者は別の行・段は task 自身の段: {row(49)}'
             assert 'F#10 F1' in row(50) and '未着手 0%' in row(50), row(50)
-            assert 'CI 赤 60%' in row(43) and '#40→#43（PR #143）→#41→#44（PR #144）→#42（PR #142）→#45（PR #145）→#46' in row(43), f'止まりの語と段の %・控えの順番の「→」・PR の番号: {row(43)}'
+            assert 'CI 赤（ready）' in row(43) and '60%' not in row(43) and '#40→#43（PR #143）→#41→#44（PR #144）→#42（PR #142）→#45（PR #145）→#46' in row(43), f'止まりの語と段の %・控えの順番の「→」・PR の番号: {row(43)}'
             assert '#49（PR #149）・#51' in row(49) and '→' not in row(49) and '着手 20%' in row(49), f'順番が無ければ「・」・ほかの開発者の PR の番号: {row(49)}'
+            m_stuck = load.render({**model_of(), 'running': [
+                {'feature': 1, 'feature_title': 'a', 'numbers': [1], 'stage': '衝突', 'owner': 'x', 'owners': ['x'], 'pct': 70, 'stuck': '衝突'},
+                {'feature': 2, 'feature_title': 'b', 'numbers': [2], 'stage': 'CI 赤', 'owner': 'x', 'owners': ['x'], 'pct': 60, 'stuck': 'CI 赤'},
+                {'feature': 3, 'feature_title': 'c', 'numbers': [3], 'stage': '衝突', 'owner': 'x', 'owners': ['x'], 'pct': 50, 'stuck': '衝突'},
+                {'feature': 4, 'feature_title': 'd', 'numbers': [4], 'stage': 'CI 緑', 'owner': 'x', 'owners': ['x'], 'pct': 70, 'stuck': ''}]})
+            for want in ('衝突（CI 緑）', 'CI 赤（ready）', '衝突（draft）', 'CI 緑 70%'):
+                assert want in m_stuck, (want, m_stuck)
+            assert '衝突 70%' not in m_stuck and '衝突 50%' not in m_stuck and 'CI 赤 60%' not in m_stuck, m_stuck
             unit = load._group_lines({'state': 'レビュー中', 'count': 4, 'tasks': [{'number': n, 'title': 't', 'pr': {'number': n + 1000, 'word': 'CI 緑'}} for n in (1, 2, 3, 4)]}, 10)
             assert unit == ['   レビュー中  #1（PR #1001）・#2（PR #1002）・#3（PR #1003） ほか 1'], unit
             assert lines[head] == f'いま動いている {len(body)}', lines[head]

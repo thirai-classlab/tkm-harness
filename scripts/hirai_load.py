@@ -675,7 +675,8 @@ def _running_lines(model: dict) -> list[str]:
         return out
     feats = [clip_width(f"F#{r['feature']} {r['feature_title']}" if r['feature'] else 'F#—', FEATURE_TITLE_WIDTH + 8).rstrip() for r in rows]
     tasks = [join_owners(_row_tasks(r), TASKS_WIDTH, '→' if r.get('order_of') else '・') or '—' for r in rows]
-    stages = [f"{r['stage']} {r['pct']}%" for r in rows]
+    # 止まり（衝突・CI 赤）の行は % を出さず、止まる前の段を括弧で出す（止まっているのに 70% と読めないように）
+    stages = [f"{r['stage']}（{STAGE_WORDS.get(r['pct'], str(r['pct']) + '%')}）" if r['stuck'] else f"{r['stage']} {r['pct']}%" for r in rows]
     owners = [join_owners(r['owners'], OWNER_WIDTH) for r in rows]
     fw, tw, sw = (max(disp_width(x) for x in col) for col in (feats, tasks, stages))
     show_now = any(r.get('now') for r in rows)
